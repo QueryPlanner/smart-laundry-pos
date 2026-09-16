@@ -85,13 +85,13 @@ export const MobileHomeView: React.FC<MobileHomeViewProps> = ({
           <Card className="border-0 shadow-medium">
             <CardContent className="p-5">
               <div className="mb-1 flex items-center justify-between">
-                <h3 className="text-base font-bold text-foreground">Mulai Cepat</h3>
+                <h3 className="text-base font-bold text-foreground">Quick Start</h3>
                 <span className="text-xs font-medium text-primary">
-                  {completedSteps}/{totalSteps} selesai
+                  {completedSteps}/{totalSteps} completed
                 </span>
               </div>
               <p className="mb-3 text-sm text-muted-foreground">
-                Selesaikan langkah berikut untuk mulai menerima pesanan.
+                Complete the following steps to start accepting orders.
               </p>
 
               <div className="mb-4 h-2 w-full overflow-hidden rounded-full bg-muted">
@@ -133,7 +133,7 @@ export const MobileHomeView: React.FC<MobileHomeViewProps> = ({
 
               <Button onClick={onCreateOrder} variant="pos" className="mt-4 w-full">
                 <Plus className="mr-1 h-4 w-4" />
-                Buat Pesanan Pertama
+                Create Your First Order
               </Button>
             </CardContent>
           </Card>
@@ -142,7 +142,7 @@ export const MobileHomeView: React.FC<MobileHomeViewProps> = ({
             <CardContent className="grid grid-cols-2 divide-x divide-border p-4">
               <div className="pr-4">
                 <div className="flex items-start justify-between">
-                  <p className="text-xs text-muted-foreground">Pendapatan Hari Ini</p>
+                  <p className="text-xs text-muted-foreground">Today's Revenue</p>
                   <TrendingUp className="h-4 w-4 text-pos-success" />
                 </div>
                 <p className="mt-1 text-lg font-bold text-foreground">
@@ -155,14 +155,14 @@ export const MobileHomeView: React.FC<MobileHomeViewProps> = ({
                       todayIncomeChange >= 0 ? 'text-pos-success' : 'text-destructive'
                     )}
                   >
-                    {todayIncomeChange >= 0 ? '↑' : '↓'} {Math.abs(todayIncomeChange)}% dari kemarin
+                    {todayIncomeChange >= 0 ? '↑' : '↓'} {Math.abs(todayIncomeChange)}% from yesterday
                   </p>
                 )}
               </div>
 
               <div className="pl-4">
                 <div className="flex items-start justify-between">
-                  <p className="text-xs text-muted-foreground">Pengeluaran Hari Ini</p>
+                  <p className="text-xs text-muted-foreground">Today's Expenses</p>
                   <TrendingDown className="h-4 w-4 text-pos-warning" />
                 </div>
                 <p className="mt-1 text-lg font-bold text-foreground">
@@ -176,7 +176,7 @@ export const MobileHomeView: React.FC<MobileHomeViewProps> = ({
         {!showOnboarding && (
           <Button onClick={onCreateOrder} variant="pos" size="lg" className="w-full rounded-2xl">
             <Plus className="h-5 w-5" />
-            Buat Pesanan Baru
+            Create New Order
           </Button>
         )}
 
@@ -204,7 +204,7 @@ export const MobileHomeView: React.FC<MobileHomeViewProps> = ({
                 <LayoutGrid className="h-6 w-6 text-primary" />
               </div>
               <p className="text-center text-xs font-medium leading-tight text-foreground">
-                Lainnya
+                Other
               </p>
             </button>
           </CardContent>
@@ -214,7 +214,7 @@ export const MobileHomeView: React.FC<MobileHomeViewProps> = ({
       <Drawer open={moreOpen} onOpenChange={setMoreOpen} shouldScaleBackground={false}>
         <DrawerContent className="max-h-[85vh]">
           <DrawerHeader>
-            <DrawerTitle>Menu Lainnya</DrawerTitle>
+          <DrawerTitle>More Menu</DrawerTitle>
           </DrawerHeader>
           <div className="grid grid-cols-4 gap-y-4 overflow-y-auto p-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
             {moreMenuItems.map((item) => (

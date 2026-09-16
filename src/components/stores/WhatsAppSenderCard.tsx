@@ -64,12 +64,12 @@ export const WhatsAppSenderCard: React.FC = () => {
       setEditingSender(false);
       refreshStores();
       toast({
-        title: 'Nomor Pengirim Terdaftar',
-        description: 'Notifikasi WhatsApp akan dikirim dari nomor ini.',
+        title: 'Sender Number Registered',
+        description: 'WhatsApp notifications will be sent from this number.',
       });
     }
     if (phase === 'failed' && error) {
-      toast({ title: 'Pendaftaran Gagal', description: error, variant: 'destructive' });
+      toast({ title: 'Registration Failed', description: error, variant: 'destructive' });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase]);
@@ -95,8 +95,8 @@ export const WhatsAppSenderCard: React.FC = () => {
       await refreshStores();
     } catch (err) {
       toast({
-        title: 'Gagal Menyimpan',
-        description: err instanceof Error ? err.message : 'Terjadi kesalahan',
+        title: 'Failed Saving',
+        description: err instanceof Error ? err.message : 'An error occurred',
         variant: 'destructive',
       });
     } finally {
@@ -107,8 +107,8 @@ export const WhatsAppSenderCard: React.FC = () => {
   const handleRegister = () => {
     if (!phoneInput.trim()) {
       toast({
-        title: 'Nomor Telepon Wajib Diisi',
-        description: 'Masukkan nomor WhatsApp yang ingin didaftarkan.',
+        title: 'Phone Number Required',
+        description: 'Enter the WhatsApp number you want to register.',
         variant: 'destructive',
       });
       return;
@@ -125,11 +125,11 @@ export const WhatsAppSenderCard: React.FC = () => {
     const result = await verifySender(waSenderId);
     await refreshStores();
     if (result.registered) {
-      toast({ title: 'Terverifikasi', description: 'Nomor pengirim masih aktif di WhatsPoints.' });
+      toast({ title: 'Verified', description: 'The sender number is still active in WhatsPoints.' });
     } else {
       toast({
-        title: 'Tidak Terdaftar',
-        description: 'Nomor pengirim sudah tidak aktif. Silakan daftarkan ulang.',
+        title: 'Not Registered',
+        description: 'The sender number is no longer active. Please register again.',
         variant: 'destructive',
       });
     }
@@ -139,7 +139,7 @@ export const WhatsAppSenderCard: React.FC = () => {
     return (
       <Card>
         <CardContent className="flex items-center justify-center py-8">
-          <p className="text-muted-foreground">Tidak ada toko yang dipilih</p>
+          <p className="text-muted-foreground">No store selected</p>
         </CardContent>
       </Card>
     );
@@ -156,20 +156,20 @@ export const WhatsAppSenderCard: React.FC = () => {
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
           <MessageCircle className="h-5 w-5" />
-          Nomor Pengirim WhatsApp
+          WhatsApp Sender Number
         </CardTitle>
         <CardDescription>
-          Kirim notifikasi WhatsApp ke pelanggan menggunakan nomor toko Anda sendiri, bukan nomor default.
+          Send WhatsApp notifications to customers using your own store number instead of the default number.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-4 border rounded-lg">
           <div className="space-y-1 flex-1">
             <Label htmlFor="wa-use-store-number" className="font-normal">
-              Gunakan Nomor Toko Sendiri
+              Use Your Own Store Number
             </Label>
             <p className="text-sm text-muted-foreground">
-              Jika nonaktif, notifikasi dikirim dari nomor default WhatsPoints.
+              If disabled, notifications are sent from the default WhatsPoints number.
             </p>
           </div>
           <Switch
@@ -186,23 +186,23 @@ export const WhatsAppSenderCard: React.FC = () => {
             <div className="flex items-center justify-between flex-wrap gap-2">
               <div className="flex items-center gap-2">
                 <CheckCircle2 className="h-5 w-5 text-green-600" />
-                <span className="font-medium">Terdaftar</span>
+                <span className="font-medium">Registered</span>
                 <Badge variant="outline">{waSenderId}</Badge>
               </div>
               <div className="flex gap-2">
                 <Button variant="outline" size="sm" onClick={handleVerifyNow} disabled={verifying}>
                   <RefreshCw className={`h-4 w-4 mr-2 ${verifying ? 'animate-spin' : ''}`} />
-                  Verifikasi Sekarang
+                  Verify Now
                 </Button>
                 <Button variant="outline" size="sm" onClick={handleStartChangeNumber} disabled={verifying}>
-                  Ganti Nomor
+                  Switch Number
                 </Button>
               </div>
             </div>
             <p className="text-xs text-muted-foreground">
               {waLastVerified
-                ? `Terakhir diverifikasi: ${new Date(waLastVerified).toLocaleString('id-ID')}`
-                : 'Belum pernah diverifikasi'}
+                ? `Last verified: ${new Date(waLastVerified).toLocaleString('en-IN')}`
+                : 'Not verified yet'}
             </p>
           </div>
         )}
@@ -211,9 +211,9 @@ export const WhatsAppSenderCard: React.FC = () => {
           <Alert variant="destructive">
             <AlertTriangle className="h-4 w-4" />
             <AlertDescription>
-              Nomor toko Anda belum terdaftar. Notifikasi untuk sementara masih dikirim dari nomor
-              default WhatsPoints, bukan nomor toko Anda. Daftarkan nomor Anda di bawah ini agar
-              pelanggan menerima pesan dari nomor toko Anda.
+              This store number is not registered. Notifications are temporarily sent from the default
+              WhatsPoints number instead of this store number. Register the number below so customers
+              receive messages from this store number.
             </AlertDescription>
           </Alert>
         )}
@@ -221,7 +221,7 @@ export const WhatsAppSenderCard: React.FC = () => {
         {waUseStoreNumber && (!waSenderId || phase !== 'idle' || editingSender) && phase !== 'connected' && phase !== 'linked' && (
           <div className="space-y-4 p-4 border rounded-lg">
             <div className="space-y-2">
-              <Label htmlFor="wa-sender-phone">Nomor WhatsApp</Label>
+              <Label htmlFor="wa-sender-phone">WhatsApp Number</Label>
               <Input
                 id="wa-sender-phone"
                 placeholder="081234567890"
@@ -239,7 +239,7 @@ export const WhatsAppSenderCard: React.FC = () => {
                   onClick={() => setMethod('code')}
                 >
                   <KeyRound className="h-4 w-4 mr-2" />
-                  Kode Pairing
+                  Code Pairing
                 </Button>
                 <Button
                   variant={method === 'qr' ? 'default' : 'outline'}
@@ -247,7 +247,7 @@ export const WhatsAppSenderCard: React.FC = () => {
                   onClick={() => setMethod('qr')}
                 >
                   <QrCode className="h-4 w-4 mr-2" />
-                  Kode QR
+                  QR Code
                 </Button>
               </div>
             )}
@@ -255,11 +255,11 @@ export const WhatsAppSenderCard: React.FC = () => {
             {phase === 'idle' && (
               <div className="flex gap-2">
                 <Button onClick={handleRegister} className="w-full sm:w-auto">
-                  Daftarkan Nomor Ini
+                  Register This Number
                 </Button>
                 {editingSender && waSenderId && (
                   <Button variant="ghost" onClick={handleCancelChangeNumber}>
-                    Batal
+                    Cancel
                   </Button>
                 )}
               </div>
@@ -268,19 +268,19 @@ export const WhatsAppSenderCard: React.FC = () => {
             {phase === 'checking' && (
               <div className="flex items-center gap-2 text-sm text-muted-foreground">
                 <LoadingSpinner size="sm" variant="primary" />
-                Memeriksa status nomor...
+                Checking number status...
               </div>
             )}
 
             {phase === 'awaiting_code' && pairingCode && (
               <div className="space-y-2 text-center">
                 <p className="text-sm text-muted-foreground">
-                  Buka WhatsApp di ponsel dengan nomor ini &gt; Perangkat Tertaut &gt; Tautkan
-                  Perangkat &gt; Tautkan dengan nomor telepon, lalu masukkan kode berikut:
+                  Open WhatsApp on the phone using this number &gt; Linked Devices &gt; Link
+                  a Device &gt; Link with phone number, then enter the following code:
                 </p>
                 <p className="text-2xl font-mono font-bold tracking-widest">{pairingCode}</p>
                 <Button variant="ghost" size="sm" onClick={handleCancelChangeNumber}>
-                  Batalkan
+                  Cancel
                 </Button>
               </div>
             )}
@@ -288,16 +288,16 @@ export const WhatsAppSenderCard: React.FC = () => {
             {phase === 'awaiting_qr' && qrCode && (
               <div className="space-y-2 text-center">
                 <p className="text-sm text-muted-foreground">
-                  Buka WhatsApp di ponsel dengan nomor ini &gt; Perangkat Tertaut &gt; Tautkan
-                  Perangkat, lalu pindai kode QR berikut:
+                  Open WhatsApp on the phone using this number &gt; Linked Devices &gt; Link
+                  a Device, then scan the following QR code:
                 </p>
                 <img
                   src={`data:image/png;base64,${qrCode}`}
-                  alt="QR Code pendaftaran WhatsApp"
+                  alt="WhatsApp registration QR code"
                   className="mx-auto w-48 h-48"
                 />
                 <Button variant="ghost" size="sm" onClick={handleCancelChangeNumber}>
-                  Batalkan
+                  Cancel
                 </Button>
               </div>
             )}
@@ -306,10 +306,10 @@ export const WhatsAppSenderCard: React.FC = () => {
               <div className="space-y-2">
                 <div className="flex items-center gap-2 text-sm text-destructive">
                   <XCircle className="h-4 w-4" />
-                  {error || 'Pendaftaran gagal. Silakan coba lagi.'}
+                  {error || 'Registration failed. Please try again.'}
                 </div>
                 <Button variant="outline" size="sm" onClick={reset}>
-                  Coba Lagi
+                  Try Again
                 </Button>
               </div>
             )}

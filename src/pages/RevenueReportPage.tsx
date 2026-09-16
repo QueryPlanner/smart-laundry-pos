@@ -8,33 +8,33 @@ import { usePageTitle } from '@/hooks/usePageTitle';
 import { useRevenueSummary } from '@/hooks/useRevenue';
 import { CalendarIcon, Download, TrendingUp, TrendingDown } from 'lucide-react';
 import { format, subDays, startOfDay, endOfDay } from 'date-fns';
-import { id as localeId } from 'date-fns/locale';
+import { enUS as localeEn } from 'date-fns/locale';
 import { cn } from '@/lib/utils';
 import { SectionLoading } from '@/components/ui/loading-spinner';
 
 type DateRangePreset = 'today' | '7days' | '1month' | '6months' | 'custom';
 
 const dateRangePresets = [
-  { value: 'today' as DateRangePreset, label: 'Hari ini' },
-  { value: '7days' as DateRangePreset, label: '7 hari' },
-  { value: '1month' as DateRangePreset, label: '1 bulan' },
-  { value: '6months' as DateRangePreset, label: '6 bulan' },
-  { value: 'custom' as DateRangePreset, label: 'Pilih tanggal' },
+  { value: 'today' as DateRangePreset, label: 'Today' },
+  { value: '7days' as DateRangePreset, label: '7 days' },
+  { value: '1month' as DateRangePreset, label: '1 month' },
+  { value: '6months' as DateRangePreset, label: '6 months' },
+  { value: 'custom' as DateRangePreset, label: 'Select date' },
 ];
 
 const categoryLabels: Record<string, string> = {
-  detergent: 'Deterjen',
+  detergent: 'Detergent',
   gas: 'Gas',
-  electricity: 'Token Listrik',
-  promo: 'Promo',
-  maintenance: 'Perawatan',
-  other: 'Lainnya',
+  electricity: 'Electricity Credit',
+  promo: 'Promotion',
+  maintenance: 'Maintenance',
+  other: 'Other',
 };
 
 const paymentMethodLabels: Record<string, string> = {
-  cash: 'Tunai',
+  cash: 'Cash',
   qris: 'QRIS',
-  transfer: 'Transfer Bank',
+  transfer: 'Bank Transfer',
 };
 
 const getDateRange = (preset: DateRangePreset, customStart?: Date, customEnd?: Date) => {
@@ -81,7 +81,7 @@ const getDateRange = (preset: DateRangePreset, customStart?: Date, customEnd?: D
 };
 
 const formatCurrency = (amount: number) => {
-  return new Intl.NumberFormat('id-ID', {
+  return new Intl.NumberFormat('en-IN', {
     style: 'currency',
     currency: 'IDR',
     minimumFractionDigits: 0,
@@ -90,7 +90,7 @@ const formatCurrency = (amount: number) => {
 };
 
 export const RevenueReportPage = () => {
-  usePageTitle('Pendapatan Usaha');
+  usePageTitle('Business Revenue');
 
   const [selectedPreset, setSelectedPreset] = useState<DateRangePreset>('today');
   const [customStartDate, setCustomStartDate] = useState<Date | undefined>(undefined);
@@ -113,31 +113,31 @@ export const RevenueReportPage = () => {
     if (!revenueSummary) return;
 
     const csvContent = [
-      ['Laporan Pendapatan Usaha'],
-      [`Periode: ${format(new Date(dateRange.start), 'dd/MM/yyyy', { locale: localeId })} - ${format(new Date(dateRange.end), 'dd/MM/yyyy', { locale: localeId })}`],
+      ['Business Revenue Report'],
+      [`Period: ${format(new Date(dateRange.start), 'dd/MM/yyyy', { locale: localeEn })} - ${format(new Date(dateRange.end), 'dd/MM/yyyy', { locale: localeEn })}`],
       [],
-      ['Pendapatan Kotor', formatCurrency(revenueSummary.grossProfit)],
+      ['Gross Revenue', formatCurrency(revenueSummary.grossProfit)],
       [],
-      ['Pembayaran QRIS', formatCurrency(revenueSummary.paymentMethods.qris)],
-      ['Pembayaran Tunai', formatCurrency(revenueSummary.paymentMethods.cash)],
-      ['Pembayaran Transfer', formatCurrency(revenueSummary.paymentMethods.transfer)],
+      ['QRIS Payments', formatCurrency(revenueSummary.paymentMethods.qris)],
+      ['Cash Payments', formatCurrency(revenueSummary.paymentMethods.cash)],
+      ['Bank Transfer Payments', formatCurrency(revenueSummary.paymentMethods.transfer)],
       [],
-      ['Potongan'],
-      ['Deterjen', formatCurrency(revenueSummary.deductions.detergent)],
+      ['Deductions'],
+      ['Detergent', formatCurrency(revenueSummary.deductions.detergent)],
       ['Gas', formatCurrency(revenueSummary.deductions.gas)],
-      ['Token Listrik', formatCurrency(revenueSummary.deductions.electricity)],
-      ['Promo', formatCurrency(revenueSummary.deductions.promo)],
-      ['Perawatan', formatCurrency(revenueSummary.deductions.maintenance)],
-      ['Lainnya', formatCurrency(revenueSummary.deductions.other)],
+      ['Electricity Credit', formatCurrency(revenueSummary.deductions.electricity)],
+      ['Promotion', formatCurrency(revenueSummary.deductions.promo)],
+      ['Maintenance', formatCurrency(revenueSummary.deductions.maintenance)],
+      ['Other', formatCurrency(revenueSummary.deductions.other)],
       [],
-      ['Pendapatan Bersih', formatCurrency(revenueSummary.netProfit)],
+      ['Net Revenue', formatCurrency(revenueSummary.netProfit)],
     ].map(row => row.join(',')).join('\n');
 
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
     const link = document.createElement('a');
     const url = URL.createObjectURL(blob);
     link.setAttribute('href', url);
-    link.setAttribute('download', `laporan-pendapatan-${format(new Date(), 'yyyy-MM-dd')}.csv`);
+    link.setAttribute('download', `revenue-report-${format(new Date(), 'yyyy-MM-dd')}.csv`);
     link.style.visibility = 'hidden';
     document.body.appendChild(link);
     link.click();
@@ -146,9 +146,9 @@ export const RevenueReportPage = () => {
 
   const displayDateRange = () => {
     if (selectedPreset === 'custom' && customStartDate && customEndDate) {
-      return `${format(customStartDate, 'dd/MM/yyyy', { locale: localeId })} - ${format(customEndDate, 'dd/MM/yyyy', { locale: localeId })}`;
+      return `${format(customStartDate, 'dd/MM/yyyy', { locale: localeEn })} - ${format(customEndDate, 'dd/MM/yyyy', { locale: localeEn })}`;
     }
-    return `${format(new Date(dateRange.start), 'dd/MM/yyyy', { locale: localeId })} - ${format(new Date(dateRange.end), 'dd/MM/yyyy', { locale: localeId })}`;
+    return `${format(new Date(dateRange.start), 'dd/MM/yyyy', { locale: localeEn })} - ${format(new Date(dateRange.end), 'dd/MM/yyyy', { locale: localeEn })}`;
   };
 
   return (
@@ -156,8 +156,8 @@ export const RevenueReportPage = () => {
       {/* Header */}
       <div className="flex flex-col gap-4">
         <div>
-          <h1 className="text-3xl font-bold text-gray-900">Pendapatan usaha</h1>
-          <p className="text-gray-500 mt-1">Ringkasan pendapatan dan potongan usaha.</p>
+          <h1 className="text-3xl font-bold text-gray-900">Business revenue</h1>
+          <p className="text-gray-500 mt-1">Summary of business revenue and deductions.</p>
         </div>
 
         {/* Date Range Filters */}
@@ -192,7 +192,7 @@ export const RevenueReportPage = () => {
                   )}
                 >
                   <CalendarIcon className="mr-2 h-4 w-4" />
-                  {customStartDate ? format(customStartDate, 'dd/MM/yyyy', { locale: localeId }) : 'Pilih tanggal mulai'}
+                  {customStartDate ? format(customStartDate, 'dd/MM/yyyy', { locale: localeEn }) : 'Select start date'}
                 </Button>
               </PopoverTrigger>
               <PopoverContent className="w-auto p-0" align="start">
@@ -220,7 +220,7 @@ export const RevenueReportPage = () => {
                   )}
                 >
                   <CalendarIcon className="mr-2 h-4 w-4" />
-                  {customEndDate ? format(customEndDate, 'dd/MM/yyyy', { locale: localeId }) : 'Pilih tanggal akhir'}
+                  {customEndDate ? format(customEndDate, 'dd/MM/yyyy', { locale: localeEn }) : 'Select end date'}
                 </Button>
               </PopoverTrigger>
               <PopoverContent className="w-auto p-0" align="start">
@@ -241,13 +241,13 @@ export const RevenueReportPage = () => {
 
         {/* Date Range Display */}
         <div className="text-center py-2">
-          <p className="text-sm text-gray-500">Senin - Senin</p>
+          <p className="text-sm text-gray-500">Selected period</p>
           <p className="text-lg font-medium text-gray-700">{displayDateRange()}</p>
         </div>
       </div>
 
       {isLoading ? (
-        <SectionLoading text="Memuat data..." />
+        <SectionLoading text="Loading data..." />
       ) : (
         <>
           {/* Gross Profit Section */}
@@ -257,14 +257,14 @@ export const RevenueReportPage = () => {
                 <div className="w-8 h-8 rounded-full bg-green-500 flex items-center justify-center">
                   <TrendingUp className="h-5 w-5 text-white" />
                 </div>
-                Pendapatan kotor
+                Gross Revenue
               </CardTitle>
             </CardHeader>
             <CardContent className="pt-6">
               <div className="space-y-4">
                 {Object.entries(revenueSummary?.paymentMethods || {}).map(([method, amount]) => (
                   <div key={method} className="flex justify-between items-center">
-                    <span className="text-gray-600">Pembayaran {paymentMethodLabels[method]}</span>
+                    <span className="text-gray-600">{paymentMethodLabels[method]} payments</span>
                     <span className="font-semibold text-gray-900">{formatCurrency(amount)}</span>
                   </div>
                 ))}
@@ -279,7 +279,7 @@ export const RevenueReportPage = () => {
                 <div className="w-8 h-8 rounded-full bg-red-500 flex items-center justify-center">
                   <TrendingDown className="h-5 w-5 text-white" />
                 </div>
-                Potongan
+                Deductions
               </CardTitle>
             </CardHeader>
             <CardContent className="pt-6">
@@ -298,7 +298,7 @@ export const RevenueReportPage = () => {
           <Card className="border-0 shadow-sm bg-gradient-to-br from-blue-50 to-indigo-50">
             <CardContent className="pt-6">
               <div className="flex justify-between items-center">
-                <span className="text-xl font-bold text-gray-900">Pendapatan bersih</span>
+                <span className="text-xl font-bold text-gray-900">Net Revenue</span>
                 <span className="text-2xl font-bold text-blue-600">
                   {formatCurrency(revenueSummary?.netProfit || 0)}
                 </span>

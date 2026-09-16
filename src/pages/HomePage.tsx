@@ -31,14 +31,14 @@ import {
 } from 'lucide-react';
 
 const getGreeting = (hour: number) => {
-  if (hour < 10) return 'Selamat pagi';
-  if (hour < 15) return 'Selamat siang';
-  if (hour < 18) return 'Selamat sore';
-  return 'Selamat malam';
+  if (hour < 10) return 'Good morning';
+  if (hour < 15) return 'Good afternoon';
+  if (hour < 18) return 'Good evening';
+  return 'Good evening';
 };
 
 export const HomePage: React.FC = () => {
-  usePageTitle('Beranda - Smart Laundry POS');
+  usePageTitle('Home - Smart Laundry POS');
   const { currentStore, isOwner } = useStore();
   const { user } = useAuth();
   const isMobile = useIsMobile();
@@ -49,7 +49,7 @@ export const HomePage: React.FC = () => {
   const { shouldShowCoachmark, hideCoachmark } = useCoachmark();
 
   const formatCurrency = (amount: number) => {
-    return new Intl.NumberFormat('id-ID', {
+    return new Intl.NumberFormat('en-IN', {
       style: 'currency',
       currency: 'IDR',
       minimumFractionDigits: 0,
@@ -65,10 +65,10 @@ export const HomePage: React.FC = () => {
           <CardContent>
             <Building2 className="h-16 w-16 mx-auto mb-4 text-gray-300" />
             <h2 className="text-xl font-semibold text-gray-900 mb-2">
-              Tidak Ada Toko Dipilih
+              No Store Selected
             </h2>
             <p className="text-gray-600 mb-4">
-              Silakan pilih toko untuk melihat data dashboard.
+              Please select a store to view dashboard data.
             </p>
           </CardContent>
         </Card>
@@ -90,29 +90,29 @@ export const HomePage: React.FC = () => {
   const onboardingSteps = [
     {
       id: 'store',
-      title: 'Buat toko',
-      description: 'Toko Anda sudah siap digunakan.',
+      title: 'Create your store',
+      description: 'Your store is ready to use.',
       done: true,
       onClick: () => navigate('/stores'),
     },
     {
       id: 'services',
-      title: 'Siapkan layanan',
-      description: 'Tambahkan layanan laundry beserta harganya.',
+      title: 'Set up services',
+      description: 'Add laundry services and their prices.',
       done: !!activation?.hasServices,
       onClick: () => navigate('/services'),
     },
     {
       id: 'order',
-      title: 'Buat pesanan pertama',
-      description: 'Catat pesanan laundry pertama Anda.',
+      title: 'Create your first order',
+      description: 'Record your first laundry order.',
       done: !!activation?.hasOrder,
       onClick: () => navigate('/pos'),
     },
     {
       id: 'customer',
-      title: 'Tambah pelanggan',
-      description: 'Simpan data pelanggan untuk pemesanan berikutnya.',
+      title: 'Add a customer',
+      description: 'Save customer details for faster future orders.',
       done: !!activation?.hasCustomer,
       onClick: () => navigate('/customers'),
     },
@@ -121,7 +121,7 @@ export const HomePage: React.FC = () => {
   const quickActions = [
     {
       id: 'new-order',
-      title: 'Buat Pesanan',
+      title: 'Create Order',
       icon: Plus,
       color: 'text-rose-400',
       bgColor: 'bg-rose-50',
@@ -129,7 +129,7 @@ export const HomePage: React.FC = () => {
     },
     {
       id: 'order-list',
-      title: 'Daftar Pesanan',
+      title: 'Order List',
       icon: ClipboardList,
       color: 'text-rose-400',
       bgColor: 'bg-rose-50',
@@ -137,7 +137,7 @@ export const HomePage: React.FC = () => {
     },
     {
       id: 'customers',
-      title: 'Pelanggan',
+      title: 'Customers',
       icon: Users,
       color: 'text-rose-400',
       bgColor: 'bg-rose-50',
@@ -145,7 +145,7 @@ export const HomePage: React.FC = () => {
     },
     {
       id: 'services',
-      title: 'Layanan',
+      title: 'Services',
       icon: Wrench,
       color: 'text-rose-400',
       bgColor: 'bg-rose-50',
@@ -154,7 +154,7 @@ export const HomePage: React.FC = () => {
     },
     {
       id: 'expenses',
-      title: 'Pengeluaran',
+      title: 'Expenses',
       icon: Package,
       color: 'text-rose-400',
       bgColor: 'bg-rose-50',
@@ -162,7 +162,7 @@ export const HomePage: React.FC = () => {
     },
     {
       id: 'cancelled-orders',
-      title: 'Pesanan Batal',
+      title: 'Cancelled Orders',
       icon: XCircle,
       color: 'text-rose-400',
       bgColor: 'bg-rose-50',
@@ -173,18 +173,18 @@ export const HomePage: React.FC = () => {
   // Grid excludes "new-order" - it's promoted to a full-width hero button instead.
   const gridActions = quickActions.filter((action) => action.id !== 'new-order');
 
-  // Full app menu shown in the "Lainnya" bottom sheet - includes items already
+  // Full app menu shown in the "Other" bottom sheet - includes items already
   // visible above (Home, grid actions) plus owner-only sections not otherwise
-  // reachable from this page (mirrors the sidebar's Kelola section).
+  // reachable from this page (mirrors the sidebar's Manage section).
   const moreMenuItems = [
-    { id: 'home', title: 'Beranda', icon: HomeIcon, onClick: () => navigate('/home') },
-    { id: 'new-order', title: 'Buat Pesanan', icon: Plus, onClick: () => navigate('/pos') },
+    { id: 'home', title: 'Home', icon: HomeIcon, onClick: () => navigate('/home') },
+    { id: 'new-order', title: 'Create Order', icon: Plus, onClick: () => navigate('/pos') },
     ...gridActions.map((action) => ({ id: action.id, title: action.title, icon: action.icon, onClick: action.onClick })),
     ...(isOwner
       ? [
-          { id: 'stores', title: 'Manajemen Toko', icon: Building2, onClick: () => navigate('/stores') },
-          { id: 'whatsapp-broadcast', title: 'Broadcast WhatsApp', icon: MessageSquare, onClick: () => navigate('/whatsapp-broadcast') },
-          { id: 'revenue-report', title: 'Laporan Pendapatan', icon: TrendingUp, onClick: () => navigate('/revenue-report') },
+          { id: 'stores', title: 'Store Management', icon: Building2, onClick: () => navigate('/stores') },
+          { id: 'whatsapp-broadcast', title: 'WhatsApp Broadcast', icon: MessageSquare, onClick: () => navigate('/whatsapp-broadcast') },
+          { id: 'revenue-report', title: 'Revenue Reports', icon: TrendingUp, onClick: () => navigate('/revenue-report') },
         ]
       : []),
   ];
@@ -194,14 +194,14 @@ export const HomePage: React.FC = () => {
   const desktopBottomNavItems = [
     {
       id: 'home',
-      title: 'Beranda',
+      title: 'Home',
       icon: HomeIcon,
       active: true,
       onClick: () => navigate('/home')
     },
     {
       id: 'orders',
-      title: 'Buat Pesanan',
+      title: 'Create Order',
       icon: Plus,
       active: false,
       onClick: () => navigate('/pos')
@@ -209,21 +209,21 @@ export const HomePage: React.FC = () => {
     isOwner
       ? {
           id: 'reports',
-          title: 'Laporan',
+          title: 'Reports',
           icon: TrendingUp,
           active: false,
           onClick: () => navigate('/revenue-report')
         }
       : {
           id: 'reports',
-          title: 'Riwayat',
+          title: 'History',
           icon: History,
           active: false,
           onClick: () => navigate('/order-history')
         },
     {
       id: 'settings',
-      title: 'Toko',
+      title: 'Store',
       icon: Building2,
       active: false,
       onClick: () => navigate('/stores'),
@@ -261,7 +261,7 @@ export const HomePage: React.FC = () => {
       
       {/* Header with coral/salmon background */}
       <div className="bg-gradient-to-r from-rose-400 to-rose-500 text-white px-4 pt-8 pb-12 rounded-b-3xl shadow-lg">
-        <h1 className="text-2xl font-bold text-center">Beranda</h1>
+        <h1 className="text-2xl font-bold text-center">Home</h1>
       </div>
 
       <div className="px-4 -mt-6 space-y-4 pb-6">
@@ -275,9 +275,9 @@ export const HomePage: React.FC = () => {
               <div className="flex-1 min-w-0">
                 <h2 className="text-xl font-bold text-gray-900 mb-1">{currentStore.store_name}</h2>
                 <p className="text-sm text-gray-600 line-clamp-2 mb-1">
-                  {currentStore.store_address || 'Alamat tidak tersedia'}
+                  {currentStore.store_address || 'Address not available'}
                 </p>
-                <p className="text-sm text-gray-600">{currentStore.store_phone || 'Telepon tidak tersedia'}</p>
+                <p className="text-sm text-gray-600">{currentStore.store_phone || 'Phone not available'}</p>
               </div>
             </div>
           </CardContent>
@@ -288,13 +288,13 @@ export const HomePage: React.FC = () => {
           <Card className="shadow-lg border-0">
             <CardContent className="p-5">
               <div className="mb-1 flex items-center justify-between">
-                <h3 className="text-base font-bold text-gray-900">Mulai Cepat</h3>
+                <h3 className="text-base font-bold text-gray-900">Quick Start</h3>
                 <span className="text-xs font-medium text-rose-500">
-                  {activation!.completedSteps}/{activation!.totalSteps} selesai
+                  {activation!.completedSteps}/{activation!.totalSteps} completed
                 </span>
               </div>
               <p className="mb-3 text-sm text-gray-500">
-                Selesaikan langkah berikut untuk mulai menerima pesanan.
+                Complete the following steps to start accepting orders.
               </p>
 
               {/* Progress bar */}
@@ -339,7 +339,7 @@ export const HomePage: React.FC = () => {
                 className="mt-4 w-full bg-rose-500 hover:bg-rose-600"
               >
                 <Plus className="mr-1 h-4 w-4" />
-                Buat Pesanan Pertama
+                Create Your First Order
               </Button>
             </CardContent>
           </Card>
@@ -348,7 +348,7 @@ export const HomePage: React.FC = () => {
             <Card className="shadow-md border-0">
               <CardContent className="p-4">
                 <div className="flex items-start justify-between mb-2">
-                  <p className="text-xs text-gray-600">Pendapatan Hari Ini</p>
+                  <p className="text-xs text-gray-600">Today's Revenue</p>
                   <TrendingUp className="h-4 w-4 text-green-500" />
                 </div>
                 <p className="text-lg font-bold text-gray-900">
@@ -356,7 +356,7 @@ export const HomePage: React.FC = () => {
                 </p>
                 {todayIncomeChange !== 0 && (
                   <p className={`text-xs mt-1 ${todayIncomeChange >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                    {todayIncomeChange >= 0 ? '↑' : '↓'} {Math.abs(todayIncomeChange)}% dari kemarin
+                    {todayIncomeChange >= 0 ? '↑' : '↓'} {Math.abs(todayIncomeChange)}% from yesterday
                   </p>
                 )}
               </CardContent>
@@ -365,7 +365,7 @@ export const HomePage: React.FC = () => {
             <Card className="shadow-md border-0">
               <CardContent className="p-4">
                 <div className="flex items-start justify-between mb-2">
-                  <p className="text-xs text-gray-600">Pengeluaran Hari Ini</p>
+                  <p className="text-xs text-gray-600">Today's Expenses</p>
                   <TrendingDown className="h-4 w-4 text-orange-500" />
                 </div>
                 <p className="text-lg font-bold text-gray-900">
@@ -383,7 +383,7 @@ export const HomePage: React.FC = () => {
             className="mt-6 flex w-full items-center justify-center gap-2 rounded-2xl bg-rose-500 px-4 py-4 font-semibold text-white shadow-md transition-shadow hover:shadow-lg active:scale-[0.99]"
           >
             <Plus className="h-5 w-5" />
-            Buat Pesanan Baru
+            Create New Order
           </button>
         )}
 

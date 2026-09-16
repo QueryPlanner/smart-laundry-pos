@@ -19,7 +19,7 @@ interface RecentOrdersProps {
 }
 
 const formatCurrency = (amount: number) => {
-  return new Intl.NumberFormat('id-ID', {
+  return new Intl.NumberFormat('en-IN', {
     style: 'currency',
     currency: 'IDR',
     minimumFractionDigits: 0,

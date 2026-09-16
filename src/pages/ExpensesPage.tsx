@@ -22,25 +22,25 @@ import {
 } from '@/hooks/useRevenue';
 import { SectionLoading } from '@/components/ui/loading-spinner';
 import { format, subDays, startOfDay, endOfDay } from 'date-fns';
-import { id as localeId } from 'date-fns/locale';
+import { enUS as localeEn } from 'date-fns/locale';
 import { cn } from '@/lib/utils';
 
 type DateRangePreset = 'today' | '7days' | '1month' | 'all';
 
 const dateRangePresets = [
-  { value: 'today' as DateRangePreset, label: 'Hari ini' },
-  { value: '7days' as DateRangePreset, label: '7 hari' },
-  { value: '1month' as DateRangePreset, label: '1 bulan' },
-  { value: 'all' as DateRangePreset, label: 'Semua' },
+  { value: 'today' as DateRangePreset, label: 'Today' },
+  { value: '7days' as DateRangePreset, label: '7 days' },
+  { value: '1month' as DateRangePreset, label: '1 month' },
+  { value: 'all' as DateRangePreset, label: 'All' },
 ];
 
 const categoryLabels: Record<string, string> = {
-  detergent: 'Deterjen',
+  detergent: 'Detergent',
   gas: 'Gas',
-  electricity: 'Token Listrik',
-  promo: 'Promo',
-  maintenance: 'Perawatan',
-  other: 'Lainnya',
+  electricity: 'Electricity Credit',
+  promo: 'Promotion',
+  maintenance: 'Maintenance',
+  other: 'Other',
 };
 
 const categoryColors: Record<string, string> = {
@@ -92,7 +92,7 @@ const getDateRange = (preset: DateRangePreset) => {
 };
 
 export const ExpensesPage = () => {
-  usePageTitle('Pengeluaran');
+  usePageTitle('Expenses');
 
   const [selectedPreset, setSelectedPreset] = useState<DateRangePreset>('1month');
   const [showCreateDialog, setShowCreateDialog] = useState(false);
@@ -113,7 +113,7 @@ export const ExpensesPage = () => {
   const totalExpenses = expenses.reduce((sum, expense) => sum + Number(expense.amount || 0), 0);
 
   const formatCurrency = (amount: number) => {
-    return new Intl.NumberFormat('id-ID', {
+    return new Intl.NumberFormat('en-IN', {
       style: 'currency',
       currency: 'IDR',
       minimumFractionDigits: 0,
@@ -128,7 +128,7 @@ export const ExpensesPage = () => {
     if (formData.amount <= 0) {
       toast({
         title: "Error",
-        description: "Jumlah pengeluaran harus lebih dari 0",
+        description: "Expense amount must be greater than 0",
         variant: "destructive",
       });
       return;
@@ -166,7 +166,7 @@ export const ExpensesPage = () => {
   };
 
   const handleDelete = async (expenseId: string) => {
-    if (!confirm('Apakah Anda yakin ingin menghapus pengeluaran ini?')) {
+    if (!confirm('Are you sure you want to delete this expense?')) {
       return;
     }
 
@@ -195,8 +195,8 @@ export const ExpensesPage = () => {
       {/* Page Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-bold">Pengeluaran</h1>
-          <p className="text-muted-foreground">Kelola pengeluaran operasional usaha Anda</p>
+          <h1 className="text-3xl font-bold">Expenses</h1>
+          <p className="text-muted-foreground">Manage your business operating expenses</p>
         </div>
         <Button
           onClick={openCreateDialog}
@@ -204,7 +204,7 @@ export const ExpensesPage = () => {
           disabled={isProcessing}
         >
           <Plus className="h-4 w-4" />
-          <span>Tambah Pengeluaran</span>
+          <span>Add Expenses</span>
         </Button>
       </div>
 
@@ -232,10 +232,10 @@ export const ExpensesPage = () => {
         <CardContent className="p-6">
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-sm text-rose-600 font-medium">Total Pengeluaran</p>
+              <p className="text-sm text-rose-600 font-medium">Total Expenses</p>
               <p className="text-3xl font-bold text-rose-700">{formatCurrency(totalExpenses)}</p>
               <p className="text-sm text-rose-500 mt-1">
-                {expenses.length} transaksi
+                {expenses.length} transactions
               </p>
             </div>
             <div className="w-16 h-16 bg-rose-100 rounded-full flex items-center justify-center">
@@ -246,7 +246,7 @@ export const ExpensesPage = () => {
       </Card>
 
       {/* Loading State */}
-      {loading && <SectionLoading text="Memuat pengeluaran..." />}
+      {loading && <SectionLoading text="Loading expenses..." />}
 
       {/* Error State */}
       {error && (
@@ -255,9 +255,9 @@ export const ExpensesPage = () => {
             <div className="flex items-center space-x-2">
               <AlertCircle className="h-5 w-5 text-red-600" />
               <div>
-                <h3 className="font-medium text-red-800">Error memuat pengeluaran</h3>
+                <h3 className="font-medium text-red-800">Error loading expenses</h3>
                 <p className="text-sm text-red-600">
-                  Silakan coba refresh halaman atau hubungi dukungan jika masalah berlanjut.
+                  Please refresh the page or contact support if the problem continues.
                 </p>
               </div>
             </div>
@@ -272,13 +272,13 @@ export const ExpensesPage = () => {
             <Card>
               <CardContent className="p-8 text-center">
                 <Package className="h-12 w-12 mx-auto mb-4 text-muted-foreground" />
-                <h3 className="text-lg font-medium mb-2">Tidak ada pengeluaran</h3>
+                <h3 className="text-lg font-medium mb-2">No expenses</h3>
                 <p className="text-muted-foreground mb-4">
-                  Belum ada pengeluaran yang tercatat untuk periode ini.
+                  No expenses have been recorded for this period.
                 </p>
                 <Button onClick={openCreateDialog}>
                   <Plus className="h-4 w-4 mr-2" />
-                  Tambah Pengeluaran
+                  Add Expenses
                 </Button>
               </CardContent>
             </Card>
@@ -294,7 +294,7 @@ export const ExpensesPage = () => {
                             {categoryLabels[expense.category]}
                           </Badge>
                           <span className="text-sm text-muted-foreground">
-                            {format(new Date(expense.expense_date), 'dd MMM yyyy', { locale: localeId })}
+                            {format(new Date(expense.expense_date), 'dd MMM yyyy', { locale: localeEn })}
                           </span>
                         </div>
                         {expense.description && (
@@ -339,14 +339,14 @@ export const ExpensesPage = () => {
         <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle>
-              {editingExpense ? 'Edit Pengeluaran' : 'Tambah Pengeluaran Baru'}
+              {editingExpense ? 'Edit Expense' : 'Add New Expense'}
             </DialogTitle>
           </DialogHeader>
 
           <form onSubmit={handleSubmit} className="space-y-4">
             {/* Category */}
             <div>
-              <Label htmlFor="category">Kategori*</Label>
+              <Label htmlFor="category">Category*</Label>
               <Select
                 value={formData.category}
                 onValueChange={(value: ExpenseFormData['category']) => 
@@ -357,19 +357,19 @@ export const ExpensesPage = () => {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="detergent">Deterjen</SelectItem>
+                  <SelectItem value="detergent">Detergent</SelectItem>
                   <SelectItem value="gas">Gas</SelectItem>
-                  <SelectItem value="electricity">Token Listrik</SelectItem>
-                  <SelectItem value="promo">Promo</SelectItem>
-                  <SelectItem value="maintenance">Perawatan</SelectItem>
-                  <SelectItem value="other">Lainnya</SelectItem>
+                  <SelectItem value="electricity">Electricity Credit</SelectItem>
+                  <SelectItem value="promo">Promotion</SelectItem>
+                  <SelectItem value="maintenance">Maintenance</SelectItem>
+                  <SelectItem value="other">Other</SelectItem>
                 </SelectContent>
               </Select>
             </div>
 
             {/* Amount */}
             <div>
-              <Label htmlFor="amount">Jumlah (Rp)*</Label>
+              <Label htmlFor="amount">Quantity (Rp)*</Label>
               <Input
                 id="amount"
                 type="number"
@@ -387,7 +387,7 @@ export const ExpensesPage = () => {
 
             {/* Date */}
             <div>
-              <Label>Tanggal*</Label>
+              <Label>Date*</Label>
               <Popover open={showDatePicker} onOpenChange={setShowDatePicker}>
                 <PopoverTrigger asChild>
                   <Button
@@ -399,8 +399,8 @@ export const ExpensesPage = () => {
                   >
                     <Calendar className="mr-2 h-4 w-4" />
                     {formData.expense_date 
-                      ? format(new Date(formData.expense_date), 'dd MMMM yyyy', { locale: localeId }) 
-                      : 'Pilih tanggal'}
+                      ? format(new Date(formData.expense_date), 'dd MMMM yyyy', { locale: localeEn })
+                      : 'Select date'}
                   </Button>
                 </PopoverTrigger>
                 <PopoverContent className="w-auto p-0" align="start">
@@ -424,12 +424,12 @@ export const ExpensesPage = () => {
 
             {/* Description */}
             <div>
-              <Label htmlFor="description">Keterangan</Label>
+              <Label htmlFor="description">Description</Label>
               <Textarea
                 id="description"
                 value={formData.description || ''}
                 onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-                placeholder="Keterangan pengeluaran (opsional)"
+                placeholder="Expense description (optional)"
                 rows={3}
               />
             </div>
@@ -442,10 +442,10 @@ export const ExpensesPage = () => {
                 onClick={() => setShowCreateDialog(false)}
                 disabled={isProcessing}
               >
-                Batal
+                Cancel
               </Button>
               <Button type="submit" disabled={isProcessing}>
-                {isProcessing ? 'Menyimpan...' : editingExpense ? 'Perbarui' : 'Simpan'}
+                {isProcessing ? 'Saving...' : editingExpense ? 'Update' : 'Save'}
               </Button>
             </div>
           </form>

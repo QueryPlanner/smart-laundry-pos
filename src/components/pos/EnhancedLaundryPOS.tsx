@@ -71,7 +71,7 @@ export const EnhancedLaundryPOS = () => {
   // no live read on.
   const queueOrderOffline = async (orderData: CreateOrderData): Promise<{ id: string; points_earned?: number }> => {
     if (!currentStore?.enable_offline_mode) {
-      toast.error('❌ Toko belum mengaktifkan mode offline. Sambungkan internet untuk membuat pesanan.', {
+      toast.error('❌ This store has not enabled offline mode. Connect to the internet to create an order.', {
         style: ORDER_ERROR_TOAST_STYLE,
       });
       throw new Error('OFFLINE_MODE_DISABLED');
@@ -91,7 +91,7 @@ export const EnhancedLaundryPOS = () => {
         })
       );
 
-      toast.success('Pesanan disimpan offline - akan sinkron otomatis saat koneksi kembali', {
+      toast.success('Order saved offline - it will sync automatically when the connection returns', {
         duration: 4000,
       });
 
@@ -103,7 +103,7 @@ export const EnhancedLaundryPOS = () => {
         // Any other failure (e.g. an IndexedDB write/quota error) means the
         // order was neither queued nor created - staff must be told, not
         // just left with a dialog that quietly closes.
-        toast.error('❌ Gagal menyimpan pesanan offline. Silakan coba lagi.', {
+        toast.error('❌ Failed to save the order offline. Please try again.', {
           style: ORDER_ERROR_TOAST_STYLE,
         });
       }
@@ -170,11 +170,11 @@ export const EnhancedLaundryPOS = () => {
     const isTomorrow = date.toDateString() === new Date(now.getTime() + 24 * 60 * 60 * 1000).toDateString();
     
     if (isToday) {
-      return `Hari ini pukul ${date.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })}`;
+      return `Today at ${date.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}`;
     } else if (isTomorrow) {
-      return `Besok pukul ${date.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })}`;
+      return `Tomorrow at ${date.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}`;
     } else {
-      return date.toLocaleDateString('id-ID', {
+      return date.toLocaleDateString('en-IN', {
         month: 'short',
         day: 'numeric',
         hour: '2-digit',
@@ -309,7 +309,7 @@ export const EnhancedLaundryPOS = () => {
   // Confirm an add-to-cart with a short toast - the cart panel itself is
   // collapsed by default, so a silent state update is easy to miss.
   const notifyItemAdded = (itemName: string) => {
-    toast.success(`${itemName} ditambahkan ke pesanan`, {
+    toast.success(`${itemName} added to the order`, {
       duration: 1600,
       className: 'border border-pos-success/30 bg-pos-success/10 text-foreground',
     });
@@ -579,7 +579,7 @@ export const EnhancedLaundryPOS = () => {
 
     // Show toast notification for points earned if applicable
     if (createdOrder.points_earned && createdOrder.points_earned > 0) {
-      toast.success(`🎉 Pelanggan mendapat +${createdOrder.points_earned} poin!`, {
+      toast.success(`🎉 Customer earned +${createdOrder.points_earned} points!`, {
         style: {
           minWidth: '320px',
           maxWidth: '500px',
@@ -640,7 +640,7 @@ export const EnhancedLaundryPOS = () => {
   };
 
   if (servicesLoading) {
-    return <SectionLoading text="Memuat layanan..." />;
+    return <SectionLoading text="Loading services..." />;
   }
 
   if (servicesError) {
@@ -649,9 +649,9 @@ export const EnhancedLaundryPOS = () => {
         <CardContent className="p-4">
           <div className="flex items-center justify-between">
             <div>
-              <h3 className="font-medium text-destructive">Gagal memuat layanan</h3>
+              <h3 className="font-medium text-destructive">Failed to load services</h3>
               <p className="text-sm text-destructive/80">
-                Silakan coba refresh halaman atau hubungi dukungan.
+                Please refresh the page or contact support.
               </p>
             </div>
             <Button
@@ -683,15 +683,15 @@ export const EnhancedLaundryPOS = () => {
                 {!isOnline && (
                   <p className={failedSyncCount > 0 ? 'text-destructive' : 'text-pos-warning'}>
                     {currentStore?.enable_offline_mode
-                      ? 'Anda sedang offline - pesanan baru disimpan di perangkat dan akan tersinkron otomatis saat koneksi kembali.'
-                      : 'Anda sedang offline - toko ini belum mengaktifkan mode offline, jadi pesanan baru belum bisa dibuat sampai koneksi kembali.'}
+                      ? 'You are offline - new orders are saved on the device and synced automatically when the connection returns.'
+                      : 'You are offline - this store has not enabled offline mode, so new orders cannot be created until the connection returns.'}
                   </p>
                 )}
                 {pendingSyncCount > 0 && (
-                  <p className="text-muted-foreground">{pendingSyncCount} pesanan menunggu sinkronisasi</p>
+                  <p className="text-muted-foreground">{pendingSyncCount} orders awaiting synchronization</p>
                 )}
                 {failedSyncCount > 0 && (
-                  <p className="font-medium text-destructive">{failedSyncCount} pesanan gagal sinkron - perlu ditinjau di Riwayat Pesanan</p>
+                  <p className="font-medium text-destructive">{failedSyncCount} orders failed to sync - review them in Order History</p>
                 )}
               </div>
             </div>
@@ -705,9 +705,9 @@ export const EnhancedLaundryPOS = () => {
           <CardContent className="p-3 sm:p-4">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div>
-                <h3 className="font-medium text-pos-warning">Belum ada layanan yang dikonfigurasi</h3>
+                <h3 className="font-medium text-pos-warning">No services configured</h3>
                 <p className="text-sm text-pos-warning/80">
-                  Tambahkan layanan untuk mulai menerima pesanan. Muat contoh layanan untuk langsung mulai.
+                  Add services to start accepting orders. Load sample services to get started immediately.
                 </p>
               </div>
               <div className="flex flex-shrink-0 gap-2">
@@ -716,14 +716,14 @@ export const EnhancedLaundryPOS = () => {
                   disabled={seedDefaultServices.isPending}
                   className="bg-pos-warning text-white hover:bg-pos-warning/90"
                 >
-                  {seedDefaultServices.isPending ? 'Memuat...' : 'Muat Contoh Layanan'}
+                  {seedDefaultServices.isPending ? 'Loading...' : 'Load Sample Services'}
                 </Button>
                 <Button
                   variant="outline"
                   onClick={() => navigate('/services')}
                   className="border-pos-warning/40 text-pos-warning hover:bg-pos-warning/10"
                 >
-                  Kelola Layanan
+                  Manage Services
                 </Button>
               </div>
             </div>
@@ -736,7 +736,7 @@ export const EnhancedLaundryPOS = () => {
         <CardHeader className="p-3 pb-2 sm:p-6 sm:pb-4">
           <CardTitle className="flex items-center gap-1.5 text-base sm:gap-2 sm:text-lg">
             <User className="h-4 w-4 flex-shrink-0 text-primary sm:h-5 sm:w-5" />
-            Informasi Pelanggan
+            Customer Information
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-3 p-3 pt-0 sm:space-y-4 sm:p-6 sm:pt-0">
@@ -744,7 +744,7 @@ export const EnhancedLaundryPOS = () => {
             <div>
               <div className="flex items-center justify-between mb-1.5 sm:mb-2">
                 <label className="text-xs font-medium text-muted-foreground sm:text-sm">
-                  Nomor Telepon
+                  Phone Number
                 </label>
                 {customerPhone && customerName && (
                   <Button
@@ -754,7 +754,7 @@ export const EnhancedLaundryPOS = () => {
                     className="h-6 px-2 text-xs text-muted-foreground hover:text-foreground"
                   >
                     <X className="h-3 w-3 mr-1" />
-                    Bersihkan
+                    Clear
                   </Button>
                 )}
               </div>
@@ -764,7 +764,7 @@ export const EnhancedLaundryPOS = () => {
                   <CheckCircle className="h-4 w-4 absolute right-3 top-3 text-pos-success" />
                 )}
                 <Input
-                  placeholder="No. HP atau nama pelanggan"
+                  placeholder="Phone number or customer name"
                   value={customerPhone}
                   onChange={(e) => {
                     const newValue = e.target.value;
@@ -802,17 +802,17 @@ export const EnhancedLaundryPOS = () => {
             </div>
             <div>
               <label className="mb-1.5 block text-xs font-medium text-muted-foreground sm:mb-2 sm:text-sm">
-                Nama Pelanggan
+                Customer Name
               </label>
               <Input
-                placeholder="Masukkan nama pelanggan..."
+                placeholder="Enter customer name..."
                 value={customerName}
                 onChange={(e) => setCustomerName(e.target.value)}
               />
             </div>
             <div className="md:col-span-2">
               <label className="mb-1.5 block text-xs font-medium text-muted-foreground sm:mb-2 sm:text-sm">
-                Tanggal & Waktu Terima
+                Drop-off Date & Time
               </label>
               <Input
                 type="datetime-local"
@@ -837,7 +837,7 @@ export const EnhancedLaundryPOS = () => {
                 className="w-full"
               />
               <p className="mt-1 text-[11px] text-muted-foreground sm:text-xs">
-                Ini mempengaruhi estimasi waktu selesai untuk semua layanan
+                This affects the estimated completion time for all services
               </p>
             </div>
           </div>
@@ -846,7 +846,7 @@ export const EnhancedLaundryPOS = () => {
             <div className="flex items-center justify-between gap-2 rounded-lg border border-pos-success/30 bg-pos-success/10 p-2.5 sm:p-3">
               <div className="flex items-center gap-1.5 text-xs font-medium text-pos-success sm:text-sm">
                 <CheckCircle2 className="h-4 w-4 flex-shrink-0" />
-                Pelanggan siap
+                Customer ready
               </div>
               <Button
                 type="button"
@@ -855,7 +855,7 @@ export const EnhancedLaundryPOS = () => {
                 onClick={() => serviceSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
                 className="gap-1.5"
               >
-                Pilih Layanan
+                Select Services
                 <ArrowDown className="h-3.5 w-3.5" />
               </Button>
             </div>
@@ -873,7 +873,7 @@ export const EnhancedLaundryPOS = () => {
             >
               <span className="flex items-center gap-1.5 text-sm font-semibold sm:gap-2 sm:text-base">
                 <Plus className="h-4 w-4 flex-shrink-0" />
-                Tambah Layanan & Item
+                Add Service & Item
               </span>
               <ChevronDown
                 className={`h-4 w-4 flex-shrink-0 text-muted-foreground transition-transform ${isServiceSectionExpanded ? 'rotate-180' : ''}`}

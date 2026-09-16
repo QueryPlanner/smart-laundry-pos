@@ -92,27 +92,27 @@ export const AppSidebar: React.FC = () => {
   // Main navigation items
   const mainMenuItems = [
     {
-      title: 'Beranda',
+      title: 'Home',
       icon: Home,
       path: '/home',
     },
     {
-      title: 'Order Baru',
+      title: 'New Order',
       icon: Plus,
       path: '/pos',
     },
     {
-      title: 'Riwayat Order',
+      title: 'Order History',
       icon: History,
       path: '/order-history',
     },
     {
-      title: 'Pelanggan',
+      title: 'Customers',
       icon: Users,
       path: '/customers',
     },
     {
-      title: 'Pengeluaran',
+      title: 'Expenses',
       icon: Wallet,
       path: '/expenses',
     },
@@ -121,22 +121,22 @@ export const AppSidebar: React.FC = () => {
   // Owner-only menu items
   const ownerMenuItems = [
     {
-      title: 'Layanan',
+      title: 'Services',
       icon: Wrench,
       path: '/services',
     },
     {
-      title: 'Manajemen Toko',
+      title: 'Store Management',
       icon: Building2,
       path: '/stores',
     },
     {
-      title: 'Broadcast WhatsApp',
+      title: 'WhatsApp Broadcast',
       icon: MessageSquare,
       path: '/whatsapp-broadcast',
     },
     {
-      title: 'Laporan Pendapatan',
+      title: 'Revenue Reports',
       icon: TrendingUp,
       path: '/revenue-report',
     },
@@ -160,7 +160,7 @@ export const AppSidebar: React.FC = () => {
       <SidebarContent>
         {/* Main Navigation */}
         <SidebarGroup>
-          <SidebarGroupLabel>Menu Utama</SidebarGroupLabel>
+          <SidebarGroupLabel>Main Menu</SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
               {mainMenuItems.map((item) => (
@@ -181,15 +181,15 @@ export const AppSidebar: React.FC = () => {
 
         {/* Quick Actions */}
         <SidebarGroup>
-          <SidebarGroupLabel>Aksi Cepat</SidebarGroupLabel>
+          <SidebarGroupLabel>Quick Actions</SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
               <SidebarMenuItem>
                 <AddCustomerDialog
                   trigger={
-                    <SidebarMenuButton tooltip="Tambah Pelanggan">
+                    <SidebarMenuButton tooltip="Add Customers">
                       <UserPlus className="h-4 w-4" />
-                      <span>Tambah Pelanggan</span>
+                      <span>Add Customers</span>
                     </SidebarMenuButton>
                   }
                 />
@@ -208,7 +208,7 @@ export const AppSidebar: React.FC = () => {
                 <CollapsibleTrigger className="flex w-full items-center justify-between">
                   <span className="flex items-center gap-2">
                     <Settings className="h-4 w-4" />
-                    Kelola
+                    Manage
                   </span>
                   <ChevronDown className="h-4 w-4 transition-transform group-data-[state=open]/collapsible:rotate-180" />
                 </CollapsibleTrigger>
@@ -237,7 +237,7 @@ export const AppSidebar: React.FC = () => {
 
         {/* Settings Section */}
         <SidebarGroup>
-          <SidebarGroupLabel>Pengaturan</SidebarGroupLabel>
+          <SidebarGroupLabel>Settings</SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
               {!Capacitor.isNativePlatform() && (
@@ -245,19 +245,19 @@ export const AppSidebar: React.FC = () => {
                   <SidebarMenuButton
                     onClick={() => handleNavigation('/install')}
                     isActive={location.pathname === '/install'}
-                    tooltip="Install Aplikasi"
+                    tooltip="Install App"
                   >
                     <Smartphone className="h-4 w-4" />
-                    <span>Install Aplikasi</span>
+                    <span>Install App</span>
                   </SidebarMenuButton>
                 </SidebarMenuItem>
               )}
               <SidebarMenuItem>
                 <ChangePasswordDialog
                   trigger={
-                    <SidebarMenuButton tooltip="Ubah Password">
+                    <SidebarMenuButton tooltip="Change Password">
                       <KeyRound className="h-4 w-4" />
-                      <span>Ubah Password</span>
+                      <span>Change Password</span>
                     </SidebarMenuButton>
                   }
                 />
@@ -284,7 +284,7 @@ export const AppSidebar: React.FC = () => {
                       {user.full_name || user.email?.split('@')[0] || 'User'}
                     </span>
                     <span className="text-xs text-muted-foreground truncate w-full">
-                      {user.role === 'laundry_owner' ? 'Pemilik' : 'Karyawan'}
+                      {user.role === 'laundry_owner' ? 'Owner' : 'Staff'}
                     </span>
                   </div>
                   {currentStore && (
@@ -312,7 +312,7 @@ export const AppSidebar: React.FC = () => {
                 <DropdownMenuSeparator />
                 <DropdownMenuItem onClick={handleSignOut}>
                   <LogOut className="h-4 w-4 mr-2" />
-                  Keluar
+                  Sign Out
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>

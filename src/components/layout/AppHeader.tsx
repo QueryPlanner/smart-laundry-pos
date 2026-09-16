@@ -113,42 +113,42 @@ export const AppHeader: React.FC = () => {
                 <DropdownMenuContent align="start" className="w-48">
                   <DropdownMenuItem onClick={handleHomeNavigation}>
                     <Home className="h-4 w-4 mr-2" />
-                    Beranda
+                    Home
                   </DropdownMenuItem>
                   <DropdownMenuItem onClick={handlePOSNavigation}>
                     <Plus className="h-4 w-4 mr-2" />
-                    Order Baru
+                    New Order
                   </DropdownMenuItem>
                   <DropdownMenuItem onClick={handleHistoryNavigation}>
                     <History className="h-4 w-4 mr-2" />
-                    Riwayat Order
+                    Order History
                   </DropdownMenuItem>
                   <DropdownMenuItem onClick={handleCustomersNavigation}>
                     <Users className="h-4 w-4 mr-2" />
-                    Pelanggan
+                    Customers
                   </DropdownMenuItem>
                   <DropdownMenuItem onClick={handleExpensesNavigation}>
                     <Wallet className="h-4 w-4 mr-2" />
-                    Pengeluaran
+                    Expenses
                   </DropdownMenuItem>
                   {isOwner && (
                     <>
                       <DropdownMenuSeparator />
                       <DropdownMenuItem onClick={handleServicesNavigation}>
                         <Wrench className="h-4 w-4 mr-2" />
-                        Layanan
+                        Services
                       </DropdownMenuItem>
                       <DropdownMenuItem onClick={handleStoresNavigation}>
                         <Building2 className="h-4 w-4 mr-2" />
-                        Manajemen Toko
+                        Store Management
                       </DropdownMenuItem>
                       <DropdownMenuItem onClick={handleWhatsAppBroadcastNavigation}>
                         <MessageSquare className="h-4 w-4 mr-2" />
-                        Broadcast WhatsApp
+                        WhatsApp Broadcast
                       </DropdownMenuItem>
                       <DropdownMenuItem onClick={handleRevenueReportNavigation}>
                         <TrendingUp className="h-4 w-4 mr-2" />
-                        Laporan Pendapatan
+                        Revenue Reports
                       </DropdownMenuItem>
                     </>
                   )}
@@ -180,7 +180,7 @@ export const AppHeader: React.FC = () => {
               }`}
             >
               <Home className="h-4 w-4" />
-              <span>Beranda</span>
+              <span>Home</span>
             </Button>
 
             <Button
@@ -194,7 +194,7 @@ export const AppHeader: React.FC = () => {
               }`}
             >
               <Plus className="h-4 w-4" />
-              <span>Order Baru</span>
+              <span>New Order</span>
             </Button>
 
             <Button
@@ -208,7 +208,7 @@ export const AppHeader: React.FC = () => {
               }`}
             >
               <History className="h-4 w-4" />
-              <span>Riwayat</span>
+              <span>History</span>
             </Button>
 
             <Button
@@ -222,7 +222,7 @@ export const AppHeader: React.FC = () => {
               }`}
             >
               <Users className="h-4 w-4" />
-              <span>Pelanggan</span>
+              <span>Customers</span>
             </Button>
 
             <Button
@@ -236,7 +236,7 @@ export const AppHeader: React.FC = () => {
               }`}
             >
               <Wallet className="h-4 w-4" />
-              <span>Pengeluaran</span>
+              <span>Expenses</span>
             </Button>
 
             {/* Owner-only Navigation - Consolidated Dropdown */}
@@ -253,36 +253,36 @@ export const AppHeader: React.FC = () => {
                     }`}
                   >
                     <Settings className="h-4 w-4" />
-                    <span>Kelola</span>
+                    <span>Manage</span>
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end" className="w-56">
-                  <DropdownMenuLabel>Manajemen</DropdownMenuLabel>
+                  <DropdownMenuLabel>Management</DropdownMenuLabel>
                   <DropdownMenuSeparator />
                   <DropdownMenuItem onClick={handleServicesNavigation}>
                     <Wrench className="h-4 w-4 mr-2" />
-                    Layanan
+                    Services
                     {location.pathname === '/services' && (
                       <Check className="h-4 w-4 ml-auto text-blue-600" />
                     )}
                   </DropdownMenuItem>
                   <DropdownMenuItem onClick={handleStoresNavigation}>
                     <Building2 className="h-4 w-4 mr-2" />
-                    Manajemen Toko
+                    Store Management
                     {location.pathname === '/stores' && (
                       <Check className="h-4 w-4 ml-auto text-blue-600" />
                     )}
                   </DropdownMenuItem>
                   <DropdownMenuItem onClick={handleWhatsAppBroadcastNavigation}>
                     <MessageSquare className="h-4 w-4 mr-2" />
-                    Broadcast WhatsApp
+                    WhatsApp Broadcast
                     {location.pathname === '/whatsapp-broadcast' && (
                       <Check className="h-4 w-4 ml-auto text-blue-600" />
                     )}
                   </DropdownMenuItem>
                   <DropdownMenuItem onClick={handleRevenueReportNavigation}>
                     <TrendingUp className="h-4 w-4 mr-2" />
-                    Laporan Pendapatan
+                    Revenue Reports
                     {location.pathname === '/revenue-report' && (
                       <Check className="h-4 w-4 ml-auto text-blue-600" />
                     )}
@@ -307,7 +307,7 @@ export const AppHeader: React.FC = () => {
                 trigger={
                   <Button variant="default" size="sm" className="h-9 px-3 bg-blue-600 text-white hover:bg-blue-700">
                     <UserPlus className="h-4 w-4 sm:mr-2" />
-                    <span className="hidden sm:inline">Tambah Pelanggan</span>
+                    <span className="hidden sm:inline">Add Customers</span>
                   </Button>
                 }
               />
@@ -334,7 +334,7 @@ export const AppHeader: React.FC = () => {
                       {user.email}
                     </p>
                     <p className="text-xs leading-none text-muted-foreground capitalize">
-                      {user.role === 'laundry_owner' ? 'Pemilik' : 'Karyawan'}
+                      {user.role === 'laundry_owner' ? 'Owner' : 'Staff'}
                     </p>
                     {currentStore && (
                       <Badge variant="secondary" className="w-fit text-xs">
@@ -346,7 +346,7 @@ export const AppHeader: React.FC = () => {
                 <DropdownMenuSeparator />
                 {isOwner && (
                   <div className="md:hidden">
-                    <DropdownMenuLabel>Ganti Toko</DropdownMenuLabel>
+                    <DropdownMenuLabel>Switch Store</DropdownMenuLabel>
                     {userStores.map((store) => (
                       <DropdownMenuItem
                         key={store.store_id}
@@ -367,7 +367,7 @@ export const AppHeader: React.FC = () => {
                         </div>
                         <div className="flex flex-col items-end gap-1 flex-shrink-0">
                           {store.is_owner && (
-                            <Badge variant="secondary" className="text-xs">Pemilik</Badge>
+                            <Badge variant="secondary" className="text-xs">Owner</Badge>
                           )}
                           {currentStore?.store_id === store.store_id && (
                             <Check className="h-3 w-3 text-primary" />
@@ -386,7 +386,7 @@ export const AppHeader: React.FC = () => {
                         onSelect={(e) => e.preventDefault()}
                       >
                         <UserPlus className="h-4 w-4 mr-2" />
-                        Tambah Pelanggan
+                        Add Customers
                       </DropdownMenuItem>
                     }
                   />
@@ -394,24 +394,24 @@ export const AppHeader: React.FC = () => {
                 </div>
                 <DropdownMenuItem onClick={() => navigate('/install')}>
                   <Smartphone className="h-4 w-4 mr-2" />
-                  Install Aplikasi
+                  Install App
                 </DropdownMenuItem>
                 <ChangePasswordDialog
                   trigger={
                     <DropdownMenuItem onSelect={(e) => e.preventDefault()}>
                       <KeyRound className="h-4 w-4 mr-2" />
-                      Ubah Password
+                      Change Password
                     </DropdownMenuItem>
                   }
                 />
                 <DropdownMenuItem>
                   <Settings className="h-4 w-4 mr-2" />
-                  Pengaturan
+                  Settings
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem onClick={handleSignOut}>
                   <LogOut className="h-4 w-4 mr-2" />
-                  Keluar
+                  Sign Out
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>

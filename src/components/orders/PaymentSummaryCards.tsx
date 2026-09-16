@@ -51,7 +51,7 @@ export const PaymentSummaryCards: React.FC<PaymentSummaryCardsProps> = ({ orders
   }, [orders]);
 
   const formatCurrency = (amount: number) => {
-    return new Intl.NumberFormat('id-ID', {
+    return new Intl.NumberFormat('en-IN', {
       style: 'currency',
       currency: 'IDR',
       minimumFractionDigits: 0,
@@ -61,7 +61,7 @@ export const PaymentSummaryCards: React.FC<PaymentSummaryCardsProps> = ({ orders
 
   const summaryCards = [
     {
-      title: 'Total Dibayar',
+      title: 'Total Paid',
       value: metrics.totalPaid,
       icon: Wallet,
       bgColor: 'bg-green-50',
@@ -77,7 +77,7 @@ export const PaymentSummaryCards: React.FC<PaymentSummaryCardsProps> = ({ orders
       textColor: 'text-orange-700',
     },
     {
-      title: 'Dibayar QRIS',
+      title: 'Paid via QRIS',
       value: metrics.totalQris,
       icon: QrCode,
       bgColor: 'bg-blue-50',
@@ -85,7 +85,7 @@ export const PaymentSummaryCards: React.FC<PaymentSummaryCardsProps> = ({ orders
       textColor: 'text-blue-700',
     },
     {
-      title: 'Dibayar Tunai',
+      title: 'Paid in Cash',
       value: metrics.totalCash,
       icon: Banknote,
       bgColor: 'bg-purple-50',

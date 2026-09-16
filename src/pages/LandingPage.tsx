@@ -55,56 +55,56 @@ const features = [
   {
     serial: '0231',
     icon: Zap,
-    title: 'Input Order Super Cepat',
-    description: 'Timbang, pilih layanan, cetak — antrian pagi tidak lagi menumpuk di meja kasir.',
+    title: 'Super-Fast Order Entry',
+    description: 'Weigh, select a service, and print — morning queues no longer pile up at the counter.',
   },
   {
     serial: '0454',
     icon: Receipt,
-    title: 'Struk & e-Struk Otomatis',
-    description: 'Setiap transaksi keluar dengan nota rapi, lengkap dengan berat dan rincian harga.',
+    title: 'Automatic Receipts & E-Receipts',
+    description: 'Every transaction produces a neat receipt with the weight and price breakdown.',
   },
   {
     serial: '0512',
     icon: MessageSquare,
-    title: 'Notifikasi WhatsApp Real-time',
-    description: 'Pelanggan tahu persis kapan cucian siap diambil, tanpa mereka harus telepon dulu.',
+    title: 'Notifications WhatsApp Real-time',
+    description: 'Customers know exactly when their laundry is ready for pickup, without having to call first.',
   },
   {
     serial: '0687',
     icon: BarChart3,
-    title: 'Dashboard Omzet & Laporan Harian',
-    description: 'Uang masuk, kinerja outlet, dan jam sibuk terbaca dalam satu layar.',
+    title: 'Revenue Dashboard & Daily Reports',
+    description: 'Revenue, outlet performance, and peak hours are visible on one screen.',
   },
   {
     serial: '0733',
     icon: Store,
-    title: 'Multi-outlet & Multi-kasir',
-    description: 'Buka cabang kedua, ketiga, keempat — datanya tetap satu sistem, bukan satu buku per toko.',
+    title: 'Multi-Outlet & Multi-Cashier',
+    description: 'Open a second, third, or fourth branch — all data stays in one system, not one notebook per store.',
   },
   {
     serial: '0810',
     icon: Gift,
-    title: 'Smart Point untuk Pelanggan Loyal',
-    description: 'Poin terkumpul otomatis tiap transaksi, jadi alasan pelanggan balik ke toko kamu lagi.',
+    title: 'Smart Points for Loyal Customers',
+    description: 'Points accumulate automatically with every transaction, giving customers another reason to return.',
   },
   {
     serial: '0902',
     icon: Megaphone,
-    title: 'Broadcast Promo ke Pelanggan',
-    description: 'Kirim info promo ke seluruh daftar pelanggan lewat WhatsApp, sekali klik.',
+    title: 'Broadcast Promotions to Customers',
+    description: 'Send promotions to your entire customer list through WhatsApp with one click.',
   },
 ];
 
 const benefits = [
-  'Dukungan manajemen multi-toko',
-  'Pelacakan pesanan real-time',
-  'Kalkulasi harga otomatis',
-  'Sistem notifikasi pelanggan',
-  'Manajemen inventori',
-  'Pelaporan keuangan',
-  'Tools manajemen staff',
-  'Dukungan mode offline',
+  'Multi-store management',
+  'Real-time order tracking',
+  'Automatic price calculation',
+  'Customer notification system',
+  'Inventory management',
+  'Financial reporting',
+  'Staff management tools',
+  'Offline mode support',
 ];
 
 const comparisonRows: {
@@ -116,92 +116,92 @@ const comparisonRows: {
   note?: { qasir?: string; pawoon?: string; majoo?: string };
 }[] = [
   {
-    feature: 'Dioptimalkan untuk bisnis laundry',
+    feature: 'Optimized for laundry businesses',
     smart: 'yes',
     qasir: 'no',
     pawoon: 'no',
     majoo: 'no',
-    note: { qasir: 'POS umum', pawoon: 'POS umum', majoo: 'POS umum' },
+    note: { qasir: 'General POS', pawoon: 'General POS', majoo: 'General POS' },
   },
-  { feature: 'Input laundry cepat (per kg / item)', smart: 'yes', qasir: 'no', pawoon: 'no', majoo: 'no' },
+  { feature: 'Fast laundry entry (per kg / item)', smart: 'yes', qasir: 'no', pawoon: 'no', majoo: 'no' },
   {
-    feature: 'Struk + e-struk laundry',
+    feature: 'Laundry receipts + e-receipts',
     smart: 'yes',
     qasir: 'partial',
     pawoon: 'partial',
     majoo: 'partial',
-    note: { qasir: 'Dasar', pawoon: 'Dasar', majoo: 'Dasar' },
+    note: { qasir: 'Basic', pawoon: 'Basic', majoo: 'Basic' },
   },
   {
-    feature: 'Loyalty khusus laundry (Smart Point)',
+    feature: 'Laundry-specific loyalty (Smart Point)',
     smart: 'yes',
     qasir: 'no',
     pawoon: 'no',
     majoo: 'yes',
-    note: { majoo: 'Poin umum' },
+    note: { majoo: 'Universal points' },
   },
-  { feature: 'Notifikasi WhatsApp otomatis', smart: 'yes', qasir: 'no', pawoon: 'no', majoo: 'no' },
+  { feature: 'Automatic WhatsApp notifications', smart: 'yes', qasir: 'no', pawoon: 'no', majoo: 'no' },
   {
-    feature: 'Broadcast promo pelanggan',
+    feature: 'Customer promotion broadcasts',
     smart: 'yes',
     qasir: 'partial',
     pawoon: 'partial',
     majoo: 'partial',
-    note: { qasir: 'Manual', pawoon: 'Manual', majoo: 'Terbatas' },
+    note: { qasir: 'Manual', pawoon: 'Manual', majoo: 'Limited' },
   },
   { feature: 'Multi-outlet laundry', smart: 'yes', qasir: 'partial', pawoon: 'yes', majoo: 'yes' },
-  { feature: 'Tracking status cucian', smart: 'yes', qasir: 'no', pawoon: 'no', majoo: 'no' },
-  { feature: 'Antrean & label laundry', smart: 'yes', qasir: 'no', pawoon: 'no', majoo: 'no' },
+  { feature: 'Laundry status tracking', smart: 'yes', qasir: 'no', pawoon: 'no', majoo: 'no' },
+  { feature: 'Laundry queue & labels', smart: 'yes', qasir: 'no', pawoon: 'no', majoo: 'no' },
   {
-    feature: 'Harga ramah UMKM',
+    feature: 'Small-business-friendly pricing',
     smart: 'yes',
     qasir: 'yes',
     pawoon: 'no',
     majoo: 'no',
-    note: { pawoon: 'Lebih mahal', majoo: 'Lebih mahal' },
+    note: { pawoon: 'More expensive', majoo: 'More expensive' },
   },
 ];
 
 const faqs: { question: string; answer: string }[] = [
   {
-    question: 'Apakah Smart Laundry POS gratis digunakan?',
+    question: 'Is Smart Laundry POS free to use?',
     answer:
-      'Ya. Smart Laundry POS bisa langsung dipakai gratis tanpa kartu kredit dan tanpa kontrak jangka panjang. Setup awal toko hanya butuh sekitar 5 menit.',
+      'Yes. Smart Laundry POS is free to use immediately, with no credit card or long-term contract required. Initial store setup takes about 5 minutes.',
   },
   {
-    question: 'Apakah bisa dipakai tanpa koneksi internet?',
+    question: 'Can it be used without an internet connection?',
     answer:
-      'Bisa. Smart Laundry POS mendukung mode offline sehingga input pesanan tetap jalan saat sinyal internet di toko sedang tidak stabil, lalu data tersinkron otomatis saat koneksi kembali.',
+      'Yes. Smart Laundry POS supports offline mode, so order entry keeps working when the store connection is unstable and data syncs automatically when connectivity returns.',
   },
   {
-    question: 'Apakah mendukung laundry kiloan, satuan, dan kombinasi?',
+    question: 'Does it support by-weight, per-item, and combined laundry?',
     answer:
-      'Mendukung ketiganya. Layanan kiloan dihitung dari berat (kg), layanan satuan dihitung per item (misalnya sepatu atau bed cover), dan layanan kombinasi menggabungkan berat sekaligus jumlah item dalam satu pesanan.',
+      'It supports all three. By-weight services are calculated from weight (kg), per-item services from the number of items (such as shoes or bed covers), and combined services use both weight and item quantity in one order.',
   },
   {
-    question: 'Bisakah dipakai untuk lebih dari satu cabang atau outlet laundry?',
+    question: 'Can it be used for more than one laundry branch or outlet?',
     answer:
-      'Bisa. Smart Laundry POS mendukung multi-outlet dan multi-kasir dalam satu sistem yang sama, jadi pemilik usaha bisa memantau semua cabang tanpa perlu buku catatan terpisah per toko.',
+      'Yes. Smart Laundry POS supports multiple outlets and cashiers in one system, so business owners can monitor every branch without separate notebooks.',
   },
   {
-    question: 'Apakah pelanggan dapat notifikasi otomatis saat cucian selesai?',
+    question: 'Do customers get an automatic notification when laundry is finished?',
     answer:
-      'Ya. Pesanan yang statusnya berubah menjadi siap diambil bisa mengirim notifikasi WhatsApp otomatis ke pelanggan, sehingga mereka tidak perlu menelepon toko untuk menanyakan progres cucian.',
+      'Yes. Orders that change to ready for pickup can automatically notify customers on WhatsApp, so they do not need to call the store for an update.',
   },
   {
-    question: 'Apa bedanya Smart Laundry POS dengan aplikasi kasir umum seperti Qasir, Pawoon, atau Majoo?',
+    question: 'How is Smart Laundry POS different from general POS apps such as Qasir, Pawoon, or Majoo?',
     answer:
-      'Aplikasi kasir umum dibuat untuk toko kelontong atau restoran lalu dipaksakan untuk laundry. Smart Laundry POS dibangun khusus untuk alur kerja laundry: timbang, hitung harga per kg/unit otomatis, lacak status cucian, dan kirim notifikasi WhatsApp — fitur yang biasanya tidak ada di POS umum.',
+      'General POS apps are built for grocery stores or restaurants and then adapted for laundry. Smart Laundry POS is designed for the laundry workflow: weigh items, calculate per-kg/unit prices automatically, track laundry status, and send WhatsApp notifications — features general POS apps typically lack.',
   },
   {
-    question: 'Apakah Smart Laundry POS punya sistem poin loyalitas pelanggan?',
+    question: 'Does Smart Laundry POS include a customer loyalty points system?',
     answer:
-      'Punya. Fitur Smart Point mengumpulkan poin secara otomatis untuk transaksi yang sudah lunas, jika pemilik toko mengaktifkan fitur ini di menu pengaturan (nonaktif secara default).',
+      'Yes. Smart Point automatically awards points for paid transactions when the store owner enables it in Settings (disabled by default).',
   },
   {
-    question: 'Perlu instal aplikasi khusus atau bisa langsung dipakai dari HP?',
+    question: 'Do I need a special app, or can I use it directly from my phone?',
     answer:
-      'Tidak perlu unduh dari app store. Smart Laundry POS berjalan di browser dan bisa dipasang sebagai aplikasi (PWA) langsung dari layar utama HP, tablet, atau komputer — mendukung Android, iOS, Windows, dan Mac.',
+      'No app-store download is needed. Smart Laundry POS runs in a browser and can be installed as an app (PWA) directly from the home screen on phones, tablets, or computers — supporting Android, iOS, Windows, and Mac.',
   },
 ];
 
@@ -226,9 +226,9 @@ export const LandingPage: React.FC = () => {
   // index.html already ships these as the default (matches this page), but this
   // keeps them pinned to "/" when the SPA navigates back here from /login or /install.
   usePageMeta({
-    title: 'Smart Laundry POS - Sistem Kasir Modern untuk Laundry Indonesia',
+    title: 'Smart Laundry POS - Modern POS System for Laundry Businesses',
     description:
-      'Sistem Point of Sale (POS) modern untuk bisnis laundry di Indonesia. Kelola pesanan, pelanggan, dan pembayaran dengan mudah. Aplikasi mobile, cloud-based, dan bisa diinstall seperti aplikasi native.',
+      'A modern Point of Sale (POS) system for laundry businesses in Indonesia. Easily manage orders, customers, and payments. Mobile, cloud-based, and installable like a native app.',
     path: '/',
   });
 
@@ -248,8 +248,8 @@ export const LandingPage: React.FC = () => {
                 <span className="block text-base sm:text-lg font-bold text-[var(--tk-graphite)] truncate">
                   Smart Laundry POS
                 </span>
-                <p className="text-[0.7rem] tk-mono tracking-wide text-[var(--tk-graphite-soft)] hidden sm:block">
-                  SISTEM KASIR LAUNDRY
+              <p className="text-[0.7rem] tk-mono tracking-wide text-[var(--tk-graphite-soft)] hidden sm:block">
+                  LAUNDRY POS SYSTEM
                 </p>
               </div>
             </div>
@@ -273,7 +273,7 @@ export const LandingPage: React.FC = () => {
                 onClick={() => navigate('/login')}
                 className="inline-flex items-center px-4 sm:px-5 py-2 text-sm sm:text-base font-semibold rounded-sm bg-[var(--tk-ink)] text-[var(--tk-paper)] hover:bg-[var(--tk-graphite)] transition-colors"
               >
-                Masuk
+                Sign In
               </button>
             </div>
           </div>
@@ -286,27 +286,27 @@ export const LandingPage: React.FC = () => {
           <div className="tk-hero-ticket rounded-sm overflow-hidden">
             <div className="tk-hero-barcode" />
             <div className="flex items-center justify-between px-6 sm:px-10 py-3 border-b border-dashed border-[var(--tk-line)] tk-mono text-xs sm:text-sm text-[var(--tk-graphite-soft)] tracking-widest uppercase">
-              <span>Nota Laundry — Aplikasi Kasir</span>
+              <span>Laundry Receipt — POS App</span>
               <span>No. 00142</span>
             </div>
 
             <div className="px-6 sm:px-10 py-10 sm:py-14">
-              <span className="tk-eyebrow mb-6">Untuk Laundry Kiloan &amp; Satuan</span>
+              <span className="tk-eyebrow mb-6">For By-Weight &amp; Per-Item Laundry</span>
 
               <h1 className="text-[2.1rem] leading-[1.12] sm:text-5xl sm:leading-[1.1] lg:text-6xl font-bold text-[var(--tk-graphite)] mb-6 max-w-3xl">
-                Kasir laundry yang jalan secepat antrian pagi.
+                A laundry POS that moves as fast as the morning queue.
               </h1>
               <p className="text-lg sm:text-xl text-[var(--tk-ink-soft)] mb-3 max-w-2xl">
-                Smart Laundry POS mencatat berat, harga, dan status cucian dari input sampai diambil
-                pelanggan — bukan aplikasi kasir umum yang dipaksa-paskan untuk laundry.
+                Smart Laundry POS tracks weight, pricing, and laundry status from intake to pickup
+                — not a general POS forced into a laundry workflow.
               </p>
               <p className="text-base sm:text-lg text-[var(--tk-graphite-soft)] mb-8 max-w-2xl">
-                Tanpa nota tulis tangan yang gampang hilang. Tanpa hitung manual di kalkulator.
+                No handwritten receipts to lose. No manual calculator work.
               </p>
 
               <div className="flex flex-wrap gap-x-8 gap-y-3 mb-9 tk-mono text-sm">
                 <div>
-                  <div className="text-[var(--tk-graphite-soft)] text-xs tracking-widest uppercase">Berat</div>
+                  <div className="text-[var(--tk-graphite-soft)] text-xs tracking-widest uppercase">Weight</div>
                   <div className="font-bold text-[var(--tk-graphite)] text-lg">2.4 KG</div>
                 </div>
                 <div>
@@ -314,7 +314,7 @@ export const LandingPage: React.FC = () => {
                   <div className="font-bold text-[var(--tk-graphite)] text-lg">Rp 24.000</div>
                 </div>
                 <div className="flex items-end">
-                  <span className="tk-stamp">Siap Diambil</span>
+                  <span className="tk-stamp">Ready for Pickup</span>
                 </div>
               </div>
 
@@ -323,21 +323,21 @@ export const LandingPage: React.FC = () => {
                   onClick={() => navigate('/login?tab=signup')}
                   className="inline-flex items-center justify-center gap-2 px-7 py-4 text-base sm:text-lg font-bold rounded-sm bg-[var(--tk-ink)] text-[var(--tk-paper)] hover:bg-[var(--tk-graphite)] transition-colors"
                 >
-                  Ambil Tiket Gratis
+                  Get Your Free Ticket
                   <ArrowRight className="h-5 w-5" />
                 </button>
                 <a
-                  href="#fitur"
+                  href="#features"
                   className="inline-flex items-center justify-center gap-2 px-7 py-4 text-base sm:text-lg font-semibold rounded-sm border border-[var(--tk-ink)] text-[var(--tk-ink)] hover:bg-[rgba(35,50,74,0.05)] transition-colors"
                 >
-                  Lihat Cara Kerja
+                  See How It Works
                 </a>
               </div>
             </div>
           </div>
 
           <p className="text-center mt-6 text-sm sm:text-base text-[var(--tk-graphite-soft)] tk-mono">
-            GRATIS DIPAKAI &middot; TANPA KARTU KREDIT &middot; SIAP PAKAI DALAM 5 MENIT
+            FREE TO USE &middot; NO CREDIT CARD &middot; READY IN 5 MINUTES
           </p>
         </div>
       </section>
@@ -348,12 +348,12 @@ export const LandingPage: React.FC = () => {
       <section className="py-16 sm:py-24 px-4 sm:px-6 lg:px-8">
         <div className="max-w-7xl mx-auto">
           <div className="text-center mb-14">
-            <span className="tk-eyebrow mb-5">Tampilan Asli</span>
+            <span className="tk-eyebrow mb-5">The Real Interface</span>
             <h2 className="text-3xl md:text-4xl font-bold text-[var(--tk-graphite)] mb-4">
-              Dari meja kasir ke genggaman tangan
+              From the Counter to Your Hand
             </h2>
             <p className="text-lg text-[var(--tk-ink-soft)] max-w-2xl mx-auto">
-              Dari ringkasan toko sampai bikin pesanan baru, semua langsung dari HP kasir.
+              From store summaries to new orders, everything is available from the cashier's phone.
             </p>
           </div>
 
@@ -363,12 +363,12 @@ export const LandingPage: React.FC = () => {
               <div className="tk-stub__num">No. 0021</div>
               <div className="flex items-center gap-2 mb-5">
                 <Smartphone className="h-5 w-5 text-[var(--tk-ink)]" />
-                <h3 className="text-lg font-bold text-[var(--tk-graphite)]">Ringkasan Toko</h3>
+                <h3 className="text-lg font-bold text-[var(--tk-graphite)]">Store Summary</h3>
               </div>
               <div className="relative bg-[var(--tk-paper-soft)] overflow-hidden border-8 border-[var(--tk-graphite)] rounded-2xl aspect-[9/19] max-h-[420px] mx-auto">
                 <img
                   src="/screenshots/mobile-1.png"
-                  alt="Dashboard Smart Laundry POS di HP"
+                  alt="Smart Laundry POS dashboard on a phone"
                   className="w-full h-full object-cover"
                   onError={(e) => {
                     const target = e.target as HTMLImageElement;
@@ -377,8 +377,8 @@ export const LandingPage: React.FC = () => {
                     if (parent) {
                       parent.innerHTML = `
                         <div class="flex flex-col items-center justify-center h-full text-[var(--tk-graphite-soft)] p-8">
-                          <p class="text-center text-base font-medium">Aplikasi POS Mobile</p>
-                          <p class="text-center text-sm mt-2">Kelola pesanan dari smartphone Anda</p>
+                          <p class="text-center text-base font-medium">Mobile POS App</p>
+                          <p class="text-center text-sm mt-2">Manage orders from your smartphone</p>
                         </div>
                       `;
                     }
@@ -388,15 +388,15 @@ export const LandingPage: React.FC = () => {
               <div className="mt-6 grid grid-cols-3 gap-3 text-center tk-mono">
                 <div>
                   <Zap className="h-4 w-4 mx-auto mb-1 text-[var(--tk-ink)]" />
-                  <div className="text-xs text-[var(--tk-graphite-soft)]">Cepat</div>
+                  <div className="text-xs text-[var(--tk-graphite-soft)]">Fast</div>
                 </div>
                 <div>
                   <Smartphone className="h-4 w-4 mx-auto mb-1 text-[var(--tk-ink)]" />
-                  <div className="text-xs text-[var(--tk-graphite-soft)]">Ramah Sentuh</div>
+                  <div className="text-xs text-[var(--tk-graphite-soft)]">Touch Friendly</div>
                 </div>
                 <div>
                   <Wifi className="h-4 w-4 mx-auto mb-1 text-[var(--tk-ink)]" />
-                  <div className="text-xs text-[var(--tk-graphite-soft)]">Mode Offline</div>
+                  <div className="text-xs text-[var(--tk-graphite-soft)]">Offline Mode</div>
                 </div>
               </div>
             </div>
@@ -406,12 +406,12 @@ export const LandingPage: React.FC = () => {
               <div className="tk-stub__num">No. 0022</div>
               <div className="flex items-center gap-2 mb-5">
                 <ClipboardList className="h-5 w-5 text-[var(--tk-ink)]" />
-                <h3 className="text-lg font-bold text-[var(--tk-graphite)]">Buat Pesanan</h3>
+                <h3 className="text-lg font-bold text-[var(--tk-graphite)]">Create Order</h3>
               </div>
               <div className="relative bg-[var(--tk-paper-soft)] overflow-hidden border-8 border-[var(--tk-graphite)] rounded-2xl aspect-[9/19] max-h-[420px] mx-auto">
                 <img
                   src="/screenshots/mobile-2.png"
-                  alt="Layar pilih layanan saat membuat pesanan baru"
+                  alt="Service selection screen for creating a new order"
                   className="w-full h-full object-cover"
                   onError={(e) => {
                     const target = e.target as HTMLImageElement;
@@ -420,8 +420,8 @@ export const LandingPage: React.FC = () => {
                     if (parent) {
                       parent.innerHTML = `
                         <div class="flex flex-col items-center justify-center h-full text-[var(--tk-graphite-soft)] p-8">
-                          <p class="text-center text-lg font-medium">Buat Pesanan Baru</p>
-                          <p class="text-center text-sm mt-2">Pilih layanan langsung dari smartphone</p>
+                          <p class="text-center text-lg font-medium">Create New Order</p>
+                          <p class="text-center text-sm mt-2">Select a service directly from your smartphone</p>
                         </div>
                       `;
                     }
@@ -431,15 +431,15 @@ export const LandingPage: React.FC = () => {
               <div className="mt-6 grid grid-cols-3 gap-3 text-center tk-mono">
                 <div>
                   <BarChart3 className="h-4 w-4 mx-auto mb-1 text-[var(--tk-ink)]" />
-                  <div className="text-xs text-[var(--tk-graphite-soft)]">Kalkulasi Otomatis</div>
+                  <div className="text-xs text-[var(--tk-graphite-soft)]">Automatic Calculation</div>
                 </div>
                 <div>
                   <Zap className="h-4 w-4 mx-auto mb-1 text-[var(--tk-ink)]" />
-                  <div className="text-xs text-[var(--tk-graphite-soft)]">Estimasi Selesai</div>
+                  <div className="text-xs text-[var(--tk-graphite-soft)]">Estimated Completion</div>
                 </div>
                 <div>
                   <Receipt className="h-4 w-4 mx-auto mb-1 text-[var(--tk-ink)]" />
-                  <div className="text-xs text-[var(--tk-graphite-soft)]">Siap Cetak</div>
+                  <div className="text-xs text-[var(--tk-graphite-soft)]">Ready to Print</div>
                 </div>
               </div>
             </div>
@@ -447,7 +447,7 @@ export const LandingPage: React.FC = () => {
 
           <div className="mt-14 text-center">
             <p className="text-base text-[var(--tk-ink-soft)] mb-5">
-              Berfungsi sempurna di smartphone, tablet, dan komputer desktop
+              Works perfectly on smartphones, tablets, and desktop computers
             </p>
             <div className="flex flex-wrap justify-center items-center gap-x-6 gap-y-2 tk-mono text-sm text-[var(--tk-graphite-soft)] uppercase tracking-wide">
               <span>iOS &amp; Android</span>
@@ -463,15 +463,15 @@ export const LandingPage: React.FC = () => {
       <div className="tk-perforation" />
 
       {/* Features */}
-      <section id="fitur" className="py-16 sm:py-24 px-4 sm:px-6 lg:px-8">
+      <section id="features" className="py-16 sm:py-24 px-4 sm:px-6 lg:px-8">
         <div className="max-w-7xl mx-auto">
           <div className="text-center mb-14">
-            <span className="tk-eyebrow mb-5">Isi Tiketnya</span>
+            <span className="tk-eyebrow mb-5">What's on the Ticket</span>
             <h2 className="text-3xl md:text-4xl font-bold text-[var(--tk-graphite)] mb-4">
-              Apa yang kamu dapat dari setiap transaksi
+              What You Get from Every Transaction
             </h2>
             <p className="text-lg text-[var(--tk-ink-soft)] max-w-2xl mx-auto">
-              Tujuh hal yang biasanya hilang di antara buku catatan dan grup WhatsApp toko.
+              Seven things that usually get lost between notebooks and the store's WhatsApp group.
             </p>
           </div>
 
@@ -493,7 +493,7 @@ export const LandingPage: React.FC = () => {
 
           <div className="mt-16 tk-ink-band rounded-sm p-8 sm:p-10 text-center">
             <p className="text-xl sm:text-2xl font-bold mb-1">
-              &ldquo;Bukan sekadar aplikasi kasir — ini sistem pencatatan laundry dari ambil sampai bayar.&rdquo;
+              &ldquo;More than a POS app — this is a laundry record system from pickup to payment.&rdquo;
             </p>
           </div>
         </div>
@@ -505,16 +505,15 @@ export const LandingPage: React.FC = () => {
       <section className="py-16 sm:py-24 px-4 sm:px-6 lg:px-8">
         <div className="max-w-7xl mx-auto">
           <div className="text-center mb-10">
-            <span className="tk-eyebrow mb-5">Dibanding Aplikasi Kasir Umum</span>
+            <span className="tk-eyebrow mb-5">Compared with General POS Apps</span>
             <h2 className="text-3xl md:text-4xl font-bold text-[var(--tk-graphite)] mb-4">
-              Kenapa bukan aplikasi kasir biasa?
+              Why not a regular POS app?
             </h2>
             <p className="text-lg text-[var(--tk-ink-soft)] max-w-2xl mx-auto mb-2">
-              Perbandingan jujur dengan Qasir, Pawoon, dan Majoo — tiga aplikasi kasir umum yang paling
-              sering dipakai UMKM Indonesia.
+              An honest comparison with Qasir, Pawoon, and Majoo — three widely used general POS apps.
             </p>
             <p className="text-sm text-[var(--tk-graphite-soft)] md:hidden tk-mono">
-              Geser tabel untuk melihat lebih banyak &rarr;
+              Swipe the table to see more &rarr;
             </p>
           </div>
 
@@ -523,7 +522,7 @@ export const LandingPage: React.FC = () => {
               <table className="w-full text-left border-collapse">
                 <thead>
                   <tr className="tk-ink-band tk-mono text-xs sm:text-sm uppercase tracking-wide">
-                    <th className="px-4 sm:px-6 py-4 font-semibold">Fitur</th>
+                    <th className="px-4 sm:px-6 py-4 font-semibold">Feature</th>
                     <th className="px-4 sm:px-6 py-4 font-semibold text-center">Smart Laundry POS</th>
                     <th className="px-4 sm:px-6 py-4 font-semibold text-center">Qasir</th>
                     <th className="px-4 sm:px-6 py-4 font-semibold text-center">Pawoon</th>
@@ -557,15 +556,15 @@ export const LandingPage: React.FC = () => {
 
           <div className="mt-8 grid grid-cols-1 md:grid-cols-2 gap-6">
             <div className="bg-[#fffdf8] border border-[var(--tk-line)] border-l-4 border-l-[var(--tk-carbon-deep)] rounded-sm p-6">
-              <p className="font-bold text-[var(--tk-graphite)] mb-2">Aplikasi kasir umum tidak mengerti alur laundry.</p>
+              <p className="font-bold text-[var(--tk-graphite)] mb-2">General POS apps do not understand the laundry workflow.</p>
               <p className="text-[var(--tk-ink-soft)]">
-                Dibuat untuk toko kelontong atau resto, lalu dipaksakan untuk mencatat berat, layanan, dan status cucian.
+                Built for grocery stores or restaurants, then adapted to record weight, services, and laundry status.
               </p>
             </div>
             <div className="bg-[#fffdf8] border border-[var(--tk-line)] border-l-4 border-l-[var(--tk-paid)] rounded-sm p-6">
-              <p className="font-bold text-[var(--tk-graphite)] mb-2">Smart Laundry POS dibangun untuk ekosistem laundry.</p>
+              <p className="font-bold text-[var(--tk-graphite)] mb-2">Smart Laundry POS is built for the laundry ecosystem.</p>
               <p className="text-[var(--tk-ink-soft)]">
-                Setiap fitur mengikuti alur kerja nyata: timbang, catat, notifikasi, ambil, bayar.
+                Every feature follows the real workflow: weigh, record, notify, pick up, pay.
               </p>
             </div>
           </div>
@@ -575,27 +574,27 @@ export const LandingPage: React.FC = () => {
       {/* Emotional hook — ink band */}
       <section className="tk-ink-band py-20 px-4 sm:px-6 lg:px-8">
         <div className="max-w-3xl mx-auto text-center">
-          <span className="tk-eyebrow tk-eyebrow--light mb-8">Sebelum Kamu Lanjut</span>
+          <span className="tk-eyebrow tk-eyebrow--light mb-8">Before You Continue</span>
           <h2 className="text-3xl md:text-4xl font-bold mb-8 leading-tight">
-            Kamu sudah kerja keras bangun usaha laundry ini.
+            You have worked hard to build this laundry business.
           </h2>
           <div className="space-y-3 text-lg sm:text-xl mb-10 opacity-90">
-            <p>Sudah keluar modal beli mesin cuci dan setrika.</p>
-            <p>Sudah latih pegawai supaya cucian rapi dan tepat waktu.</p>
+            <p>You have already invested in washing and ironing equipment.</p>
+            <p>You have already trained staff to deliver neat, on-time laundry.</p>
           </div>
           <div className="border-t border-b border-dashed border-white/25 py-8 mb-10">
             <p className="text-xl sm:text-2xl font-bold mb-3">
-              Tinggal satu hal yang belum rapi: catatannya.
+              Only one thing is still messy: the records.
             </p>
             <p className="text-lg text-[var(--tk-carbon)]">
-              Jangan biarkan nota tulis tangan menahan bisnis yang sudah kamu bangun susah payah.
+              Do not let handwritten tickets hold back the business you worked so hard to build.
             </p>
           </div>
           <button
             onClick={() => navigate('/login?tab=signup')}
             className="inline-flex items-center gap-2 px-8 py-4 text-lg font-bold rounded-sm bg-[var(--tk-paper)] text-[var(--tk-ink)] hover:bg-white transition-colors"
           >
-            Mulai Transformasi Sekarang
+            Start Your Transformation Now
             <ArrowRight className="h-5 w-5" />
           </button>
         </div>
@@ -606,13 +605,13 @@ export const LandingPage: React.FC = () => {
         <div className="max-w-7xl mx-auto">
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-12 items-center">
             <div>
-              <span className="tk-eyebrow mb-6">Solusi Lengkap</span>
+              <span className="tk-eyebrow mb-6">The Complete Solution</span>
               <h2 className="text-3xl md:text-4xl font-bold text-[var(--tk-graphite)] mb-5">
-                Mengapa memilih Smart Laundry POS?
+                Why Choose Smart Laundry POS?
               </h2>
               <p className="text-lg text-[var(--tk-ink-soft)] mb-8">
-                Dibuat khusus untuk bisnis laundry Indonesia dengan metode pembayaran lokal, harga dalam
-                Rupiah, dan fitur-fitur yang penting untuk operasional harian Anda.
+                Built for laundry businesses with local payment methods, Indonesian Rupiah pricing,
+                and the features that matter for daily operations.
               </p>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-3">
                 {benefits.map((benefit) => (
@@ -626,22 +625,22 @@ export const LandingPage: React.FC = () => {
 
             <div className="tk-boarding rounded-sm p-8 sm:p-10">
               <Smartphone className="h-10 w-10 mb-4 text-[var(--tk-carbon)]" />
-              <h3 className="text-2xl font-bold mb-2">Install sebagai Aplikasi Mobile</h3>
+              <h3 className="text-2xl font-bold mb-2">Install as a Mobile App</h3>
               <p className="opacity-80 mb-6">
-                Dapatkan pengalaman mobile lengkap dengan dukungan offline dan akses instan dari layar utama.
+                Get a complete mobile experience with offline support and instant access from your home screen.
               </p>
               <div className="space-y-3 tk-mono text-sm">
                 <div className="flex items-center gap-3">
                   <Wifi className="h-4 w-4 flex-shrink-0" />
-                  <span>Bekerja offline saat diperlukan</span>
+                  <span>Works offline when needed</span>
                 </div>
                 <div className="flex items-center gap-3">
                   <Zap className="h-4 w-4 flex-shrink-0" />
-                  <span>Performa super cepat</span>
+                  <span>Super-fast performance</span>
                 </div>
                 <div className="flex items-center gap-3">
                   <Globe className="h-4 w-4 flex-shrink-0" />
-                  <span>Akses dari mana saja</span>
+                  <span>Access it from anywhere</span>
                 </div>
               </div>
             </div>
@@ -655,12 +654,12 @@ export const LandingPage: React.FC = () => {
       <section id="faq" className="py-16 sm:py-24 px-4 sm:px-6 lg:px-8">
         <div className="max-w-4xl mx-auto">
           <div className="text-center mb-14">
-            <span className="tk-eyebrow mb-5">Pertanyaan yang Sering Diajukan</span>
+            <span className="tk-eyebrow mb-5">Frequently Asked Questions</span>
             <h2 className="text-3xl md:text-4xl font-bold text-[var(--tk-graphite)] mb-4">
-              Yang biasanya ditanyakan pemilik laundry
+              What Laundry Owners Usually Ask
             </h2>
             <p className="text-lg text-[var(--tk-ink-soft)] max-w-2xl mx-auto">
-              Jawaban singkat sebelum kamu memutuskan pindah dari nota tulis tangan.
+              Quick answers before you move on from handwritten tickets.
             </p>
           </div>
 
@@ -678,30 +677,29 @@ export const LandingPage: React.FC = () => {
       {/* CTA */}
       <section className="pb-20 sm:pb-28 px-4 sm:px-6 lg:px-8">
         <div className="max-w-4xl mx-auto text-center bg-[#fffdf8] border border-[var(--tk-line)] rounded-sm p-8 sm:p-14">
-          <span className="tk-eyebrow mb-6">Penawaran untuk Pemilik Toko Baru</span>
+          <span className="tk-eyebrow mb-6">Offer for New Store Owners</span>
           <h2 className="text-3xl md:text-4xl font-bold text-[var(--tk-graphite)] mb-6 leading-tight">
-            Siap modernisasi bisnis laundry Anda?
+            Ready to modernize your laundry business?
           </h2>
           <p className="text-lg text-[var(--tk-ink-soft)] mb-10 max-w-2xl mx-auto">
-            Bergabunglah dengan bisnis laundry yang sudah menggunakan Smart Laundry POS untuk meningkatkan
-            efisiensi dan kepuasan pelanggan.
+            Join laundry businesses using Smart Laundry POS to improve efficiency and customer satisfaction.
           </p>
 
           <div className="grid sm:grid-cols-3 gap-4 mb-10 text-left">
             <div className="tk-stub rounded-sm !p-5">
               <div className="tk-stub__num">A</div>
-              <p className="font-bold text-[var(--tk-graphite)] mb-1">Mulai gratis</p>
-              <p className="text-sm text-[var(--tk-graphite-soft)]">Tidak perlu kartu kredit</p>
+              <p className="font-bold text-[var(--tk-graphite)] mb-1">Start for free</p>
+              <p className="text-sm text-[var(--tk-graphite-soft)]">No credit card required</p>
             </div>
             <div className="tk-stub rounded-sm !p-5">
               <div className="tk-stub__num">B</div>
-              <p className="font-bold text-[var(--tk-graphite)] mb-1">Set-up 5 menit</p>
-              <p className="text-sm text-[var(--tk-graphite-soft)]">Rasakan bedanya hari ini</p>
+              <p className="font-bold text-[var(--tk-graphite)] mb-1">Set up in 5 minutes</p>
+              <p className="text-sm text-[var(--tk-graphite-soft)]">Experience the difference today</p>
             </div>
             <div className="tk-stub rounded-sm !p-5">
               <div className="tk-stub__num">C</div>
-              <p className="font-bold text-[var(--tk-graphite)] mb-1">Langsung mulai</p>
-              <p className="text-sm text-[var(--tk-graphite-soft)]">Tanpa kontrak jangka panjang</p>
+              <p className="font-bold text-[var(--tk-graphite)] mb-1">Get started now</p>
+              <p className="text-sm text-[var(--tk-graphite-soft)]">No long-term contract</p>
             </div>
           </div>
 
@@ -710,11 +708,11 @@ export const LandingPage: React.FC = () => {
               onClick={() => navigate('/login?tab=signup')}
               className="inline-flex items-center gap-2 px-8 sm:px-10 py-4 text-lg font-bold rounded-sm bg-[var(--tk-ink)] text-[var(--tk-paper)] hover:bg-[var(--tk-graphite)] transition-colors"
             >
-              Ambil Tiket Gratis Sekarang
+              Get Your Free Ticket Now
               <ArrowRight className="h-5 w-5" />
             </button>
             <p className="mt-5 text-sm tk-mono uppercase tracking-wide text-[var(--tk-graphite-soft)]">
-              Tanpa biaya setup &middot; Tanpa kontrak &middot; Langsung mulai
+              No setup fee &middot; No contract &middot; Get started now
             </p>
           </div>
         </div>
@@ -732,8 +730,8 @@ export const LandingPage: React.FC = () => {
                 <span className="text-lg font-bold">Smart Laundry POS</span>
               </div>
               <p className="opacity-75 mb-6 max-w-md">
-                Sistem point of sale modern yang dirancang khusus untuk bisnis laundry. Sederhanakan
-                operasional, tingkatkan efisiensi, dan kembangkan bisnis Anda.
+                A modern point-of-sale system built for laundry businesses. Simplify operations,
+                improve efficiency, and grow your business.
               </p>
               <div className="flex flex-col sm:flex-row gap-3 mb-6">
                 <PWAInstallButton
@@ -752,12 +750,12 @@ export const LandingPage: React.FC = () => {
                   className="inline-flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium border border-white/25 rounded-sm hover:bg-white/10 transition-colors"
                 >
                   <AndroidIcon className="h-4 w-4" />
-                  Download APK Android
+                  Download Android APK
                 </a>
               </div>
               <div className="opacity-80 text-sm">
                 <p className="mb-1">
-                  <strong className="opacity-100">Kontak:</strong>{' '}
+                  <strong className="opacity-100">Contact:</strong>{' '}
                   <a
                     href="mailto:fahrudinjaya@gmail.com"
                     className="underline decoration-white/30 hover:decoration-white"
@@ -765,37 +763,37 @@ export const LandingPage: React.FC = () => {
                     fahrudinjaya@gmail.com
                   </a>
                 </p>
-                <p>Untuk pertanyaan, dukungan teknis, atau demo produk</p>
+                <p>For questions, technical support, or a product demo</p>
               </div>
             </div>
 
             <div>
-              <h3 className="tk-mono text-xs uppercase tracking-widest mb-4 opacity-70">Fitur</h3>
+              <h3 className="tk-mono text-xs uppercase tracking-widest mb-4 opacity-70">Features</h3>
               <ul className="space-y-2 opacity-80 text-sm">
-                <li>Manajemen Pesanan</li>
-                <li>Database Pelanggan</li>
-                <li>Proses Pembayaran</li>
-                <li>Laporan &amp; Analitik</li>
-                <li>Dukungan Multi-toko</li>
+                <li>Order Management</li>
+                <li>Customer Database</li>
+                <li>Payment Processing</li>
+                <li>Reports &amp; Analytics</li>
+                <li>Multi-store Support</li>
               </ul>
             </div>
 
             <div>
-              <h3 className="tk-mono text-xs uppercase tracking-widest mb-4 opacity-70">Dukungan</h3>
+              <h3 className="tk-mono text-xs uppercase tracking-widest mb-4 opacity-70">Support</h3>
               <ul className="space-y-2 opacity-80 text-sm">
-                <li>Dokumentasi</li>
-                <li>Tutorial Video</li>
+                <li>Documentation</li>
+                <li>Video Tutorials</li>
                 <li>Customer Support</li>
-                <li>Request Fitur</li>
-                <li>Status Sistem</li>
+                <li>Feature Requests</li>
+                <li>System Status</li>
               </ul>
             </div>
           </div>
 
           <div className="border-t border-white/15 mt-10 pt-8 text-center opacity-70 text-sm">
-            <p>&copy; 2025 Smart Laundry POS. Dibuat untuk bisnis laundry Indonesia.</p>
+            <p>&copy; 2025 Smart Laundry POS. Built for laundry businesses.</p>
             <p className="mt-2">
-              Kontak:{' '}
+              Contact:{' '}
               <a href="mailto:fahrudinjaya@gmail.com" className="underline decoration-white/30 hover:decoration-white">
                 fahrudinjaya@gmail.com
               </a>
@@ -810,7 +808,7 @@ export const LandingPage: React.FC = () => {
           onClick={() => navigate('/login?tab=signup')}
           className="w-full inline-flex items-center justify-center gap-2 rounded-sm bg-[var(--tk-ink)] text-[var(--tk-paper)] py-4 text-base font-bold"
         >
-          Ambil Tiket Gratis
+          Get Your Free Ticket
           <ArrowUpRight className="h-5 w-5" />
         </button>
       </div>
@@ -818,7 +816,7 @@ export const LandingPage: React.FC = () => {
       {/* WhatsApp Floating Button */}
       <WhatsAppFloatingButton
         phoneNumber="6281280272326"
-        message="Halo, saya tertarik dengan Smart Laundry POS dan ingin bertanya lebih lanjut!"
+        message="Hello, I am interested in Smart Laundry POS and would like to learn more!"
         position="bottom-right"
       />
     </div>

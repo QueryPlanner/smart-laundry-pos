@@ -18,7 +18,7 @@ export const ProtectedRoute: React.FC<ProtectedRouteProps> = ({ children }) => {
 
   if (isLoading) {
     return (
-      <PageLoading text={authLoading ? 'Mengautentikasi...' : 'Memuat toko...'} />
+      <PageLoading text={authLoading ? 'Authenticating...' : 'Loading store...'} />
     );
   }
 

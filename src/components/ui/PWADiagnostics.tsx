@@ -101,18 +101,18 @@ export const PWADiagnostics: React.FC<PWADiagnosticsProps> = ({ onClose }) => {
           PWA Diagnostics
         </CardTitle>
         <CardDescription>
-          Status dan troubleshooting untuk Progressive Web App
+          Progressive Web App status and troubleshooting
         </CardDescription>
       </CardHeader>
       
       <CardContent className="space-y-4">
         {/* PWA Requirements */}
         <div>
-          <h4 className="font-semibold mb-3">Persyaratan PWA:</h4>
+          <h4 className="font-semibold mb-3">PWA Requirements:</h4>
           <div className="space-y-2">
             <div className="flex items-center gap-3">
               <StatusIcon status={diagnostics.https} />
-              <span>HTTPS atau localhost</span>
+              <span>HTTPS or localhost</span>
             </div>
             <div className="flex items-center gap-3">
               <StatusIcon status={diagnostics.swSupport} />
@@ -120,15 +120,15 @@ export const PWADiagnostics: React.FC<PWADiagnosticsProps> = ({ onClose }) => {
             </div>
             <div className="flex items-center gap-3">
               <StatusIcon status={diagnostics.swRegistered} />
-              <span>Service Worker terdaftar</span>
+              <span>Service Worker registered</span>
             </div>
             <div className="flex items-center gap-3">
               <StatusIcon status={diagnostics.swActive} />
-              <span>Service Worker aktif</span>
+              <span>Service Worker active</span>
             </div>
             <div className="flex items-center gap-3">
               <StatusIcon status={diagnostics.manifestLinked} />
-              <span>Web App Manifest tertaut</span>
+              <span>Web App Manifest linked</span>
             </div>
             <div className="flex items-center gap-3">
               <StatusIcon status={diagnostics.manifestValid} />
@@ -139,15 +139,15 @@ export const PWADiagnostics: React.FC<PWADiagnosticsProps> = ({ onClose }) => {
 
         {/* Install Status */}
         <div>
-          <h4 className="font-semibold mb-3">Status Install:</h4>
+          <h4 className="font-semibold mb-3">Installation Status:</h4>
           <div className="space-y-2">
             <div className="flex items-center gap-3">
               <StatusIcon status={diagnostics.installPromptSupported} />
-              <span>Install prompt didukung</span>
+              <span>Install prompt supported</span>
             </div>
             <div className="flex items-center gap-3">
               <StatusIcon status={diagnostics.isInstalled} />
-              <span>Aplikasi sudah terinstall</span>
+              <span>App is already installed</span>
             </div>
           </div>
         </div>
@@ -155,13 +155,13 @@ export const PWADiagnostics: React.FC<PWADiagnosticsProps> = ({ onClose }) => {
         {/* Browser Info */}
         {diagnostics.browser && (
           <div>
-            <h4 className="font-semibold mb-3">Informasi Browser:</h4>
+            <h4 className="font-semibold mb-3">Browser Information:</h4>
             <div className="text-sm space-y-1 bg-gray-50 p-3 rounded">
-              <p><strong>Chrome:</strong> {diagnostics.browser.isChrome ? 'Ya' : 'Tidak'}</p>
-              <p><strong>Safari:</strong> {diagnostics.browser.isSafari ? 'Ya' : 'Tidak'}</p>
-              <p><strong>Firefox:</strong> {diagnostics.browser.isFirefox ? 'Ya' : 'Tidak'}</p>
-              <p><strong>Edge:</strong> {diagnostics.browser.isEdge ? 'Ya' : 'Tidak'}</p>
-              <p><strong>Mobile:</strong> {diagnostics.browser.isMobile ? 'Ya' : 'Tidak'}</p>
+              <p><strong>Chrome:</strong> {diagnostics.browser.isChrome ? 'Yes' : 'No'}</p>
+              <p><strong>Safari:</strong> {diagnostics.browser.isSafari ? 'Yes' : 'No'}</p>
+              <p><strong>Firefox:</strong> {diagnostics.browser.isFirefox ? 'Yes' : 'No'}</p>
+              <p><strong>Edge:</strong> {diagnostics.browser.isEdge ? 'Yes' : 'No'}</p>
+              <p><strong>Mobile:</strong> {diagnostics.browser.isMobile ? 'Yes' : 'No'}</p>
             </div>
           </div>
         )}
@@ -185,27 +185,27 @@ export const PWADiagnostics: React.FC<PWADiagnosticsProps> = ({ onClose }) => {
               className="w-full"
             >
               <RefreshCw className="h-4 w-4 mr-2" />
-              Reload Halaman
+              Reload Page
             </Button>
           </div>
         </div>
 
         {/* Common Issues */}
         <div>
-          <h4 className="font-semibold mb-3">Solusi Umum:</h4>
+          <h4 className="font-semibold mb-3">Common Solutions:</h4>
           <div className="text-sm space-y-2 bg-blue-50 p-3 rounded">
-            <p><strong>Install button tidak muncul:</strong></p>
+            <p><strong>Install button does not appear:</strong></p>
             <ul className="ml-4 space-y-1">
-              <li>• Pastikan menggunakan HTTPS atau localhost</li>
-              <li>• Coba di Chrome atau Edge untuk hasil terbaik</li>
-              <li>• Clear cache browser dan reload</li>
-              <li>• Tunggu beberapa detik setelah halaman load</li>
+              <li>• Make sure you are using HTTPS or localhost</li>
+              <li>• Try Chrome or Edge for the best results</li>
+              <li>• Clear the browser cache and reload</li>
+              <li>• Wait a few seconds after the page loads</li>
             </ul>
             
             <p className="mt-3"><strong>Safari iOS:</strong></p>
             <ul className="ml-4 space-y-1">
-              <li>• Gunakan Share button → "Add to Home Screen"</li>
-              <li>• Install otomatis tidak didukung Safari</li>
+              <li>• Use the Share button → "Add to Home Screen"</li>
+              <li>• Automatic installation is not supported in Safari</li>
             </ul>
           </div>
         </div>
@@ -213,7 +213,7 @@ export const PWADiagnostics: React.FC<PWADiagnosticsProps> = ({ onClose }) => {
         {/* Close Button */}
         {onClose && (
           <Button onClick={onClose} className="w-full">
-            Tutup Diagnostics
+            Close Diagnostics
           </Button>
         )}
       </CardContent>

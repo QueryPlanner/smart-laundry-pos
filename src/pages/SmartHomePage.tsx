@@ -10,7 +10,7 @@ export const SmartHomePage = () => {
   const navigate = useNavigate();
   const { user, loading } = useAuth();
   // True inside the native app shell or an installed (standalone) PWA - both
-  // get the minimal AppWelcomeScreen instead of the marketing LandingPage.
+  // get the at least AppWelcomeScreen instead of the marketing LandingPage.
   const { isInstalled: isAppShell } = usePWAInstall();
 
   useEffect(() => {
@@ -22,12 +22,12 @@ export const SmartHomePage = () => {
 
   // If loading or user is authenticated (before redirect), show nothing or loading
   if (loading) {
-    return <PageLoading text="Memuat..." />;
+    return <PageLoading text="Loading..." />;
   }
 
   // If user is authenticated, they'll be redirected, but show loading state briefly
   if (user) {
-    return <PageLoading text="Mengalihkan ke POS..." />;
+    return <PageLoading text="Redirecting to the POS..." />;
   }
 
   // If user is not authenticated, show the appropriate landing experience

@@ -40,7 +40,7 @@ export const StoreDetailsCard: React.FC = () => {
     return (
       <Card>
         <CardContent className="flex items-center justify-center py-8">
-          <p className="text-muted-foreground">Tidak ada toko yang dipilih</p>
+          <p className="text-muted-foreground">No store selected</p>
         </CardContent>
       </Card>
     );
@@ -50,7 +50,7 @@ export const StoreDetailsCard: React.FC = () => {
     return (
       <Card>
         <CardContent className="flex items-center justify-center py-8">
-          <p className="text-muted-foreground">Hanya pemilik toko yang dapat mengubah detail toko</p>
+          <p className="text-muted-foreground">Only the store owner can edit store details</p>
         </CardContent>
       </Card>
     );
@@ -68,7 +68,7 @@ export const StoreDetailsCard: React.FC = () => {
     if (!form.name.trim()) {
       toast({
         title: 'Error',
-        description: 'Nama toko wajib diisi',
+        description: 'Store name is required',
         variant: 'destructive',
       });
       return;
@@ -84,14 +84,14 @@ export const StoreDetailsCard: React.FC = () => {
 
       await refreshStores();
       toast({
-        title: 'Tersimpan',
-        description: 'Detail toko berhasil diperbarui',
+        title: 'Saved',
+        description: 'Store details updated successfully',
       });
     } catch (error) {
       console.error('Error updating store details:', error);
       toast({
         title: 'Error',
-        description: 'Gagal menyimpan detail toko',
+        description: 'Failed to save store details',
         variant: 'destructive',
       });
     } finally {
@@ -104,42 +104,42 @@ export const StoreDetailsCard: React.FC = () => {
       <CardHeader>
         <CardTitle className="flex items-center gap-2 text-lg sm:text-2xl">
           <Store className="h-5 w-5 flex-shrink-0" />
-          Detail Toko
+          Store Details
         </CardTitle>
       </CardHeader>
       <CardContent>
         <form onSubmit={handleSave} className="space-y-4">
           <div className="space-y-2">
-            <Label htmlFor="store-name">Nama Toko</Label>
+            <Label htmlFor="store-name">Store Name</Label>
             <Input
               id="store-name"
               type="text"
               value={form.name}
               onChange={(e) => setForm({ ...form, name: e.target.value })}
-              placeholder="Masukkan nama toko"
+              placeholder="Enter store name"
               required
             />
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="store-address">Alamat</Label>
+            <Label htmlFor="store-address">Address</Label>
             <Input
               id="store-address"
               type="text"
               value={form.address}
               onChange={(e) => setForm({ ...form, address: e.target.value })}
-              placeholder="Masukkan alamat toko"
+              placeholder="Enter store address"
             />
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="store-phone">Nomor Telepon</Label>
+            <Label htmlFor="store-phone">Phone Number</Label>
             <Input
               id="store-phone"
               type="tel"
               value={form.phone}
               onChange={(e) => setForm({ ...form, phone: e.target.value })}
-              placeholder="Masukkan nomor telepon toko"
+              placeholder="Enter store phone number"
             />
           </div>
 
@@ -152,12 +152,12 @@ export const StoreDetailsCard: React.FC = () => {
               {saving ? (
                 <>
                   <LoadingSpinner size="sm" variant="white" />
-                  Menyimpan...
+                  Saving...
                 </>
               ) : (
                 <>
                   <Save className="h-4 w-4" />
-                  Simpan Perubahan
+                  Save Changes
                 </>
               )}
             </Button>

@@ -13,20 +13,20 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const DIST = join(ROOT, '..', 'dist');
-const SITE_URL = 'https://pos.fahrudina.my.id';
+const SITE_URL = 'https://smart-laundry-pos-english.vercel.app';
 
 const ROUTES = [
   {
     path: '/login',
     title: 'Login - Smart Laundry POS',
     description:
-      'Masuk atau daftar sebagai pemilik toko laundry di Smart Laundry POS. Gratis dipakai, tanpa kartu kredit, siap pakai dalam 5 menit.',
+      'Sign in or sign up as a laundry store owner with Smart Laundry POS. Free to use, no credit card required, and ready in 5 minutes.',
   },
   {
     path: '/install',
-    title: 'Cara Install Aplikasi Smart Laundry POS - Android, iOS, Desktop',
+    title: 'Install Smart Laundry POS - Android, iOS, Desktop',
     description:
-      'Panduan instal Smart Laundry POS sebagai aplikasi (PWA) di Android, iOS, Windows, dan Mac. Akses offline dan tampilan seperti aplikasi native langsung dari layar utama.',
+      'Guide to installing Smart Laundry POS as an app (PWA) on Android, iOS, Windows, and Mac. Access it offline with a native-app experience from your home screen.',
   },
 ];
 

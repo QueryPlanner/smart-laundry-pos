@@ -76,13 +76,13 @@ export const AddCustomerDialog = ({ onCustomerAdded, trigger }: AddCustomerDialo
         {trigger || (
           <Button variant="outline" className="gap-2">
             <UserPlus className="h-4 w-4" />
-            Tambah Pelanggan Baru
+            Add New Customer
           </Button>
         )}
       </Trigger>
       <Content className={isMobile ? 'flex max-h-[85vh] flex-col' : 'w-[95vw] max-w-[425px] max-h-[90vh] overflow-y-auto mx-4 my-8'}>
         <Header>
-          <Title className="text-lg sm:text-xl">Tambah Pelanggan Baru</Title>
+          <Title className="text-lg sm:text-xl">Add New Customer</Title>
         </Header>
         <form
           onSubmit={handleSubmit}
@@ -92,25 +92,25 @@ export const AddCustomerDialog = ({ onCustomerAdded, trigger }: AddCustomerDialo
           )}
         >
           <div className="space-y-2">
-            <Label htmlFor="name" className="text-sm font-medium">Nama *</Label>
+            <Label htmlFor="name" className="text-sm font-medium">Name *</Label>
             <Input
               id="name"
               value={formData.name}
               onChange={(e) => handleInputChange('name', e.target.value)}
-              placeholder="Nama pelanggan"
+              placeholder="Customer name"
               required
               className="h-11 text-base"
               autoComplete="name"
             />
           </div>
           <div className="space-y-2">
-            <Label htmlFor="phone" className="text-sm font-medium">Nomor Telepon *</Label>
+            <Label htmlFor="phone" className="text-sm font-medium">Phone Number *</Label>
             <Input
               id="phone"
               type="tel"
               value={formData.phone}
               onChange={(e) => handleInputChange('phone', e.target.value)}
-              placeholder="Nomor telepon"
+              placeholder="Phone number"
               required
               className="h-11 text-base"
               autoComplete="tel"
@@ -123,18 +123,18 @@ export const AddCustomerDialog = ({ onCustomerAdded, trigger }: AddCustomerDialo
               type="email"
               value={formData.email}
               onChange={(e) => handleInputChange('email', e.target.value)}
-              placeholder="Alamat email"
+              placeholder="Email address"
               className="h-11 text-base"
               autoComplete="email"
             />
           </div>
           <div className="space-y-2">
-            <Label htmlFor="address" className="text-sm font-medium">Alamat</Label>
+            <Label htmlFor="address" className="text-sm font-medium">Address</Label>
             <Input
               id="address"
               value={formData.address}
               onChange={(e) => handleInputChange('address', e.target.value)}
-              placeholder="Alamat pelanggan"
+              placeholder="Customer address"
               className="h-11 text-base"
               autoComplete="address-line1"
             />
@@ -146,14 +146,14 @@ export const AddCustomerDialog = ({ onCustomerAdded, trigger }: AddCustomerDialo
               onClick={() => setOpen(false)}
               className="flex-1 h-11 text-base"
             >
-              Batal
+              Cancel
             </Button>
             <Button
               type="submit"
               disabled={loading || !formData.name.trim() || !formData.phone.trim()}
               className="flex-1 h-11 text-base"
             >
-              {loading ? 'Menambahkan...' : 'Tambah Pelanggan'}
+              {loading ? 'Adding...' : 'Add Customer'}
             </Button>
           </div>
         </form>

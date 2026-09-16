@@ -62,7 +62,7 @@ interface ValidateOrderReadinessParams {
   customerPhone: string;
 }
 
-// Returns the Indonesian error message to toast, or null if the order is ready to submit.
+// Returns the error message to show in a toast, or null if the order is ready to submit.
 export const validateOrderReadiness = ({
   currentOrder,
   dynamicItems,
@@ -70,10 +70,10 @@ export const validateOrderReadiness = ({
   customerPhone,
 }: ValidateOrderReadinessParams): string | null => {
   if (currentOrder.length === 0 && dynamicItems.length === 0) {
-    return 'Tidak ada item dalam pesanan';
+    return 'No items in the order';
   }
   if (!customerName || !customerPhone) {
-    return 'Mohon lengkapi informasi pelanggan';
+    return 'Please complete the customer information';
   }
   return null;
 };

@@ -16,7 +16,7 @@ const GoogleDivider: React.FC = () => (
       <span className="w-full border-t border-gray-200" />
     </div>
     <div className="relative flex justify-center text-xs uppercase">
-      <span className="bg-white px-2 text-gray-400">atau</span>
+      <span className="bg-white px-2 text-gray-400">or</span>
     </div>
   </div>
 );
@@ -58,11 +58,11 @@ const NativeGoogleLoginButton: React.FC = () => {
       });
 
       if (result.responseType !== 'online') {
-        toast({ title: 'Error', description: 'Tidak ada kredensial dari Google', variant: 'destructive' });
+        toast({ title: 'Error', description: 'No credentials were returned by Google', variant: 'destructive' });
         return;
       }
       if (!result.idToken) {
-        toast({ title: 'Error', description: 'Tidak ada kredensial dari Google', variant: 'destructive' });
+        toast({ title: 'Error', description: 'No credentials were returned by Google', variant: 'destructive' });
         return;
       }
 
@@ -74,7 +74,7 @@ const NativeGoogleLoginButton: React.FC = () => {
     } catch (error) {
       // Covers SocialLogin.initialize/login rejecting (e.g. user cancelled, plugin error).
       console.error('Native Google sign-in failed', error);
-      toast({ title: 'Error', description: 'Gagal masuk dengan Google', variant: 'destructive' });
+      toast({ title: 'Error', description: 'Google sign-in failed', variant: 'destructive' });
     }
   };
 
@@ -83,7 +83,7 @@ const NativeGoogleLoginButton: React.FC = () => {
       <GoogleDivider />
       <div className="mt-4 flex justify-center">
         <Button type="button" variant="outline" className="w-[320px] max-w-full" onClick={handlePress}>
-          Lanjutkan dengan Google
+          Continue with Google
         </Button>
       </div>
     </div>
@@ -104,7 +104,7 @@ const WebGoogleLoginButton: React.FC = () => {
               if (!credentialResponse.credential) {
                 toast({
                   title: 'Error',
-                  description: 'Tidak ada kredensial dari Google',
+                  description: 'No credentials were returned by Google',
                   variant: 'destructive',
                 });
                 return;
@@ -118,7 +118,7 @@ const WebGoogleLoginButton: React.FC = () => {
             onError={() => {
               toast({
                 title: 'Error',
-                description: 'Gagal masuk dengan Google',
+                description: 'Google sign-in failed',
                 variant: 'destructive',
               });
             }}

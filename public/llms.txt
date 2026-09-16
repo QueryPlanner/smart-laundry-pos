@@ -1,20 +1,20 @@
 # Smart Laundry POS
 
 > Smart Laundry POS is a free, cloud-based point-of-sale system built specifically for
-> laundry businesses in Indonesia. It replaces handwritten tickets and general-purpose
+> laundry businesses. It replaces handwritten tickets and general-purpose
 > POS apps with tools designed around the actual laundry workflow: weigh, price,
 > notify, hand over, get paid.
 
 Smart Laundry POS is installable as a Progressive Web App on Android, iOS, Windows,
 and Mac, works offline, and is free to start with no credit card and no long-term
-contract. It is built and maintained for the Indonesian laundry market; all in-app
-content and customer communication is in Indonesian (Bahasa Indonesia).
+contract. It is designed for laundry businesses in Indonesia; the user interface and
+customer communication are available in English in this fork.
 
 ## Key facts
 
 - Pricing: free to use, no credit card required, no long-term contract.
 - Setup time: about 5 minutes to start taking orders.
-- Service types supported: weight-based (kiloan, priced per kg), unit-based (satuan,
+- Service types supported: weight-based (priced per kg), unit-based (priced per item,
   priced per item such as shoes or bed covers), and combined (both weight and unit
   in one order).
 - Multi-outlet and multi-cashier support for laundry businesses with more than one
@@ -34,11 +34,11 @@ content and customer communication is in Indonesian (Bahasa Indonesia).
 
 ## Pages
 
-- [Homepage](https://pos.fahrudina.my.id/): product overview, features, pricing
+- [Homepage](https://smart-laundry-pos-english.vercel.app/): product overview, features, pricing
   model, comparison with general POS apps, and FAQ.
-- [Login / Sign up](https://pos.fahrudina.my.id/login): create a store account or
+- [Login / Sign up](https://smart-laundry-pos-english.vercel.app/login): create a store account or
   sign in.
-- [Install guide](https://pos.fahrudina.my.id/install): how to install the app as a
+- [Install guide](https://smart-laundry-pos-english.vercel.app/install): how to install the app as a
   PWA on desktop and mobile.
 
 ## Contact

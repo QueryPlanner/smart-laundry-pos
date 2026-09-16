@@ -23,9 +23,9 @@ export const MobileStoreList: React.FC<MobileStoreListProps> = ({
       <Card>
         <CardContent className="flex flex-col items-center justify-center py-12">
           <Building2 className="h-12 w-12 text-muted-foreground mb-4" />
-          <h3 className="text-lg font-semibold mb-2">Belum ada toko</h3>
+          <h3 className="text-lg font-semibold mb-2">No stores yet</h3>
           <p className="text-muted-foreground text-center mb-4">
-            Buat toko pertama Anda untuk mulai mengelola bisnis laundry.
+            Create your first store to start managing your laundry business.
           </p>
           <CreateStoreDialog onStoreCreated={onStoreCreated} />
         </CardContent>
@@ -55,7 +55,7 @@ export const MobileStoreList: React.FC<MobileStoreListProps> = ({
               {subtitle && <p className="text-sm text-muted-foreground truncate">{subtitle}</p>}
             </div>
             {!store.is_active && (
-              <span className="text-xs text-muted-foreground flex-shrink-0">Nonaktif</span>
+              <span className="text-xs text-muted-foreground flex-shrink-0">Inactive</span>
             )}
             {isSelected && <Check className="h-4 w-4 text-primary flex-shrink-0" />}
             <ChevronRight className="h-4 w-4 text-muted-foreground flex-shrink-0" />

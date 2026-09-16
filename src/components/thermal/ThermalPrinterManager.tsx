@@ -84,14 +84,14 @@ export const ThermalPrinterManager: React.FC<ThermalPrinterManagerProps> = ({
         feedLines: 3
       });
 
-      toast.success('🖨️ Struk berhasil dicetak!');
+      toast.success('🖨️ Receipt printed successfully!');
       if (onPrintSuccess) {
         onPrintSuccess();
       }
     } catch (error) {
       console.error('❌ Print failed:', error);
-      const errorMessage = error instanceof Error ? error.message : 'Pencetakan gagal';
-      toast.error(`❌ Pencetakan gagal: ${errorMessage}`);
+      const errorMessage = error instanceof Error ? error.message : 'Printing failed';
+      toast.error(`❌ Printing failed: ${errorMessage}`);
       if (onPrintError) {
         onPrintError(errorMessage);
       }
@@ -114,14 +114,14 @@ export const ThermalPrinterManager: React.FC<ThermalPrinterManagerProps> = ({
       // Print via Thermer app
       await printToThermerApp(receiptData);
 
-      toast.success('📱 Struk berhasil dikirim ke aplikasi Thermer!');
+      toast.success('📱 Receipt sent to the Thermer app successfully!');
       if (onPrintSuccess) {
         onPrintSuccess();
       }
     } catch (error) {
       console.error('Thermer print failed:', error);
-      const errorMessage = error instanceof Error ? error.message : 'Pencetakan Thermer gagal';
-      toast.error(`❌ Pencetakan Thermer gagal: ${errorMessage}`);
+      const errorMessage = error instanceof Error ? error.message : 'Thermer printing failed';
+      toast.error(`❌ Thermer printing failed: ${errorMessage}`);
       if (onPrintError) {
         onPrintError(errorMessage);
       }
@@ -138,7 +138,7 @@ export const ThermalPrinterManager: React.FC<ThermalPrinterManagerProps> = ({
       <Alert>
         <AlertTriangle className="h-4 w-4" />
         <AlertDescription>
-          Pencetakan thermal tidak didukung di perangkat ini. Silakan gunakan pencetakan browser atau ekspor PDF sebagai gantinya.
+          Thermal printing is not supported on this device. Use browser printing or export a PDF instead.
         </AlertDescription>
       </Alert>
     );
@@ -149,7 +149,7 @@ export const ThermalPrinterManager: React.FC<ThermalPrinterManagerProps> = ({
       <CardHeader className="pb-4">
         <CardTitle className="flex items-center space-x-2">
           <Printer className="h-5 w-5" />
-          <span>Printer Thermal</span>
+          <span>Thermal Printer</span>
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -169,8 +169,8 @@ export const ThermalPrinterManager: React.FC<ThermalPrinterManagerProps> = ({
                 {connectionStatus === 'connected' && <CheckCircle className="h-3 w-3" />}
                 {connectionStatus === 'error' && <XCircle className="h-3 w-3" />}
                 <span>
-                  {connectionStatus === 'connected' ? 'Terhubung' :
-                   connectionStatus === 'error' ? 'Error' : 'Terputus'}
+                  {connectionStatus === 'connected' ? 'Connected' :
+                   connectionStatus === 'error' ? 'Error' : 'Disconnected'}
                 </span>
               </Badge>
             </div>
@@ -184,7 +184,7 @@ export const ThermalPrinterManager: React.FC<ThermalPrinterManagerProps> = ({
                   size="sm"
                 >
                   {isConnecting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Bluetooth className="h-4 w-4" />}
-                  <span>{isConnecting ? 'Menghubungkan...' : 'Hubungkan Printer'}</span>
+                  <span>{isConnecting ? 'Connecting...' : 'Connect Printer'}</span>
                 </Button>
               )}
 
@@ -197,7 +197,7 @@ export const ThermalPrinterManager: React.FC<ThermalPrinterManagerProps> = ({
                     size="sm"
                   >
                     {isPrinting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Printer className="h-4 w-4" />}
-                    <span>{isPrinting ? 'Mencetak...' : 'Cetak Struk'}</span>
+                    <span>{isPrinting ? 'Printing...' : 'Print Receipt'}</span>
                   </Button>
 
                   <Button
@@ -207,7 +207,7 @@ export const ThermalPrinterManager: React.FC<ThermalPrinterManagerProps> = ({
                     className="flex items-center space-x-2"
                   >
                     <XCircle className="h-4 w-4" />
-                    <span>Putuskan</span>
+                    <span>Disconnect</span>
                   </Button>
                 </>
               )}
@@ -221,14 +221,14 @@ export const ThermalPrinterManager: React.FC<ThermalPrinterManagerProps> = ({
                   className="flex items-center space-x-2"
                 >
                   {isConnecting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Settings className="h-4 w-4" />}
-                  <span>{isConnecting ? 'Mencoba Lagi...' : 'Coba Lagi'}</span>
+                  <span>{isConnecting ? 'Retrying...' : 'Try Again'}</span>
                 </Button>
               )}
             </div>
 
             {printerConnection && (
               <div className="text-sm text-muted-foreground">
-                <p>Terhubung ke: {printerConnection.deviceName || printerConnection.deviceId}</p>
+                <p>Connected to: {printerConnection.deviceName || printerConnection.deviceId}</p>
               </div>
             )}
           </div>
@@ -244,12 +244,12 @@ export const ThermalPrinterManager: React.FC<ThermalPrinterManagerProps> = ({
           <div className="space-y-3">
             <div className="flex items-center space-x-2">
               <Smartphone className="h-4 w-4" />
-              <span className="font-medium">Integrasi Aplikasi Thermer</span>
-              <Badge variant="outline">Direkomendasikan</Badge>
+              <span className="font-medium">Thermer App Integration</span>
+              <Badge variant="outline">Recommended</Badge>
             </div>
 
             <p className="text-sm text-muted-foreground">
-              Gunakan aplikasi Thermer sebagai jembatan untuk mencetak ke berbagai printer thermal Bluetooth.
+              Use the Thermer app as a bridge to print to a wide range of Bluetooth thermal printers.
             </p>
 
             <Button
@@ -260,7 +260,7 @@ export const ThermalPrinterManager: React.FC<ThermalPrinterManagerProps> = ({
               className="flex items-center space-x-2 w-full"
             >
               {isPrinting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Smartphone className="h-4 w-4" />}
-              <span>{isPrinting ? 'Mengirim ke Thermer...' : 'Cetak via Aplikasi Thermer'}</span>
+              <span>{isPrinting ? 'Sending to Thermer...' : 'Print via Thermer App'}</span>
             </Button>
           </div>
         )}
@@ -277,9 +277,9 @@ export const ThermalPrinterManager: React.FC<ThermalPrinterManagerProps> = ({
 
         {/* Instructions */}
         <div className="text-xs text-muted-foreground space-y-1">
-          <p>• Pastikan printer thermal Anda menyala dan dalam mode pairing</p>
-          <p>• Untuk hasil terbaik, gunakan kertas thermal 58mm</p>
-          <p>• Aplikasi Thermer mendukung lebih banyak model printer dan lebih mudah diatur</p>
+          <p>• Make sure your thermal printer is powered on and in pairing mode</p>
+          <p>• For best results, use 58mm thermal paper</p>
+          <p>• The Thermer app supports more printer models and is easier to set up</p>
         </div>
       </CardContent>
     </Card>

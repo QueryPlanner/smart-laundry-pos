@@ -4,8 +4,8 @@ import { BottomNavItem } from '@/components/layout/MobileBottomNav';
 import { useStore } from '@/contexts/StoreContext';
 
 /**
- * Builds the shared bottom-nav item set used across every screen: Beranda, Buat Pesanan,
- * Laporan (owner) / Riwayat (staff), and Toko (owner-only).
+ * Builds the shared bottom-nav item set used across every screen: Home, New Order,
+ * Reports (owner) / History (staff), and Store (owner-only).
  */
 export const useMobileBottomNavItems = (): BottomNavItem[] => {
   const navigate = useNavigate();
@@ -15,14 +15,14 @@ export const useMobileBottomNavItems = (): BottomNavItem[] => {
   const items: Array<BottomNavItem | null> = [
     {
       id: 'home',
-      title: 'Beranda',
+      title: 'Home',
       icon: HomeIcon,
       active: location.pathname === '/home',
       onClick: () => navigate('/home'),
     },
     {
       id: 'orders',
-      title: 'Buat Pesanan',
+      title: 'New Order',
       icon: Plus,
       active: location.pathname === '/pos',
       onClick: () => navigate('/pos'),
@@ -31,14 +31,14 @@ export const useMobileBottomNavItems = (): BottomNavItem[] => {
     isOwner
       ? {
           id: 'reports',
-          title: 'Laporan',
+          title: 'Reports',
           icon: TrendingUp,
           active: location.pathname === '/revenue-report',
           onClick: () => navigate('/revenue-report'),
         }
       : {
           id: 'reports',
-          title: 'Riwayat',
+          title: 'History',
           icon: History,
           active: location.pathname === '/order-history',
           onClick: () => navigate('/order-history'),
@@ -46,7 +46,7 @@ export const useMobileBottomNavItems = (): BottomNavItem[] => {
     isOwner
       ? {
           id: 'stores',
-          title: 'Toko',
+          title: 'Store',
           icon: Building2,
           active: location.pathname === '/stores',
           onClick: () => navigate('/stores'),

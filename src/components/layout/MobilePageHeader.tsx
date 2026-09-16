@@ -22,7 +22,7 @@ export const MobilePageHeader: React.FC<MobilePageHeaderProps> = ({
         variant="ghost"
         size="icon"
         onClick={onBack}
-        aria-label="Kembali"
+        aria-label="Back"
         className="h-9 w-9 flex-shrink-0"
       >
         <ArrowLeft className="h-5 w-5" />

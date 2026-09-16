@@ -33,16 +33,16 @@ export const ChangePasswordDialog: React.FC<ChangePasswordDialogProps> = ({ trig
 
   const validatePassword = (password: string): string | null => {
     if (password.length < 8) {
-      return 'Password harus minimal 8 karakter';
+      return 'Password must be at least 8 characters';
     }
     if (!/[A-Z]/.test(password)) {
-      return 'Password harus mengandung minimal satu huruf besar';
+      return 'Password must contain at least one uppercase letter';
     }
     if (!/[a-z]/.test(password)) {
-      return 'Password harus mengandung minimal satu huruf kecil';
+      return 'Password must contain at least one lowercase letter';
     }
     if (!/[0-9]/.test(password)) {
-      return 'Password harus mengandung minimal satu angka';
+      return 'Password must contain at least one number';
     }
     return null;
   };
@@ -53,7 +53,7 @@ export const ChangePasswordDialog: React.FC<ChangePasswordDialogProps> = ({ trig
 
     // Validate inputs
     if (!currentPassword || !newPassword || !confirmPassword) {
-      setError('Semua field harus diisi');
+      setError('All fields are required');
       return;
     }
 
@@ -66,13 +66,13 @@ export const ChangePasswordDialog: React.FC<ChangePasswordDialogProps> = ({ trig
 
     // Check if new password matches confirmation
     if (newPassword !== confirmPassword) {
-      setError('Password baru tidak cocok');
+      setError('New passwords do not match');
       return;
     }
 
     // Check if new password is different from current
     if (currentPassword === newPassword) {
-      setError('Password baru harus berbeda dari password saat ini');
+      setError('New password must differ from the current password');
       return;
     }
 
@@ -107,14 +107,14 @@ export const ChangePasswordDialog: React.FC<ChangePasswordDialogProps> = ({ trig
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogTrigger asChild>
-        {trigger || <Button variant="outline">Ubah Password</Button>}
+        {trigger || <Button variant="outline">Change Password</Button>}
       </DialogTrigger>
       <DialogContent className="sm:max-w-[425px]">
         <form onSubmit={handleSubmit}>
           <DialogHeader>
-            <DialogTitle>Ubah Password</DialogTitle>
+            <DialogTitle>Change Password</DialogTitle>
             <DialogDescription>
-              Perbarui password akun Anda. Pastikan menggunakan password yang kuat.
+              Update your account password. Make sure to use a strong password.
             </DialogDescription>
           </DialogHeader>
           
@@ -127,14 +127,14 @@ export const ChangePasswordDialog: React.FC<ChangePasswordDialogProps> = ({ trig
             )}
 
             <div className="grid gap-2">
-              <Label htmlFor="current-password">Password Saat Ini</Label>
+              <Label htmlFor="current-password">Current Password</Label>
               <div className="relative">
                 <Input
                   id="current-password"
                   type={showCurrentPassword ? 'text' : 'password'}
                   value={currentPassword}
                   onChange={(e) => setCurrentPassword(e.target.value)}
-                  placeholder="Masukkan password saat ini"
+                  placeholder="Enter your current password"
                   disabled={loading}
                   className="pr-10"
                 />
@@ -154,14 +154,14 @@ export const ChangePasswordDialog: React.FC<ChangePasswordDialogProps> = ({ trig
             </div>
 
             <div className="grid gap-2">
-              <Label htmlFor="new-password">Password Baru</Label>
+              <Label htmlFor="new-password">New Password</Label>
               <div className="relative">
                 <Input
                   id="new-password"
                   type={showNewPassword ? 'text' : 'password'}
                   value={newPassword}
                   onChange={(e) => setNewPassword(e.target.value)}
-                  placeholder="Masukkan password baru"
+                  placeholder="Enter a new password"
                   disabled={loading}
                   className="pr-10"
                 />
@@ -179,19 +179,19 @@ export const ChangePasswordDialog: React.FC<ChangePasswordDialogProps> = ({ trig
                 </button>
               </div>
               <p className="text-xs text-gray-500">
-                Minimal 8 karakter dengan huruf besar, huruf kecil, dan angka
+                At least 8 characters with uppercase and lowercase letters and a number
               </p>
             </div>
 
             <div className="grid gap-2">
-              <Label htmlFor="confirm-password">Konfirmasi Password Baru</Label>
+              <Label htmlFor="confirm-password">Confirm New Password</Label>
               <div className="relative">
                 <Input
                   id="confirm-password"
                   type={showConfirmPassword ? 'text' : 'password'}
                   value={confirmPassword}
                   onChange={(e) => setConfirmPassword(e.target.value)}
-                  placeholder="Konfirmasi password baru"
+                  placeholder="Confirm your new password"
                   disabled={loading}
                   className="pr-10"
                 />
@@ -218,10 +218,10 @@ export const ChangePasswordDialog: React.FC<ChangePasswordDialogProps> = ({ trig
               onClick={() => handleOpenChange(false)}
               disabled={loading}
             >
-              Batal
+              Cancel
             </Button>
             <Button type="submit" disabled={loading}>
-              {loading ? 'Mengubah...' : 'Ubah Password'}
+              {loading ? 'Changing...' : 'Change Password'}
             </Button>
           </DialogFooter>
         </form>

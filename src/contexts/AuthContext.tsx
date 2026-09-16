@@ -135,11 +135,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       await authService.changePassword(currentPassword, newPassword);
       
       toast({
-        title: "Berhasil",
-        description: "Password berhasil diubah!",
+        title: "Success",
+        description: "Password changed successfully!",
       });
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'Terjadi kesalahan';
+      const errorMessage = error instanceof Error ? error.message : 'An error occurred';
       toast({
         title: "Error",
         description: errorMessage,

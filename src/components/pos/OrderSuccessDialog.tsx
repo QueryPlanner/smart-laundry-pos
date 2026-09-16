@@ -41,13 +41,13 @@ export const OrderSuccessDialog: React.FC<OrderSuccessDialogProps> = ({
 }) => {
   const formatPaymentMethod = (method: string) => {
     const methodMap: Record<string, string> = {
-      'cash': 'TUNAI',
-      'cash_dp': 'TUNAI (DP)',
+      'cash': 'CASH',
+      'cash_dp': 'CASH (DOWN PAYMENT)',
       'qris': 'QRIS',
       'transfer': 'TRANSFER',
       'debit': 'DEBIT',
       'credit': 'CREDIT',
-      'pending': 'BAYAR NANTI',
+      'pending': 'PAY LATER',
     };
     return methodMap[method.toLowerCase()] || method.toUpperCase();
   };
@@ -74,7 +74,7 @@ export const OrderSuccessDialog: React.FC<OrderSuccessDialogProps> = ({
           <div className="space-y-4">
             {/* Invoice Number */}
             <div className="text-center">
-              <p className="text-sm text-gray-600 mb-1">Nomor Invoice</p>
+              <p className="text-sm text-gray-600 mb-1">Invoice Number</p>
               <p className="text-2xl font-bold text-gray-900 break-all">
                 {orderNumber}
               </p>
@@ -82,9 +82,9 @@ export const OrderSuccessDialog: React.FC<OrderSuccessDialogProps> = ({
 
             {/* Total Amount */}
             <div className="text-center">
-              <p className="text-sm text-gray-600 mb-1">Total Harga</p>
+              <p className="text-sm text-gray-600 mb-1">Total Price</p>
               <p className="text-3xl font-bold text-gray-900">
-                Rp {totalAmount.toLocaleString('id-ID')}
+                Rp {totalAmount.toLocaleString('en-IN')}
               </p>
             </div>
           </div>
@@ -95,7 +95,7 @@ export const OrderSuccessDialog: React.FC<OrderSuccessDialogProps> = ({
               <div className="flex items-center justify-center text-pos-success">
                 <CheckCircle className="h-5 w-5 mr-2" />
                 <span className="text-sm font-medium">
-                  Struk terkirim ke pelanggan via WhatsApp
+                  Receipt sent to customer via WhatsApp
                 </span>
               </div>
             </div>
@@ -109,12 +109,12 @@ export const OrderSuccessDialog: React.FC<OrderSuccessDialogProps> = ({
                   <Star className="h-5 w-5 text-white fill-white" />
                 </div>
                 <div className="text-center">
-                  <p className="text-sm text-primary font-medium">Poin Ditukar</p>
-                  <p className="text-2xl font-bold text-primary">-{pointsRedeemed} Poin</p>
+                  <p className="text-sm text-primary font-medium">Points Redeemed</p>
+                  <p className="text-2xl font-bold text-primary">-{pointsRedeemed} Points</p>
                 </div>
               </div>
               <p className="text-xs text-primary/80 text-center mt-2">
-                🎁 Diskon Rp {(discountAmount || pointsRedeemed * POINTS_TO_CURRENCY_RATE).toLocaleString('id-ID')}
+                🎁 Discount Rp {(discountAmount || pointsRedeemed * POINTS_TO_CURRENCY_RATE).toLocaleString('en-IN')}
               </p>
             </div>
           )}
@@ -127,12 +127,12 @@ export const OrderSuccessDialog: React.FC<OrderSuccessDialogProps> = ({
                   <Star className="h-5 w-5 text-accent-foreground fill-accent-foreground" />
                 </div>
                 <div className="text-center">
-                  <p className="text-sm text-accent-foreground font-medium">Pelanggan mendapat</p>
-                  <p className="text-2xl font-bold text-accent-foreground">+{pointsEarned} Poin</p>
+                  <p className="text-sm text-accent-foreground font-medium">Customer earned</p>
+                  <p className="text-2xl font-bold text-accent-foreground">+{pointsEarned} Points</p>
                 </div>
               </div>
               <p className="text-xs text-accent-foreground/80 text-center mt-2">
-                🎉 Poin dapat digunakan untuk diskon pada transaksi berikutnya
+                🎉 Points can be used for a discount on the next transaction
               </p>
             </div>
           )}
@@ -148,7 +148,7 @@ export const OrderSuccessDialog: React.FC<OrderSuccessDialogProps> = ({
             size="lg"
           >
             <Printer className="h-5 w-5 mr-2" />
-            Cetak faktur
+            Print Receipt
           </Button>
 
           {/* New Transaction Button */}
@@ -158,7 +158,7 @@ export const OrderSuccessDialog: React.FC<OrderSuccessDialogProps> = ({
             className="w-full py-6 text-lg font-semibold border-2"
             size="lg"
           >
-            Transaksi baru
+            New Transaction
           </Button>
         </div>
       </DialogContent>

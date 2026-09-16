@@ -19,5 +19,5 @@ export const ProtectedRedirect = () => {
     }
   }, [user, loading, navigate]);
 
-  return <PageLoading text="Mengalihkan..." />;
+  return <PageLoading text="Redirecting..." />;
 };

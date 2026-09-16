@@ -78,7 +78,7 @@ export const StoreStaffManagement: React.FC<StoreStaffManagementProps> = ({ stor
       console.error('Error loading staff:', error);
       toast({
         title: 'Error',
-        description: 'Gagal memuat anggota staf',
+        description: 'Failed to load staff members',
         variant: 'destructive',
       });
     } finally {
@@ -121,8 +121,8 @@ export const StoreStaffManagement: React.FC<StoreStaffManagementProps> = ({ stor
   await authService.assignStaffToStore(newUser.id, store.store_id);
 
       toast({
-        title: 'Berhasil',
-        description: 'Anggota staf berhasil dibuat dan ditugaskan',
+        title: 'Success',
+        description: 'Staff member created and assigned successfully',
       });
 
       setCreateForm({ email: '', password: '', full_name: '', phone: '' });
@@ -133,7 +133,7 @@ export const StoreStaffManagement: React.FC<StoreStaffManagementProps> = ({ stor
       console.error('Error creating staff:', error);
       toast({
         title: 'Error',
-        description: error instanceof Error ? error.message : 'Gagal membuat anggota staf',
+        description: error instanceof Error ? error.message : 'Failed to create staff member',
         variant: 'destructive',
       });
     } finally {
@@ -148,8 +148,8 @@ export const StoreStaffManagement: React.FC<StoreStaffManagementProps> = ({ stor
       await authService.assignStaffToStore(staffId, store.store_id);
 
       toast({
-        title: 'Berhasil',
-        description: 'Anggota staf berhasil ditugaskan',
+        title: 'Success',
+        description: 'Staff member assigned successfully',
       });
 
       loadStaff();
@@ -158,7 +158,7 @@ export const StoreStaffManagement: React.FC<StoreStaffManagementProps> = ({ stor
       console.error('Error assigning staff:', error);
       toast({
         title: 'Error',
-        description: 'Gagal menugaskan anggota staf',
+        description: 'Failed to assign staff member',
         variant: 'destructive',
       });
     } finally {
@@ -177,8 +177,8 @@ export const StoreStaffManagement: React.FC<StoreStaffManagementProps> = ({ stor
       if (error) throw error;
 
       toast({
-        title: 'Berhasil',
-        description: 'Anggota staf berhasil dihapus dari toko',
+        title: 'Success',
+        description: 'Staff member removed from store successfully',
       });
 
       loadStaff();
@@ -187,7 +187,7 @@ export const StoreStaffManagement: React.FC<StoreStaffManagementProps> = ({ stor
       console.error('Error removing staff:', error);
       toast({
         title: 'Error',
-        description: 'Gagal menghapus anggota staf',
+        description: 'Failed to remove staff member',
         variant: 'destructive',
       });
     } finally {
@@ -202,7 +202,7 @@ export const StoreStaffManagement: React.FC<StoreStaffManagementProps> = ({ stor
           <CardTitle className="flex min-w-0 items-center gap-2 text-lg sm:text-2xl">
             <Users className="h-5 w-5 flex-shrink-0" />
             <span className="truncate">
-              {isMobile ? 'Anggota Staf' : `Manajemen Staf - ${store.store_name}`}
+              {isMobile ? 'Staff Members' : `Staff Management - ${store.store_name}`}
             </span>
           </CardTitle>
           <div className={cn('grid grid-cols-2 gap-2', !isMobile && 'sm:flex sm:flex-shrink-0 sm:flex-wrap')}>
@@ -213,12 +213,12 @@ export const StoreStaffManagement: React.FC<StoreStaffManagementProps> = ({ stor
                   size="sm"
                   className={cn('w-full', isMobile ? 'px-2 text-xs' : 'sm:w-auto')}
                 >
-                  {isMobile ? 'Tugaskan' : 'Tugaskan yang Ada'}
+                  {isMobile ? 'Assign' : 'Assign Existing'}
                 </Button>
               </DialogTriggerEl>
               <DialogContentEl className={isMobile ? 'flex max-h-[85vh] flex-col' : 'max-w-lg'}>
                 <DialogHeaderEl>
-                  <DialogTitleEl>Tugaskan Staf yang Ada</DialogTitleEl>
+                  <DialogTitleEl>Assign Existing Staff</DialogTitleEl>
                 </DialogHeaderEl>
                 <div
                   className={cn(
@@ -227,7 +227,7 @@ export const StoreStaffManagement: React.FC<StoreStaffManagementProps> = ({ stor
                   )}
                 >
                   {unassignedStaff.length === 0 ? (
-                    <p className="text-muted-foreground">Tidak ada staf yang belum ditugaskan</p>
+                    <p className="text-muted-foreground">No unassigned staff</p>
                   ) : (
                     <div className="space-y-2">
                       {unassignedStaff.map((staffMember) => (
@@ -240,7 +240,7 @@ export const StoreStaffManagement: React.FC<StoreStaffManagementProps> = ({ stor
                           className="cursor-pointer flex flex-col sm:flex-row items-start sm:items-center justify-between p-3 border rounded-lg gap-3"
                         >
                           <div className="flex-1">
-                            <p className="font-medium">{staffMember.full_name || 'Tanpa nama'}</p>
+                            <p className="font-medium">{staffMember.full_name || 'Unnamed'}</p>
                             <p className="text-sm text-muted-foreground">{staffMember.email}</p>
                           </div>
                           <div className="flex-shrink-0">
@@ -249,7 +249,7 @@ export const StoreStaffManagement: React.FC<StoreStaffManagementProps> = ({ stor
                               onClick={(e) => { e.stopPropagation(); handleAssignStaff(staffMember.id); }}
                               disabled={loading}
                             >
-                              Tugaskan
+                              Assign
                             </Button>
                           </div>
                         </div>
@@ -264,12 +264,12 @@ export const StoreStaffManagement: React.FC<StoreStaffManagementProps> = ({ stor
               <DialogTriggerEl asChild>
                 <Button size="sm" className={cn('w-full', isMobile ? 'px-2 text-xs' : 'sm:w-auto')}>
                   {!isMobile && <UserPlus className="h-4 w-4 mr-2" />}
-                  {isMobile ? 'Tambah Staf' : 'Tambah Staf Baru'}
+                  {isMobile ? 'Add Staff' : 'Add New Staff'}
                 </Button>
               </DialogTriggerEl>
               <DialogContentEl className={isMobile ? 'flex max-h-[85vh] flex-col' : 'max-w-lg'}>
                 <DialogHeaderEl>
-                  <DialogTitleEl>Buat Anggota Staf Baru</DialogTitleEl>
+                  <DialogTitleEl>Create New Staff Member</DialogTitleEl>
                 </DialogHeaderEl>
                 <form
                   onSubmit={handleCreateStaff}
@@ -289,7 +289,7 @@ export const StoreStaffManagement: React.FC<StoreStaffManagementProps> = ({ stor
                     />
                   </div>
                   <div>
-                    <Label htmlFor="password">Kata Sandi</Label>
+                    <Label htmlFor="password">Password</Label>
                     <Input
                       id="password"
                       type="password"
@@ -299,7 +299,7 @@ export const StoreStaffManagement: React.FC<StoreStaffManagementProps> = ({ stor
                     />
                   </div>
                   <div>
-                    <Label htmlFor="full_name">Nama Lengkap</Label>
+                    <Label htmlFor="full_name">Full Name</Label>
                     <Input
                       id="full_name"
                       type="text"
@@ -309,7 +309,7 @@ export const StoreStaffManagement: React.FC<StoreStaffManagementProps> = ({ stor
                     />
                   </div>
                   <div>
-                    <Label htmlFor="phone">Telepon</Label>
+                    <Label htmlFor="phone">Phone</Label>
                     <Input
                       id="phone"
                       type="tel"
@@ -323,10 +323,10 @@ export const StoreStaffManagement: React.FC<StoreStaffManagementProps> = ({ stor
                       variant="outline"
                       onClick={() => setCreateDialogOpen(false)}
                     >
-                      Batal
+                      Cancel
                     </Button>
                     <Button type="submit" disabled={loading}>
-                      Buat Staf
+                      Create Staff
                     </Button>
                   </div>
                 </form>
@@ -337,15 +337,15 @@ export const StoreStaffManagement: React.FC<StoreStaffManagementProps> = ({ stor
       </CardHeader>
       <CardContent>
         {loading && staff.length === 0 ? (
-          <p className="text-muted-foreground">Memuat staf...</p>
+          <p className="text-muted-foreground">Loading staff...</p>
         ) : (
           <div className="space-y-4">
             {staff.length === 0 ? (
               <div className="text-center py-8">
                 <Users className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
-                <h3 className="text-lg font-semibold mb-2">Belum ada staf yang ditugaskan</h3>
+                <h3 className="text-lg font-semibold mb-2">No staff assigned yet</h3>
                 <p className="text-muted-foreground mb-4">
-                  Tambahkan anggota staf untuk membantu mengelola toko ini.
+                  Add staff members to help manage this store.
                 </p>
               </div>
             ) : (
@@ -358,7 +358,7 @@ export const StoreStaffManagement: React.FC<StoreStaffManagementProps> = ({ stor
                     <div className="flex-1">
                       <div className="flex items-start sm:items-center gap-3">
                         <div>
-                          <h4 className="font-medium">{staffMember.full_name || 'Tanpa nama'}</h4>
+                          <h4 className="font-medium">{staffMember.full_name || 'Unnamed'}</h4>
                           <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4 text-sm text-muted-foreground">
                             <div className="flex items-center gap-1">
                               <Mail className="h-3 w-3" />
@@ -380,7 +380,7 @@ export const StoreStaffManagement: React.FC<StoreStaffManagementProps> = ({ stor
                     </div>
                     <div className="flex-shrink-0 flex items-center gap-2">
                       <Badge variant={staffMember.is_active ? 'default' : 'secondary'}>
-                        {staffMember.is_active ? 'Aktif' : 'Tidak Aktif'}
+                        {staffMember.is_active ? 'Active' : 'Inactive'}
                       </Badge>
                       <Button
                         size="sm"
@@ -388,7 +388,7 @@ export const StoreStaffManagement: React.FC<StoreStaffManagementProps> = ({ stor
                         onClick={() => handleRemoveStaff(staffMember.id)}
                         disabled={loading}
                       >
-                        Hapus
+                        Delete
                       </Button>
                     </div>
                   </div>

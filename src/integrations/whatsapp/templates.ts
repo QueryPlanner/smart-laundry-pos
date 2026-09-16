@@ -30,14 +30,14 @@ const getReceiptBaseUrl = (): string => {
 };
 
 /**
- * Get payment status in Indonesian
+ * Get payment status in English
  */
-const getPaymentStatusIndonesian = (status: string): string => {
+const getPaymentStatusLabel = (status: string): string => {
   const statusMap: { [key: string]: string } = {
-    'pending': 'Belum Lunas',
-    'completed': 'Lunas',
-    'down_payment': 'DP',
-    'refunded': 'Dikembalikan'
+    'pending': 'Unpaid',
+    'completed': 'Paid in Full',
+    'down_payment': 'Down Payment',
+    'refunded': 'Refunded'
   };
   return statusMap[status] || status;
 };
@@ -48,11 +48,11 @@ const getPaymentStatusIndonesian = (status: string): string => {
  * per message so repeat customers don't see the exact same line every time.
  */
 const WARM_CLOSINGS = [
-  'Semoga rezekinya makin lancar dan selalu diberi kesehatan ya! 🙏😊',
-  'Terima kasih atas kepercayaannya, semoga harinya menyenangkan! ✨',
-  'Semoga rezekinya makin berkah dan keluarga di rumah selalu sehat. Sampai jumpa lagi! 🙏',
-  'Terima kasih sudah setia menggunakan layanan kami, sukses selalu untuk Anda! 🌟',
-  'Semoga aktivitasnya lancar dan sehat selalu. Ditunggu kedatangannya lagi ya! 😊',
+  'Wishing you continued prosperity and good health! 🙏😊',
+  'Thank you for your trust — have a wonderful day! ✨',
+  'Wishing you and your family continued health. See you again soon! 🙏',
+  'Thank you for your continued support — wishing you every success! 🌟',
+  'Wishing you a smooth day and continued good health. We look forward to seeing you again! 😊',
 ];
 
 const getRandomWarmClosing = (): string =>
@@ -67,42 +67,42 @@ export const messageTemplates: MessageTemplate = {
    * Template for order creation notification
    */
   orderCreated: (data: OrderCreatedData): string => {
-    const currentDate = new Date().toLocaleDateString('id-ID', {
+    const currentDate = new Date().toLocaleDateString('en-IN', {
       day: '2-digit',
       month: '2-digit',
       year: 'numeric'
     });
-    const currentTime = new Date().toLocaleTimeString('id-ID', {
+    const currentTime = new Date().toLocaleTimeString('en-IN', {
       hour: '2-digit',
       minute: '2-digit',
       hour12: false
     });
 
-    const estimatedDate = data.estimatedCompletion || 'Akan dikonfirmasi';
+    const estimatedDate = data.estimatedCompletion || 'To be confirmed';
 
     // Build services list from order items
     const servicesList = data.orderItems.length > 0 
       ? data.orderItems.map(item => {
-          let serviceInfo = `Tipe Laundry : ${item.service_name}`;
+          let serviceInfo = `Laundry Service: ${item.service_name}`;
           if (item.service_type === 'kilo' && item.weight_kg) {
-            serviceInfo += `\nBerat (kg) = ${item.weight_kg}`;
+            serviceInfo += `\nWeight (kg) = ${item.weight_kg}`;
           }
           if (item.service_type === 'unit' && item.quantity) {
-            serviceInfo += `\nJumlah (unit) = ${item.quantity}`;
+            serviceInfo += `\nQuantity (units) = ${item.quantity}`;
           }
-          serviceInfo += `\nHarga = Rp. ${item.service_price.toLocaleString('id-ID')},-`;
+          serviceInfo += `\nPrice = Rp. ${item.service_price.toLocaleString('en-IN')},-`;
           return serviceInfo;
         }).join('\n\n')
-      : 'Tipe Laundry : Regular';
+      : 'Laundry Service: Regular';
 
     // Build points redeemed message if points were used for discount
     const pointsRedeemedMessage = data.pointsRedeemed && data.pointsRedeemed > 0
-      ? `\n🎁 Poin Ditukar : ${data.pointsRedeemed} poin (-Rp. ${(data.discountAmount || data.pointsRedeemed * POINTS_TO_CURRENCY_RATE).toLocaleString('id-ID')},-)`
+      ? `\n🎁 Points Redeemed: ${data.pointsRedeemed} points (-Rp. ${(data.discountAmount || data.pointsRedeemed * POINTS_TO_CURRENCY_RATE).toLocaleString('en-IN')},-)`
       : '';
 
     // Build points earned message if points were earned
     const pointsEarnedMessage = data.pointsEarned && data.pointsEarned > 0 && data.paymentStatus === 'completed'
-      ? `\n🎉 Selamat! Anda mendapatkan ${data.pointsEarned} poin laundry! 🎉\n(1 poin per kg/unit)`
+      ? `\n🎉 Congratulations! You earned ${data.pointsEarned} laundry points! 🎉\n(1 point per kg/unit)`
       : '';
 
     // Combine points messages
@@ -112,31 +112,31 @@ export const messageTemplates: MessageTemplate = {
 
     // Build discount section for the pricing block
     const discountSection = data.pointsRedeemed && data.pointsRedeemed > 0
-      ? `\nDiskon Poin = -Rp. ${(data.discountAmount || data.pointsRedeemed * POINTS_TO_CURRENCY_RATE).toLocaleString('id-ID')},-\nTotal = Rp. ${data.totalAmount.toLocaleString('id-ID')},-`
+      ? `\nPoints Discount = -Rp. ${(data.discountAmount || data.pointsRedeemed * POINTS_TO_CURRENCY_RATE).toLocaleString('en-IN')},-\nTotal = Rp. ${data.totalAmount.toLocaleString('en-IN')},-`
       : '';
 
     return `${data.storeInfo.name}
 ${data.storeInfo.address}
-No. HP ${data.storeInfo.phone}
+Phone: ${data.storeInfo.phone}
 ====================
-Tanggal : ${currentDate} - ${currentTime}
-Nama : ${data.customerName}
+Date: ${currentDate} - ${currentTime}
+Name: ${data.customerName}
 ===================
 
 ${servicesList}
 
-Subtotal = Rp. ${data.subtotal.toLocaleString('id-ID')},-${discountSection}
+Subtotal = Rp. ${data.subtotal.toLocaleString('en-IN')},-${discountSection}
 
 ====================
-Perkiraan Selesai : 
+Estimated Completion:
 ${estimatedDate}
 ====================
-Status : ${getPaymentStatusIndonesian(data.paymentStatus)}
+Status: ${getPaymentStatusLabel(data.paymentStatus)}
 ${pointsMessage}
 
-Terima kasih telah menggunakan layanan kami! 🙏
+Thank you for using our service! 🙏
 ====================
-Klik link dibawah ini untuk melihat nota digital
+Click the link below to view your digital receipt
 ${getReceiptBaseUrl()}/receipt/${data.orderId}`;
   },
 
@@ -144,12 +144,12 @@ ${getReceiptBaseUrl()}/receipt/${data.orderId}`;
    * Template for order completion notification
    */
   orderCompleted: (data: OrderCompletedData): string => {
-    const completedDate = new Date().toLocaleDateString('id-ID', {
+    const completedDate = new Date().toLocaleDateString('en-IN', {
       day: '2-digit',
       month: '2-digit',
       year: 'numeric'
     });
-    const completedTime = new Date().toLocaleTimeString('id-ID', {
+    const completedTime = new Date().toLocaleTimeString('en-IN', {
       hour: '2-digit',
       minute: '2-digit',
       hour12: false
@@ -158,43 +158,43 @@ ${getReceiptBaseUrl()}/receipt/${data.orderId}`;
     // Build services list from order items
     const servicesList = data.orderItems.length > 0 
       ? data.orderItems.map(item => {
-          let serviceInfo = `Tipe Laundry : ${item.service_name}`;
+          let serviceInfo = `Laundry Service: ${item.service_name}`;
           if (item.service_type === 'kilo' && item.weight_kg) {
-            serviceInfo += `\nBerat (kg) = ${item.weight_kg}`;
+            serviceInfo += `\nWeight (kg) = ${item.weight_kg}`;
           }
           return serviceInfo;
         }).join('\n\n')
-      : 'Tipe Laundry : Regular';
+      : 'Laundry Service: Regular';
 
-    return `🎉 *LAUNDRY SELESAI* 🎉
+    return `🎉 *LAUNDRY COMPLETE* 🎉
 
-Hai ${data.customerName} 👋
+Hi ${data.customerName} 👋
 
 ${data.storeInfo.name}
 ${data.storeInfo.address}
-No. HP ${data.storeInfo.phone}
+Phone: ${data.storeInfo.phone}
 ====================
-Tanggal Selesai : ${completedDate} - ${completedTime}
-No Nota : ${data.orderId.slice(-8).toUpperCase()}
-Nama : ${data.customerName}
+Completion Date: ${completedDate} - ${completedTime}
+Receipt No: ${data.orderId.slice(-8).toUpperCase()}
+Name: ${data.customerName}
 ===================
 
 ${servicesList}
-Total Bayar = Rp. ${data.totalAmount.toLocaleString('id-ID')},-
+Total Paid = Rp. ${data.totalAmount.toLocaleString('en-IN')},-
 
 ====================
-Status : SELESAI ✅
-Selesai pada : ${data.completedAt}
-Siap diambil : YA
+Status: COMPLETE ✅
+Completed at: ${data.completedAt}
+Ready for pickup: YES
 ====================
 
-Laundry Anda sudah selesai, wangi, dan siap diambil! 🧺✨
-Silakan datang ke toko dengan membawa nota ini ya.
+Your laundry is clean, fresh, and ready for pickup! 🧺✨
+Please visit the store and bring this receipt.
 
 ${getRandomWarmClosing()}
 
 ====================
-Klik link dibawah ini untuk melihat nota digital
+Click the link below to view your digital receipt
 ${getReceiptBaseUrl()}/receipt/${data.orderId}`;
   },
 
@@ -202,12 +202,12 @@ ${getReceiptBaseUrl()}/receipt/${data.orderId}`;
    * Template for order ready for pickup notification
    */
   orderReadyForPickup: (data: OrderReadyForPickupData): string => {
-    const readyDate = new Date().toLocaleDateString('id-ID', {
+    const readyDate = new Date().toLocaleDateString('en-IN', {
       day: '2-digit',
       month: '2-digit',
       year: 'numeric'
     });
-    const readyTime = new Date().toLocaleTimeString('id-ID', {
+    const readyTime = new Date().toLocaleTimeString('en-IN', {
       hour: '2-digit',
       minute: '2-digit',
       hour12: false
@@ -216,28 +216,28 @@ ${getReceiptBaseUrl()}/receipt/${data.orderId}`;
     // Build services list from order items
     const servicesList = data.orderItems.length > 0 
       ? data.orderItems.map(item => {
-          let serviceInfo = `Tipe Laundry : ${item.service_name}`;
+          let serviceInfo = `Laundry Service: ${item.service_name}`;
           if (item.service_type === 'kilo' && item.weight_kg) {
-            serviceInfo += `\nBerat (kg) = ${item.weight_kg}`;
+            serviceInfo += `\nWeight (kg) = ${item.weight_kg}`;
           }
           return serviceInfo;
         }).join('\n\n')
-      : 'Tipe Laundry : Regular';
+      : 'Laundry Service: Regular';
 
-    return `📦 *LAUNDRY SIAP DIAMBIL* 📦
+    return `📦 *LAUNDRY READY FOR PICKUP* 📦
 
-Hai ${data.customerName},
-Cucian anda sudah selesai, silahkan ambil di ${data.storeInfo.name}
+Hi ${data.customerName},
+Your laundry is ready. Please pick it up at ${data.storeInfo.name}
 
 ====================
-No Nota : ${data.orderId.slice(-8).toUpperCase()}
+Receipt No: ${data.orderId.slice(-8).toUpperCase()}
 
-Total Bayar : Rp. ${data.totalAmount.toLocaleString('id-ID')},-
-Status Bayar: ${getPaymentStatusIndonesian(data.paymentStatus)}
+Total: Rp. ${data.totalAmount.toLocaleString('en-IN')},-
+Payment Status: ${getPaymentStatusLabel(data.paymentStatus)}
 
-Terima kasih telah menggunakan layanan kami! 🙏
+Thank you for using our service! 🙏
 ====================
-Klik link dibawah ini untuk melihat nota digital
+Click the link below to view your digital receipt
 ${getReceiptBaseUrl()}/receipt/${data.orderId}`;
   },
 
@@ -247,20 +247,20 @@ ${getReceiptBaseUrl()}/receipt/${data.orderId}`;
   paymentConfirmation: (data: PaymentConfirmationData): string => {
     // Build points earned message if points were earned
     const pointsEarnedMessage = data.pointsEarned && data.pointsEarned > 0
-      ? `\n🎉 Selamat! Anda mendapatkan ${data.pointsEarned} poin laundry! 🎉`
+      ? `\n🎉 Congratulations! You earned ${data.pointsEarned} laundry points! 🎉`
       : '';
 
-    return `✅ *KONFIRMASI PEMBAYARAN* ✅
+    return `✅ *PAYMENT CONFIRMATION* ✅
 
-Hai ${data.customerName} 👋
+Hi ${data.customerName} 👋
 
-Pembayaran Anda telah dikonfirmasi, terima kasih! 💚
-Status Bayar: ${getPaymentStatusIndonesian(data.paymentStatus)}${pointsEarnedMessage}
+Your payment has been confirmed, thank you! 💚
+Payment Status: ${getPaymentStatusLabel(data.paymentStatus)}${pointsEarnedMessage}
 
 ${getRandomWarmClosing()}
 
 ====================
-Klik link dibawah ini untuk melihat nota digital
+Click the link below to view your digital receipt
 ${getReceiptBaseUrl()}/receipt/${data.orderId}`;
   },
 };
@@ -277,15 +277,15 @@ export class MessageBuilder {
     orderId: string,
     customMessage: string
   ): string {
-    return `📋 *Notifikasi Pesanan ${orderId}*
+    return `📋 *Order Notification ${orderId}*
 
-Halo ${customerName}!
+Hello ${customerName}!
 
 ${customMessage}
 
-Terima kasih telah menggunakan layanan kami! 🙏
+Thank you for using our service! 🙏
 
-_Pesan otomatis dari Smart Laundry POS_`;
+_Automated message from Smart Laundry POS_`;
   }
 
   /**
@@ -296,15 +296,15 @@ _Pesan otomatis dari Smart Laundry POS_`;
     orderId: string,
     daysOverdue: number
   ): string {
-    return `⏰ *Pengingat Pengambilan Laundry*
+    return `⏰ *Laundry Pickup Reminder*
 
-Halo ${customerName}!
+Hello ${customerName}!
 
-Pesanan laundry Anda dengan ID *${orderId}* sudah dapat diambil sejak ${daysOverdue} hari yang lalu.
+Your laundry order with ID *${orderId}* has been ready for pickup for ${daysOverdue} days.
 
-Mohon segera ambil laundry Anda. Terima kasih! 🙏
+Please pick up your laundry soon. Thank you! 🙏
 
-_Pesan otomatis dari Smart Laundry POS_`;
+_Automated message from Smart Laundry POS_`;
   }
 
   /**
@@ -314,14 +314,14 @@ _Pesan otomatis dari Smart Laundry POS_`;
     customerName: string,
     promoDetails: string
   ): string {
-    return `🎁 *Promo Spesial Untuk Anda!*
+    return `🎁 *Special Offer For You!*
 
-Halo ${customerName}! ✨
+Hello ${customerName}! ✨
 
 ${promoDetails}
 
-Jangan lewatkan kesempatan ini! 🚀
+Do not miss this opportunity! 🚀
 
-_Pesan dari Smart Laundry POS_`;
+_Message from Smart Laundry POS_`;
   }
 }

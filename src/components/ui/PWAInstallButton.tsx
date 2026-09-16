@@ -25,7 +25,7 @@ export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({
     return (
       <div className={`flex items-center gap-2 text-green-600 text-sm ${className}`}>
         <Check className="h-4 w-4" />
-        {showText && <span>Aplikasi Terpasang</span>}
+        {showText && <span>App Installed</span>}
       </div>
     );
   }
@@ -38,12 +38,12 @@ export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({
       variant={variant}
       size={size}
       className={`flex items-center gap-2 bg-blue-50 border-blue-300 text-blue-700 hover:bg-blue-100 ${className}`}
-      title={isIOS ? 'Tambah ke Layar Utama' : 'Install Aplikasi'}
+      title={isIOS ? 'Add to Home Screen' : 'Install App'}
     >
       {isIOS ? <Smartphone className="h-4 w-4" /> : <Download className="h-4 w-4" />}
       {showText && (
         <span className="hidden sm:inline">
-          {isIOS ? 'Tambah ke Home' : 'Install App'}
+          {isIOS ? 'Add to Home Screen' : 'Install App'}
         </span>
       )}
     </Button>

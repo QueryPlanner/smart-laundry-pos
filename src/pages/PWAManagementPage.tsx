@@ -14,9 +14,9 @@ export const PWAManagementPage: React.FC<PWAManagementPageProps> = ({ onBack }) 
   const [activeTab, setActiveTab] = useState('install');
 
   usePageMeta({
-    title: 'Cara Install Aplikasi Smart Laundry POS - Android, iOS, Desktop',
+    title: 'How to Install Smart Laundry POS - Android, iOS, Desktop',
     description:
-      'Panduan instal Smart Laundry POS sebagai aplikasi (PWA) di Android, iOS, Windows, dan Mac. Akses offline dan tampilan seperti aplikasi native langsung dari layar utama.',
+      'Guide to installing Smart Laundry POS as an app (PWA) on Android, iOS, Windows, and Mac. Access it offline with a native-app experience from your home screen.',
     path: '/install',
   });
 
@@ -32,7 +32,7 @@ export const PWAManagementPage: React.FC<PWAManagementPageProps> = ({ onBack }) 
               className="mb-4"
             >
               <ArrowLeft className="h-4 w-4 mr-2" />
-              Kembali
+              Back
             </Button>
           )}
           
@@ -41,10 +41,10 @@ export const PWAManagementPage: React.FC<PWAManagementPageProps> = ({ onBack }) 
               <Smartphone className="h-12 w-12 text-blue-600" />
             </div>
             <h1 className="text-2xl font-bold text-gray-900 mb-2">
-              Install Aplikasi Smart Laundry POS
+              Install Smart Laundry POS
             </h1>
             <p className="text-gray-600">
-              Install aplikasi untuk pengalaman yang lebih baik dan akses offline
+              Install the app for a better experience and offline access
             </p>
           </div>
         </div>
@@ -74,8 +74,8 @@ export const PWAManagementPage: React.FC<PWAManagementPageProps> = ({ onBack }) 
         {/* Info Section */}
         <div className="mt-8 text-center text-sm text-gray-500">
           <p>
-            Jika mengalami kesulitan, silakan hubungi support atau gunakan tab Diagnostics
-            untuk troubleshooting masalah PWA.
+            If you run into issues, contact support or use the Diagnostics tab
+            to troubleshoot PWA problems.
           </p>
         </div>
       </div>

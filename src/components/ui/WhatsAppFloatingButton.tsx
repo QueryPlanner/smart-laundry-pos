@@ -11,7 +11,7 @@ interface WhatsAppFloatingButtonProps {
 
 export const WhatsAppFloatingButton: React.FC<WhatsAppFloatingButtonProps> = ({
   phoneNumber = '6281280272326', // Default phone number
-  message = 'Halo, saya tertarik dengan Smart Laundry POS',
+  message = 'Hello, I am interested in Smart Laundry POS',
   position = 'bottom-right',
   className = ''
 }) => {

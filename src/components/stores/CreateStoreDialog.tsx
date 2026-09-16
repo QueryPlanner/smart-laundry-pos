@@ -32,8 +32,8 @@ export const CreateStoreDialog: React.FC<CreateStoreDialogProps> = ({ onStoreCre
     try {
       await authService.createStore(formData);
       toast({
-        title: "Berhasil",
-        description: "Toko berhasil dibuat!",
+        title: "Success",
+        description: "Store created successfully!",
       });
       setOpen(false);
       setFormData({
@@ -46,8 +46,8 @@ export const CreateStoreDialog: React.FC<CreateStoreDialogProps> = ({ onStoreCre
       onStoreCreated();
     } catch (error) {
       toast({
-        title: "Gagal",
-        description: error instanceof Error ? error.message : "Gagal membuat toko",
+        title: "Failed",
+        description: error instanceof Error ? error.message : "Failed to create store",
         variant: "destructive",
       });
     } finally {
@@ -64,54 +64,54 @@ export const CreateStoreDialog: React.FC<CreateStoreDialogProps> = ({ onStoreCre
       <DialogTrigger asChild>
         <Button className="flex items-center gap-2">
           <Plus className="h-4 w-4" />
-          Buat Toko
+          Create Store
         </Button>
       </DialogTrigger>
       <DialogContent className="sm:max-w-[500px] max-h-[90vh] overflow-y-auto">
         <DialogHeader>
-          <DialogTitle>Buat Toko Baru</DialogTitle>
+          <DialogTitle>Create New Store</DialogTitle>
         </DialogHeader>
         <form onSubmit={handleSubmit} className="space-y-4 pt-2">
           <div className="space-y-2">
-            <Label htmlFor="name">Nama Toko *</Label>
+            <Label htmlFor="name">Store Name *</Label>
             <Input
               id="name"
               value={formData.name}
               onChange={(e) => handleInputChange('name', e.target.value)}
-              placeholder="Masukkan nama toko"
+              placeholder="Enter store name"
               required
             />
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="description">Deskripsi</Label>
+            <Label htmlFor="description">Description</Label>
             <Textarea
               id="description"
               value={formData.description}
               onChange={(e) => handleInputChange('description', e.target.value)}
-              placeholder="Deskripsi toko (opsional)"
+              placeholder="Store description (optional)"
               rows={3}
             />
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="address">Alamat</Label>
+            <Label htmlFor="address">Address</Label>
             <Textarea
               id="address"
               value={formData.address}
               onChange={(e) => handleInputChange('address', e.target.value)}
-              placeholder="Alamat toko (opsional)"
+              placeholder="Store address (optional)"
               rows={2}
             />
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="phone">Nomor Telepon</Label>
+            <Label htmlFor="phone">Phone Number</Label>
             <Input
               id="phone"
               value={formData.phone}
               onChange={(e) => handleInputChange('phone', e.target.value)}
-              placeholder="Nomor telepon toko (opsional)"
+              placeholder="Store phone number (optional)"
             />
           </div>
 
@@ -122,16 +122,16 @@ export const CreateStoreDialog: React.FC<CreateStoreDialogProps> = ({ onStoreCre
               type="email"
               value={formData.email}
               onChange={(e) => handleInputChange('email', e.target.value)}
-              placeholder="Email toko (opsional)"
+              placeholder="Store email (optional)"
             />
           </div>
 
           <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2 pt-4">
             <Button type="button" variant="outline" onClick={() => setOpen(false)} className="w-full sm:w-auto">
-              Batal
+              Cancel
             </Button>
             <Button type="submit" disabled={loading || !formData.name.trim()} className="w-full sm:w-auto">
-              {loading ? 'Membuat...' : 'Buat Toko'}
+              {loading ? 'Creating...' : 'Create Store'}
             </Button>
           </div>
         </form>

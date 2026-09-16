@@ -58,7 +58,7 @@ export const PayLaterPaymentDialog: React.FC<PayLaterPaymentDialogProps> = ({
   const { data: customerPoints } = useCustomerPoints(customerPhone);
 
   const paymentMethods = [
-    { id: 'cash', name: 'Tunai', icon: Banknote, color: 'bg-green-500' },
+    { id: 'cash', name: 'Cash', icon: Banknote, color: 'bg-green-500' },
     { id: 'qris', name: 'QRIS', icon: QrCode, color: 'bg-blue-500' },
     { id: 'transfer', name: 'Transfer', icon: Smartphone, color: 'bg-purple-500' },
   ];
@@ -165,7 +165,7 @@ export const PayLaterPaymentDialog: React.FC<PayLaterPaymentDialogProps> = ({
   const quickCashOptions = [50000, 100000, 150000, 200000];
 
   const formatCurrency = (amount: number) => {
-    return amount.toLocaleString('id-ID');
+    return amount.toLocaleString('en-IN');
   };
 
   // Check if submit is valid
@@ -182,23 +182,23 @@ export const PayLaterPaymentDialog: React.FC<PayLaterPaymentDialogProps> = ({
     <Dialog open={isOpen} onOpenChange={onClose}>
       <DialogContent className="sm:max-w-[500px] max-h-[90vh] overflow-y-auto" aria-describedby="pay-later-payment-description">
         <DialogHeader>
-          <DialogTitle>Pembayaran Pesanan</DialogTitle>
+          <DialogTitle>Order Payment</DialogTitle>
           <DialogDescription id="pay-later-payment-description">
-            Proses pembayaran untuk pesanan {customerName}
+            Process payment for order {customerName}
           </DialogDescription>
         </DialogHeader>
         <form onSubmit={handleFormSubmit}>
           <div className="grid gap-4 py-4">
             {/* Order Info */}
             <div className="text-center p-3 bg-gray-50 rounded-lg">
-              <p className="text-sm text-muted-foreground">Pelanggan</p>
+            <p className="text-sm text-muted-foreground">Customer</p>
               <p className="font-semibold">{customerName}</p>
               <p className="text-xs text-muted-foreground">{customerPhone}</p>
             </div>
 
             {/* Total Amount */}
             <div className="text-center">
-              <p className="text-sm text-muted-foreground">Total Pembayaran</p>
+              <p className="text-sm text-muted-foreground">Payment Total</p>
               <p className="text-3xl font-bold text-blue-600">
                 Rp {formatCurrency(totalAmount)}
               </p>
@@ -209,7 +209,7 @@ export const PayLaterPaymentDialog: React.FC<PayLaterPaymentDialogProps> = ({
             {/* Discount Section */}
             {currentStore?.enable_points && (
               <div className="space-y-2">
-                <Label className="text-sm font-medium">Diskon (Opsional)</Label>
+                <Label className="text-sm font-medium">Discount (Optional)</Label>
                 <Tabs value={discountType} onValueChange={(v) => handleDiscountTypeChange(v as 'custom' | 'points')}>
                   <TabsList className="grid w-full grid-cols-2 h-8">
                     <TabsTrigger value="custom" className="flex items-center gap-1 text-xs">
@@ -218,7 +218,7 @@ export const PayLaterPaymentDialog: React.FC<PayLaterPaymentDialogProps> = ({
                     </TabsTrigger>
                     <TabsTrigger value="points" className="flex items-center gap-1 text-xs" disabled={!hasPoints}>
                       <Gift className="h-3 w-3" />
-                      Poin {hasPoints && `(${pointsAvailable})`}
+                      Points {hasPoints && `(${pointsAvailable})`}
                     </TabsTrigger>
                   </TabsList>
                   <TabsContent value="custom" className="space-y-1 mt-2">
@@ -226,43 +226,43 @@ export const PayLaterPaymentDialog: React.FC<PayLaterPaymentDialogProps> = ({
                       type="number"
                       value={customDiscount}
                       onChange={(e) => handleCustomDiscountChange(e.target.value)}
-                      placeholder="Masukkan diskon (Rp)"
+                      placeholder="Enter discount (IDR)"
                       className="text-center h-8 text-sm"
                       min={0}
                       max={totalAmount}
                     />
                     {discountError && (
-                      <p className="text-xs text-red-600">Diskon tidak boleh melebihi total pembayaran</p>
+                      <p className="text-xs text-red-600">Discount cannot exceed the payment total</p>
                     )}
                   </TabsContent>
                   <TabsContent value="points" className="space-y-1 mt-2">
                     {hasPoints ? (
                       <>
                         <div className="flex items-center justify-between text-xs text-muted-foreground mb-1">
-                          <span>Poin tersedia: {pointsAvailable}</span>
-                          <span>1 poin = Rp{POINTS_TO_CURRENCY_RATE}</span>
+                          <span>Points available: {pointsAvailable}</span>
+                          <span>1 point = IDR {POINTS_TO_CURRENCY_RATE}</span>
                         </div>
                         <Input
                           type="number"
                           value={pointsToRedeem}
                           onChange={(e) => handlePointsToRedeemChange(e.target.value)}
-                          placeholder="Masukkan jumlah poin"
+                          placeholder="Enter the number of points"
                           className="text-center h-8 text-sm"
                           min={0}
                           max={pointsAvailable}
                         />
                         {pointsError && (
-                          <p className="text-xs text-red-600">Poin tidak mencukupi! Maksimal: {pointsAvailable} poin</p>
+                          <p className="text-xs text-red-600">Insufficient points! Maximum: {pointsAvailable}</p>
                         )}
                         {parseFloat(pointsToRedeem) > 0 && !pointsError && (
                           <p className="text-xs text-green-600 text-center">
-                            Diskon: Rp {formatCurrency(parseFloat(pointsToRedeem) * POINTS_TO_CURRENCY_RATE)}
+                            Discount: Rp {formatCurrency(parseFloat(pointsToRedeem) * POINTS_TO_CURRENCY_RATE)}
                           </p>
                         )}
                       </>
                     ) : (
                       <p className="text-xs text-muted-foreground text-center py-2">
-                        Pelanggan belum memiliki poin
+                        Customer has no points yet
                       </p>
                     )}
                   </TabsContent>
@@ -278,12 +278,12 @@ export const PayLaterPaymentDialog: React.FC<PayLaterPaymentDialogProps> = ({
                   <span>Rp {formatCurrency(totalAmount)}</span>
                 </div>
                 <div className="flex justify-between text-sm">
-                  <span className="text-gray-600">Diskon:</span>
+                  <span className="text-gray-600">Discount:</span>
                   <span className="text-green-600">-Rp {formatCurrency(discountAmount)}</span>
                 </div>
                 <Separator />
                 <div className="flex justify-between text-lg font-bold">
-                  <span>Total Bayar:</span>
+                  <span>Total to Pay:</span>
                   <span className="text-blue-600">Rp {formatCurrency(finalAmount)}</span>
                 </div>
               </div>
@@ -293,7 +293,7 @@ export const PayLaterPaymentDialog: React.FC<PayLaterPaymentDialogProps> = ({
 
             {/* Payment Method Selection */}
             <div className="space-y-2">
-              <Label className="text-sm font-medium">Metode Pembayaran</Label>
+              <Label className="text-sm font-medium">Payment Method</Label>
               <div className="grid grid-cols-3 gap-2">
                 {paymentMethods.map((method) => {
                   const IconComponent = method.icon;
@@ -320,7 +320,7 @@ export const PayLaterPaymentDialog: React.FC<PayLaterPaymentDialogProps> = ({
             {selectedPaymentMethod === 'cash' && (
               <div className="space-y-3">
                 <div className="space-y-2">
-                  <Label htmlFor="cash-received">Uang Diterima</Label>
+                  <Label htmlFor="cash-received">Cash Received</Label>
                   <Input
                     id="cash-received"
                     ref={inputRef}
@@ -350,7 +350,7 @@ export const PayLaterPaymentDialog: React.FC<PayLaterPaymentDialogProps> = ({
 
                 {parseFloat(cashReceived) >= finalAmount && change > 0 && (
                   <div className="text-center p-4 bg-green-50 rounded-lg border border-green-200">
-                    <p className="text-sm text-green-700 font-medium">Kembalian</p>
+                    <p className="text-sm text-green-700 font-medium">Change</p>
                     <p className="text-2xl font-bold text-green-600">
                       Rp {formatCurrency(change)}
                     </p>
@@ -359,18 +359,18 @@ export const PayLaterPaymentDialog: React.FC<PayLaterPaymentDialogProps> = ({
 
                 {parseFloat(cashReceived) >= finalAmount && change === 0 && (
                   <div className="text-center p-4 bg-blue-50 rounded-lg border border-blue-200">
-                    <p className="text-sm text-blue-700 font-medium">Uang Pas</p>
+                    <p className="text-sm text-blue-700 font-medium">Exact Amount</p>
                     <p className="text-lg font-semibold text-blue-600">
-                      Tidak ada kembalian
+                      No change
                     </p>
                   </div>
                 )}
 
                 {parseFloat(cashReceived) > 0 && parseFloat(cashReceived) < finalAmount && (
                   <div className="text-center p-3 bg-red-50 rounded-lg border border-red-200">
-                    <p className="text-sm text-red-700 font-medium">Uang Kurang</p>
+                    <p className="text-sm text-red-700 font-medium">Insufficient Amount</p>
                     <p className="text-lg font-semibold text-red-600">
-                      Kurang Rp {formatCurrency(finalAmount - parseFloat(cashReceived))}
+                      Short by IDR {formatCurrency(finalAmount - parseFloat(cashReceived))}
                     </p>
                   </div>
                 )}
@@ -380,14 +380,14 @@ export const PayLaterPaymentDialog: React.FC<PayLaterPaymentDialogProps> = ({
 
           <DialogFooter className="gap-2">
             <Button type="button" variant="outline" onClick={onClose} disabled={isSubmitting}>
-              Batal
+              Cancel
             </Button>
             <Button
               type="submit"
               disabled={!isSubmitValid() || isSubmitting}
               className="bg-green-600 hover:bg-green-700"
             >
-              {isSubmitting ? 'Memproses...' : 'Konfirmasi Pembayaran'}
+              {isSubmitting ? 'Processing...' : 'Confirm Payment'}
             </Button>
           </DialogFooter>
         </form>

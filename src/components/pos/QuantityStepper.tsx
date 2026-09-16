@@ -107,6 +107,6 @@ export const AddToCartButton: React.FC<AddToCartButtonProps> = ({
     className={`h-8 flex-shrink-0 gap-1 px-3 text-xs sm:h-9 sm:text-sm ${className}`}
   >
     <Plus className="h-3.5 w-3.5" />
-    Tambah
+    Add
   </Button>
 );

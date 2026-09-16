@@ -5,7 +5,7 @@ import { Button } from '@/components/ui/button';
 import { History } from 'lucide-react';
 
 const Index = () => {
-  usePageTitle('Order Baru');
+  usePageTitle('New Order');
   const navigate = useNavigate();
 
   return (
@@ -13,8 +13,8 @@ const Index = () => {
       {/* Page Header */}
       <div className="flex items-center justify-between gap-2">
         <div className="min-w-0">
-          <h1 className="truncate text-lg font-bold sm:text-2xl">Order Baru</h1>
-          <p className="hidden text-muted-foreground sm:block">Buat order laundry baru</p>
+          <h1 className="truncate text-lg font-bold sm:text-2xl">New Order</h1>
+          <p className="hidden text-muted-foreground sm:block">Create a new laundry order</p>
         </div>
         <Button
           variant="default"
@@ -23,7 +23,7 @@ const Index = () => {
           size="sm"
         >
           <History className="h-4 w-4" />
-          <span className="hidden sm:inline">Riwayat Order</span>
+          <span className="hidden sm:inline">Order History</span>
         </Button>
       </div>
 

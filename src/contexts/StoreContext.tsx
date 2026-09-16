@@ -210,7 +210,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   // Only show loading screen on initial load, not during store operations
   if (loading && userStores.length === 0 && !currentStore) {
-    return <PageLoading text="Memuat toko..." />;
+    return <PageLoading text="Loading stores..." />;
   }
 
   return (

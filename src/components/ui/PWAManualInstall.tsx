@@ -24,9 +24,9 @@ export const PWAManualInstall: React.FC<PWAManualInstallProps> = ({ onClose }) =
           <div className="flex justify-center mb-2">
             <Check className="h-12 w-12 text-green-600" />
           </div>
-          <CardTitle className="text-green-600">Aplikasi Sudah Terpasang</CardTitle>
+          <CardTitle className="text-green-600">App Already Installed</CardTitle>
           <CardDescription>
-            Smart Laundry POS sudah terinstall di perangkat Anda
+            Smart Laundry POS is already installed on your device
           </CardDescription>
         </CardHeader>
       </Card>
@@ -39,7 +39,7 @@ export const PWAManualInstall: React.FC<PWAManualInstallProps> = ({ onClose }) =
         <div className="flex justify-between items-start">
           <div className="flex items-center gap-2">
             <Smartphone className="h-6 w-6 text-blue-600" />
-            <CardTitle>Install Aplikasi</CardTitle>
+            <CardTitle>Install App</CardTitle>
           </div>
           {onClose && (
             <Button variant="ghost" size="sm" onClick={onClose}>
@@ -48,7 +48,7 @@ export const PWAManualInstall: React.FC<PWAManualInstallProps> = ({ onClose }) =
           )}
         </div>
         <CardDescription>
-          Install Smart Laundry POS sebagai aplikasi native untuk pengalaman yang lebih baik
+          Install Smart Laundry POS as a native app for a better experience
         </CardDescription>
       </CardHeader>
       
@@ -62,10 +62,10 @@ export const PWAManualInstall: React.FC<PWAManualInstallProps> = ({ onClose }) =
               size="lg"
             >
               <Download className="h-5 w-5 mr-2" />
-              Install Aplikasi Otomatis
+              Install App Automatically
             </Button>
             <p className="text-sm text-gray-600 text-center">
-              atau ikuti petunjuk manual di bawah
+              or follow the manual instructions below
             </p>
           </div>
         )}
@@ -77,7 +77,7 @@ export const PWAManualInstall: React.FC<PWAManualInstallProps> = ({ onClose }) =
           className="w-full"
         >
           <Info className="h-4 w-4 mr-2" />
-          Petunjuk Install Manual
+          Manual Installation Instructions
         </Button>
 
         {/* Manual Installation Instructions */}
@@ -90,10 +90,10 @@ export const PWAManualInstall: React.FC<PWAManualInstallProps> = ({ onClose }) =
                   iPhone/iPad (Safari):
                 </h4>
                 <ol className="text-sm space-y-1 ml-4">
-                  <li>1. Buka halaman ini di Safari</li>
-                  <li>2. Tap ikon <strong>Share</strong> (kotak dengan panah ke atas)</li>
-                  <li>3. Scroll ke bawah dan pilih <strong>"Add to Home Screen"</strong></li>
-                  <li>4. Tap <strong>"Add"</strong> untuk konfirmasi</li>
+                  <li>1. Open this page in Safari</li>
+                  <li>2. Tap the <strong>Share</strong> icon (the box with an upward arrow)</li>
+                  <li>3. Scroll down and select <strong>"Add to Home Screen"</strong></li>
+                  <li>4. Tap <strong>"Add"</strong> to confirm</li>
                 </ol>
               </div>
             )}
@@ -105,10 +105,10 @@ export const PWAManualInstall: React.FC<PWAManualInstallProps> = ({ onClose }) =
                   Android:
                 </h4>
                 <ol className="text-sm space-y-1 ml-4">
-                  <li>1. Buka di Chrome atau browser yang mendukung PWA</li>
-                  <li>2. Tap menu <strong>⋮</strong> (tiga titik)</li>
-                  <li>3. Pilih <strong>"Add to Home screen"</strong> atau <strong>"Install app"</strong></li>
-                  <li>4. Tap <strong>"Add"</strong> atau <strong>"Install"</strong></li>
+                  <li>1. Open in Chrome or another PWA-compatible browser</li>
+                  <li>2. Tap the <strong>⋮</strong> menu (three dots)</li>
+                  <li>3. Select <strong>"Add to Home screen"</strong> or <strong>"Install app"</strong></li>
+                  <li>4. Tap <strong>"Add"</strong> or <strong>"Install"</strong></li>
                 </ol>
               </div>
             )}
@@ -120,21 +120,21 @@ export const PWAManualInstall: React.FC<PWAManualInstallProps> = ({ onClose }) =
                   Desktop (Chrome/Edge):
                 </h4>
                 <ol className="text-sm space-y-1 ml-4">
-                  <li>1. Buka di Chrome atau Microsoft Edge</li>
-                  <li>2. Cari ikon <strong>Install</strong> di address bar</li>
-                  <li>3. Klik ikon tersebut atau menu ⋮ → "Install Smart Laundry POS"</li>
-                  <li>4. Klik <strong>"Install"</strong> untuk konfirmasi</li>
+                  <li>1. Open in Chrome or Microsoft Edge</li>
+                  <li>2. Find the <strong>Install</strong> icon in the address bar</li>
+                  <li>3. Click the icon or open the ⋮ menu → "Install Smart Laundry POS"</li>
+                  <li>4. Click <strong>"Install"</strong> to confirm</li>
                 </ol>
               </div>
             )}
 
             <div className="border-t pt-3">
-              <h4 className="font-semibold text-sm mb-2">Keuntungan Install App:</h4>
+              <h4 className="font-semibold text-sm mb-2">Benefits of Installing the App:</h4>
               <ul className="text-sm space-y-1 ml-4">
-                <li>• Akses lebih cepat dari home screen</li>
-                <li>• Bisa berfungsi offline</li>
-                <li>• Pengalaman seperti aplikasi native</li>
-                <li>• Notifikasi push (jika didukung)</li>
+                <li>• Faster access from the home screen</li>
+                <li>• Works offline</li>
+                <li>• Native-app experience</li>
+                <li>• Push notifications (if supported)</li>
               </ul>
             </div>
           </div>
@@ -142,8 +142,8 @@ export const PWAManualInstall: React.FC<PWAManualInstallProps> = ({ onClose }) =
 
         {/* Browser Compatibility Notice */}
         <div className="text-xs text-gray-500 bg-yellow-50 p-3 rounded">
-          <strong>Catatan:</strong> Fitur install otomatis tersedia di Chrome, Edge, dan browser modern lainnya. 
-          Untuk Safari iOS, gunakan petunjuk manual di atas.
+          <strong>Notes:</strong> Automatic installation is available in Chrome, Edge, and other modern browsers.
+          For Safari on iOS, use the manual instructions above.
         </div>
       </CardContent>
     </Card>

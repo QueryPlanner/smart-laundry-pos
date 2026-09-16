@@ -40,7 +40,7 @@ export const Login: React.FC = () => {
   usePageTitle('Login');
   usePageMeta({
     description:
-      'Masuk atau daftar sebagai pemilik toko laundry di Smart Laundry POS. Gratis dipakai, tanpa kartu kredit, siap pakai dalam 5 menit.',
+      'Sign in or sign up as a laundry store owner with Smart Laundry POS. Free to use, no credit card required, and ready in 5 minutes.',
     path: '/login',
   });
 
@@ -82,7 +82,7 @@ export const Login: React.FC = () => {
   };
 
   if (loading) {
-    return <PageLoading text="Memuat..." />;
+    return <PageLoading text="Loading..." />;
   }
 
   return (
@@ -90,13 +90,13 @@ export const Login: React.FC = () => {
       <Card className="w-full max-w-md">
         <CardHeader className="text-center">
           <CardTitle className="text-2xl font-bold">Smart Laundry POS</CardTitle>
-          <CardDescription>Masuk ke akun Anda atau daftar sebagai pemilik toko</CardDescription>
+          <CardDescription>Sign in to your account or sign up as a store owner</CardDescription>
         </CardHeader>
         <CardContent>
           <Tabs defaultValue={defaultTab} className="w-full">
             <TabsList className="grid w-full grid-cols-2">
-              <TabsTrigger value="login">Masuk</TabsTrigger>
-              <TabsTrigger value="signup">Daftar</TabsTrigger>
+              <TabsTrigger value="login">Sign In</TabsTrigger>
+              <TabsTrigger value="signup">Sign Up</TabsTrigger>
             </TabsList>
             
             <TabsContent value="login">
@@ -106,12 +106,12 @@ export const Login: React.FC = () => {
                   <Input
                     id="login-email"
                     type="email"
-                    placeholder="Masukkan email Anda"
+                    placeholder="Enter your email"
                     {...loginForm.register('email', {
-                      required: 'Email wajib diisi',
+                      required: 'Email is required',
                       pattern: {
                         value: /^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$/i,
-                        message: 'Alamat email tidak valid'
+                        message: 'Invalid email address'
                       }
                     })}
                   />
@@ -121,18 +121,18 @@ export const Login: React.FC = () => {
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="login-password">Kata Sandi</Label>
+                  <Label htmlFor="login-password">Password</Label>
                   <div className="relative">
                     <Input
                       id="login-password"
                       type={showLoginPassword ? "text" : "password"}
-                      placeholder="Masukkan kata sandi Anda"
+                      placeholder="Enter your password"
                       className="pr-10"
                       {...loginForm.register('password', {
-                        required: 'Kata sandi wajib diisi',
+                        required: 'Password is required',
                         minLength: {
                           value: 6,
-                          message: 'Kata sandi minimal 6 karakter'
+                          message: 'Password must be at least 6 characters'
                         }
                       })}
                     />
@@ -161,7 +161,7 @@ export const Login: React.FC = () => {
                   disabled={isLoading}
                 >
                   {isLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                  Masuk
+                  Sign In
                 </Button>
               </form>
             </TabsContent>
@@ -169,13 +169,13 @@ export const Login: React.FC = () => {
             <TabsContent value="signup">
               <form onSubmit={signUpForm.handleSubmit(handleSignUp)} className="space-y-4">
                 <div className="space-y-2">
-                  <Label htmlFor="signup-fullname">Nama Lengkap</Label>
+                  <Label htmlFor="signup-fullname">Full Name</Label>
                   <Input
                     id="signup-fullname"
                     type="text"
-                    placeholder="Masukkan nama lengkap Anda"
+                    placeholder="Enter your full name"
                     {...signUpForm.register('fullName', {
-                      required: 'Nama lengkap wajib diisi'
+                      required: 'Full name is required'
                     })}
                   />
                   {signUpForm.formState.errors.fullName && (
@@ -188,12 +188,12 @@ export const Login: React.FC = () => {
                   <Input
                     id="signup-email"
                     type="email"
-                    placeholder="Masukkan email Anda"
+                    placeholder="Enter your email"
                     {...signUpForm.register('email', {
-                      required: 'Email wajib diisi',
+                      required: 'Email is required',
                       pattern: {
                         value: /^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$/i,
-                        message: 'Alamat email tidak valid'
+                        message: 'Invalid email address'
                       }
                     })}
                   />
@@ -203,13 +203,13 @@ export const Login: React.FC = () => {
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="signup-phone">Nomor Telepon</Label>
+                  <Label htmlFor="signup-phone">Phone Number</Label>
                   <Input
                     id="signup-phone"
                     type="tel"
-                    placeholder="Masukkan nomor telepon Anda"
+                    placeholder="Enter your phone number"
                     {...signUpForm.register('phone', {
-                      required: 'Nomor telepon wajib diisi'
+                      required: 'Phone number is required'
                     })}
                   />
                   {signUpForm.formState.errors.phone && (
@@ -218,18 +218,18 @@ export const Login: React.FC = () => {
                 </div>
                 
                 <div className="space-y-2">
-                  <Label htmlFor="signup-password">Kata Sandi</Label>
+                  <Label htmlFor="signup-password">Password</Label>
                   <div className="relative">
                     <Input
                       id="signup-password"
                       type={showSignupPassword ? "text" : "password"}
-                      placeholder="Buat kata sandi"
+                      placeholder="Create a password"
                       className="pr-10"
                       {...signUpForm.register('password', {
-                        required: 'Kata sandi wajib diisi',
+                        required: 'Password is required',
                         minLength: {
                           value: 6,
-                          message: 'Kata sandi minimal 6 karakter'
+                          message: 'Password must be at least 6 characters'
                         }
                       })}
                     />
@@ -253,13 +253,13 @@ export const Login: React.FC = () => {
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="signup-store-name">Nama Toko</Label>
+                  <Label htmlFor="signup-store-name">Store Name</Label>
                   <Input
                     id="signup-store-name"
                     type="text"
-                    placeholder="Masukkan nama toko Anda"
+                    placeholder="Enter your store name"
                     {...signUpForm.register('storeName', {
-                      required: 'Nama toko wajib diisi'
+                      required: 'Store name is required'
                     })}
                   />
                   {signUpForm.formState.errors.storeName && (
@@ -273,7 +273,7 @@ export const Login: React.FC = () => {
                       type="button"
                       className="flex w-full items-center justify-between rounded-md py-2 text-sm font-medium text-muted-foreground hover:text-foreground"
                     >
-                      <span>Detail toko (opsional)</span>
+                      <span>Store details (optional)</span>
                       <ChevronDown
                         className={`h-4 w-4 transition-transform duration-200 ${showStoreDetails ? 'rotate-180' : ''}`}
                       />
@@ -281,26 +281,26 @@ export const Login: React.FC = () => {
                   </CollapsibleTrigger>
                   <CollapsibleContent className="space-y-4 pt-2">
                     <div className="space-y-2">
-                      <Label htmlFor="signup-store-address">Alamat Toko</Label>
+                      <Label htmlFor="signup-store-address">Store Address</Label>
                       <Input
                         id="signup-store-address"
                         type="text"
-                        placeholder="Masukkan alamat toko Anda (opsional)"
+                        placeholder="Enter your store address (optional)"
                         {...signUpForm.register('storeAddress')}
                       />
                     </div>
 
                     <div className="space-y-2">
-                      <Label htmlFor="signup-store-phone">Nomor Telepon Toko</Label>
+                      <Label htmlFor="signup-store-phone">Store Phone Number</Label>
                       <Input
                         id="signup-store-phone"
                         type="tel"
-                        placeholder="Masukkan nomor telepon toko Anda (opsional)"
+                        placeholder="Enter your store phone number (optional)"
                         {...signUpForm.register('storePhone')}
                       />
                     </div>
                     <p className="text-xs text-muted-foreground">
-                      Bisa dilengkapi nanti di Pengaturan Toko.
+                      You can complete these details later in Store Settings.
                     </p>
                   </CollapsibleContent>
                 </Collapsible>
@@ -311,7 +311,7 @@ export const Login: React.FC = () => {
                   disabled={isLoading}
                 >
                   {isLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                  Daftar Gratis
+                  Sign Up Free
                 </Button>
               </form>
             </TabsContent>
@@ -322,7 +322,7 @@ export const Login: React.FC = () => {
         </CardContent>
         <CardFooter className="text-center">
           <p className="text-sm text-muted-foreground">
-            Akses aman ke sistem manajemen laundry Anda
+            Secure access to your laundry management system
           </p>
         </CardFooter>
       </Card>

@@ -144,8 +144,8 @@ export const useCreateOrderWithNotifications = () => {
             console.error('Error awarding points:', awardError);
             pointsEarned = 0;
             toast({
-              title: 'Poin Gagal Ditambahkan',
-              description: 'Pesanan tersimpan, tetapi poin pelanggan gagal ditambahkan.',
+              title: 'Failed to Add Points',
+              description: 'Order saved, but customer points could not be added.',
               variant: 'destructive',
             });
           } else if (Array.isArray(awardResult) && awardResult[0]?.awarded === false) {
@@ -187,8 +187,8 @@ export const useCreateOrderWithNotifications = () => {
           // native builds there's no console access to see the console.warn.
           console.warn('WhatsApp notification failed:', error);
           toast({
-            title: 'WhatsApp Gagal Terkirim',
-            description: error instanceof Error ? error.message : 'Gagal menyiapkan notifikasi WhatsApp',
+            title: 'WhatsApp Delivery Failed',
+            description: error instanceof Error ? error.message : 'Failed to prepare the WhatsApp notification',
             variant: 'destructive',
           });
         }
@@ -477,8 +477,8 @@ export const useUpdateOrderStatusWithNotifications = () => {
             // native builds there's no console access to see the console.warn.
             console.warn('WhatsApp notification failed:', error);
             toast({
-              title: 'WhatsApp Gagal Terkirim',
-              description: error instanceof Error ? error.message : 'Gagal menyiapkan notifikasi WhatsApp',
+              title: 'WhatsApp Delivery Failed',
+              description: error instanceof Error ? error.message : 'Failed to prepare the WhatsApp notification',
               variant: 'destructive',
             });
           }
@@ -512,8 +512,8 @@ export const useUpdateOrderStatusWithNotifications = () => {
             // native builds there's no console access to see the console.warn.
             console.warn('WhatsApp notification failed:', error);
             toast({
-              title: 'WhatsApp Gagal Terkirim',
-              description: error instanceof Error ? error.message : 'Gagal menyiapkan notifikasi WhatsApp',
+              title: 'WhatsApp Delivery Failed',
+              description: error instanceof Error ? error.message : 'Failed to prepare the WhatsApp notification',
               variant: 'destructive',
             });
           }

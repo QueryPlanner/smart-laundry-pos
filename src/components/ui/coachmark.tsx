@@ -36,43 +36,43 @@ interface CoachmarkProps {
 
 const coachmarkSteps: CoachmarkStep[] = [
   {
-    title: 'Selamat Datang di Smart Laundry POS! 🎉',
-    description: 'Kami akan memandu Anda melalui fitur-fitur utama. Di beranda ada checklist "Mulai Cepat" yang memandu Anda menyiapkan toko langkah demi langkah. Mari kita mulai!',
+    title: 'Welcome to Smart Laundry POS! 🎉',
+    description: 'We will guide you through the key features. Use the "Quick Start" checklist to set up your store step by step. Let us begin!',
     icon: Home,
     iconColor: 'text-rose-500',
     iconBgColor: 'bg-rose-100'
   },
   {
-    title: 'Buat Pesanan Baru',
-    description: 'Klik tombol "Buat Pesanan" untuk membuat pesanan laundry baru. Anda dapat menambahkan layanan, memilih pelanggan, dan menghitung total pembayaran dengan mudah.',
+    title: 'Create New Order',
+    description: 'Click "Create Order" to create a new laundry order. You can add services, select a customer, and calculate the payment total with ease.',
     icon: Plus,
     iconColor: 'text-blue-500',
     iconBgColor: 'bg-blue-100'
   },
   {
-    title: 'Kelola Pelanggan',
-    description: 'Gunakan menu "Pelanggan" untuk menambah, mengedit, atau melihat daftar pelanggan Anda. Data pelanggan akan tersimpan untuk memudahkan pemesanan berikutnya.',
+    title: 'Manage Customers',
+    description: 'Use the "Customers" menu to add, edit, or view your customer list. Customer data is saved to make future orders faster.',
     icon: Users,
     iconColor: 'text-green-500',
     iconBgColor: 'bg-green-100'
   },
   {
-    title: 'Lacak Riwayat Pesanan',
-    description: 'Akses "Laporan" untuk melihat semua pesanan, status pembayaran, dan riwayat transaksi. Anda juga dapat mencetak struk dan mengelola status pesanan.',
+    title: 'Track Order History',
+    description: 'Open "Reports" to view all orders, payment statuses, and transaction history. You can also print receipts and manage order statuses.',
     icon: ShoppingCart,
     iconColor: 'text-purple-500',
     iconBgColor: 'bg-purple-100'
   },
   {
-    title: 'Analisis Pendapatan',
-    description: 'Pantau pendapatan harian Anda di halaman beranda. Kartu pendapatan menampilkan total pemasukan hari ini dan perbandingan dengan hari sebelumnya.',
+    title: 'Analyze Revenue',
+    description: 'Monitor daily revenue from the home page. Revenue cards show today\'s total and the change from the previous day.',
     icon: BarChart3,
     iconColor: 'text-orange-500',
     iconBgColor: 'bg-orange-100'
   },
   {
-    title: 'Siap Memulai? 🚀',
-    description: 'Ikuti checklist "Mulai Cepat" di beranda untuk menyiapkan toko, atau langsung buat pesanan pertama Anda sekarang.',
+    title: 'Ready to Get Started? 🚀',
+    description: 'Follow the "Quick Start" checklist to set up your store, or create your first order now.',
     icon: Plus,
     iconColor: 'text-rose-500',
     iconBgColor: 'bg-rose-100'
@@ -126,7 +126,7 @@ export const Coachmark: React.FC<CoachmarkProps> = ({ open, onClose, onStart }) 
                 <step.icon className={`h-6 w-6 ${step.iconColor}`} />
               </div>
               <span className="text-sm text-gray-500">
-                {currentStep + 1} dari {coachmarkSteps.length}
+                {currentStep + 1} of {coachmarkSteps.length}
               </span>
             </div>
           </div>
@@ -162,7 +162,7 @@ export const Coachmark: React.FC<CoachmarkProps> = ({ open, onClose, onStart }) 
                 className="flex-1"
               >
                 <ChevronLeft className="h-4 w-4 mr-1" />
-                Kembali
+                Back
               </Button>
             )}
             {isFirstStep && (
@@ -173,7 +173,7 @@ export const Coachmark: React.FC<CoachmarkProps> = ({ open, onClose, onStart }) 
                 className="flex-1"
               >
                 <X className="h-4 w-4 mr-1" />
-                Lewati
+                Skip
               </Button>
             )}
             <Button
@@ -182,7 +182,7 @@ export const Coachmark: React.FC<CoachmarkProps> = ({ open, onClose, onStart }) 
               className="flex-1 bg-rose-500 hover:bg-rose-600"
             >
               {isLastStep && <Plus className="h-4 w-4 mr-1" />}
-              {isLastStep ? 'Buat Pesanan Pertama' : 'Lanjut'}
+              {isLastStep ? 'Create Your First Order' : 'Continue'}
               {!isLastStep && <ChevronRight className="h-4 w-4 ml-1" />}
             </Button>
           </div>

@@ -9,7 +9,7 @@ import { StoreStaffManagement } from './StoreStaffManagement';
 import { StoreSettingsCard } from './StoreSettingsCard';
 import { WhatsAppSenderCard } from './WhatsAppSenderCard';
 import { MobileStoreList } from './MobileStoreList';
-import { MobileStoreDetail } from './MobileStoreDetail';
+import { MobileStoreDetails } from './MobileStoreDetail';
 import { useStore } from '@/contexts/StoreContext';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { StoreWithOwnershipInfo } from '@/types/multi-tenant';
@@ -70,7 +70,7 @@ export const StoreManagement: React.FC = () => {
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <Building2 className="h-5 w-5" />
-              Toko Saat Ini
+              Current Store
             </CardTitle>
           </CardHeader>
           <CardContent>
@@ -85,7 +85,7 @@ export const StoreManagement: React.FC = () => {
                 )}
               </div>
             ) : (
-              <p className="text-muted-foreground">Tidak ada toko yang ditugaskan</p>
+              <p className="text-muted-foreground">No assigned store</p>
             )}
           </CardContent>
         </Card>
@@ -95,12 +95,12 @@ export const StoreManagement: React.FC = () => {
 
   if (isMobile) {
     if (mobileView === 'detail' && selectedStore) {
-      return <MobileStoreDetail store={selectedStore} onBack={handleBackToList} />;
+      return <MobileStoreDetails store={selectedStore} onBack={handleBackToList} />;
     }
     return (
       <div className="p-4 space-y-4">
         <div className="flex justify-between items-center gap-3">
-          <h1 className="text-xl font-bold">Manajemen Toko</h1>
+          <h1 className="text-xl font-bold">Store Management</h1>
           <CreateStoreDialog onStoreCreated={handleStoreCreated} />
         </div>
         <MobileStoreList
@@ -116,7 +116,7 @@ export const StoreManagement: React.FC = () => {
   return (
     <div className="p-4 sm:p-6 space-y-4 sm:space-y-6">
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
-        <h1 className="text-xl sm:text-2xl font-bold">Manajemen Toko</h1>
+        <h1 className="text-xl sm:text-2xl font-bold">Store Management</h1>
         <CreateStoreDialog onStoreCreated={handleStoreCreated} />
       </div>
 
@@ -136,7 +136,7 @@ export const StoreManagement: React.FC = () => {
                   <span className="truncate">{store.store_name}</span>
                 </div>
                 <Badge variant={store.is_active ? 'default' : 'secondary'} className="w-fit">
-                  {store.is_active ? 'Aktif' : 'Tidak Aktif'}
+                  {store.is_active ? 'Active' : 'Inactive'}
                 </Badge>
               </CardTitle>
             </CardHeader>
@@ -155,7 +155,7 @@ export const StoreManagement: React.FC = () => {
                   <div className="flex items-center gap-4 text-xs text-muted-foreground">
                     <div className="flex items-center gap-1">
                       <Users className="h-3 w-3" />
-                      <span>Karyawan</span>
+                      <span>Staff</span>
                     </div>
                     <div className="flex items-center gap-1">
                       <Package className="h-3 w-3" />
@@ -163,7 +163,7 @@ export const StoreManagement: React.FC = () => {
                     </div>
                   </div>
                   {currentStore?.store_id === store.store_id && (
-                    <Badge variant="outline" className="w-fit">Aktif</Badge>
+                    <Badge variant="outline" className="w-fit">Active</Badge>
                   )}
                 </div>
               </div>
@@ -185,9 +185,9 @@ export const StoreManagement: React.FC = () => {
         <Card>
           <CardContent className="flex flex-col items-center justify-center py-12">
             <Building2 className="h-12 w-12 text-muted-foreground mb-4" />
-            <h3 className="text-lg font-semibold mb-2">Belum ada toko</h3>
+            <h3 className="text-lg font-semibold mb-2">No stores yet</h3>
             <p className="text-muted-foreground text-center mb-4">
-              Buat toko pertama Anda untuk mulai mengelola bisnis laundry.
+              Create your first store to start managing your laundry business.
             </p>
             <CreateStoreDialog onStoreCreated={handleStoreCreated} />
           </CardContent>

@@ -105,7 +105,7 @@ export const FloatingOrderSummary: React.FC<FloatingOrderSummaryProps> = ({
   }, [itemCount]);
 
   const paymentMethods = [
-    { id: 'cash', name: 'Tunai', icon: Banknote, color: 'bg-green-500' },
+    { id: 'cash', name: 'Cash', icon: Banknote, color: 'bg-green-500' },
     { id: 'qris', name: 'QRIS', icon: QrCode, color: 'bg-blue-500' },
     { id: 'transfer', name: 'Transfer', icon: Smartphone, color: 'bg-purple-500' },
   ];
@@ -200,7 +200,7 @@ export const FloatingOrderSummary: React.FC<FloatingOrderSummaryProps> = ({
   const completionTime = getOrderCompletionTime();
 
   const formatCurrency = (amount: number) => {
-    return amount.toLocaleString('id-ID');
+    return amount.toLocaleString('en-IN');
   };
 
   // Collapsed: a compact bar that summarizes the cart without covering the
@@ -240,7 +240,7 @@ export const FloatingOrderSummary: React.FC<FloatingOrderSummaryProps> = ({
           <div className="flex items-center justify-between mb-2 sm:mb-3">
             <div className="flex items-center gap-2">
               <ShoppingCart className="h-4 w-4 sm:h-5 sm:w-5 text-primary" />
-              <span className="font-semibold text-foreground text-sm sm:text-base">Pesanan Saat Ini</span>
+              <span className="font-semibold text-foreground text-sm sm:text-base">Current Order</span>
               <Badge
                 variant="secondary"
                 className={`text-xs sm:text-sm transition-colors ${
@@ -258,7 +258,7 @@ export const FloatingOrderSummary: React.FC<FloatingOrderSummaryProps> = ({
                 onOpenServicePopup?.();
               }}
               className="h-7 w-7 p-0 text-muted-foreground hover:bg-muted flex-shrink-0"
-              title="Sembunyikan untuk menambah layanan lain"
+              title="Hide to add another service"
             >
               <ChevronDown className="h-4 w-4" />
             </Button>
@@ -269,30 +269,30 @@ export const FloatingOrderSummary: React.FC<FloatingOrderSummaryProps> = ({
             <div className="mb-2 sm:mb-3 p-2 bg-pos-highlight/20 border border-pos-highlight/60 rounded-lg">
               <div className="flex items-center gap-2 mb-1">
                 <Clock className="h-3 w-3 sm:h-4 sm:w-4 text-primary" />
-                <span className="text-xs sm:text-sm font-medium text-primary">Estimasi Selesai</span>
+                <span className="text-xs sm:text-sm font-medium text-primary">Estimated Completion</span>
               </div>
               <p className="text-xs sm:text-sm text-primary/90 font-semibold">
                 {formatDate(completionTime)}
               </p>
               <p className="text-xs text-primary/70">
-                Diterima: {formatDate(dropOffDate)}
+                Received: {formatDate(dropOffDate)}
               </p>
             </div>
           )}
 
           {/* Order Items List */}
           <div className="mb-2 sm:mb-3">
-            <h4 className="text-sm font-medium text-foreground mb-1 sm:mb-2">Item Pesanan</h4>
+            <h4 className="text-sm font-medium text-foreground mb-1 sm:mb-2">Order Items</h4>
             <div className="space-y-1 sm:space-y-2 max-h-40 overflow-y-auto">
               {currentOrder.map((item, index) => (
                 <div key={`${item.service.id}-${item.serviceType}-${index}`} className="flex items-center justify-between p-1.5 sm:p-2 bg-muted/50 rounded-lg">
                   <div className="flex-1 min-w-0">
                     <h5 className="text-sm font-medium text-foreground truncate">{item.service.name}</h5>
                     <p className="text-xs text-muted-foreground">
-                      Rp{item.service.price.toLocaleString('id-ID')} × {item.serviceType === 'kilo' ? `${item.quantity.toFixed(1)} kg` : `${item.quantity} unit${item.quantity !== 1 ? 's' : ''}`}
+                      Rp{item.service.price.toLocaleString('en-IN')} × {item.serviceType === 'kilo' ? `${item.quantity.toFixed(1)} kg` : `${item.quantity} unit${item.quantity !== 1 ? 's' : ''}`}
                     </p>
                     <p className="text-xs text-pos-success">
-                      Siap: {formatDate(calculateFinishDate(item.service, dropOffDate))}
+                      Ready: {formatDate(calculateFinishDate(item.service, dropOffDate))}
                     </p>
                   </div>
                   <div className="flex items-center gap-1 ml-2">
@@ -371,15 +371,15 @@ export const FloatingOrderSummary: React.FC<FloatingOrderSummaryProps> = ({
                   <div className="flex-1 min-w-0">
                     <h5 className="text-sm font-medium text-foreground truncate">{item.itemName}</h5>
                     <p className="text-xs text-muted-foreground">
-                      Rp{item.price.toLocaleString('id-ID')} × {item.unitType === 'kilo' ? `${item.quantity.toFixed(1)} kg` : `${item.quantity} unit${item.quantity !== 1 ? 's' : ''}`}
+                      Rp{item.price.toLocaleString('en-IN')} × {item.unitType === 'kilo' ? `${item.quantity.toFixed(1)} kg` : `${item.quantity} unit${item.quantity !== 1 ? 's' : ''}`}
                     </p>
                     <p className="text-xs text-pos-success">
-                      Siap: {calculateDynamicItemFinishDate ? formatDate(calculateDynamicItemFinishDate(item, dropOffDate)) : '-'}
+                      Ready: {calculateDynamicItemFinishDate ? formatDate(calculateDynamicItemFinishDate(item, dropOffDate)) : '-'}
                     </p>
                   </div>
                   <div className="flex items-center gap-1 ml-2">
                     <Badge variant="outline" className="text-xs bg-accent/20 text-accent-foreground border-accent/40">
-                      Kustom
+                      Custom
                     </Badge>
                     <Button
                       variant="ghost"
@@ -404,63 +404,63 @@ export const FloatingOrderSummary: React.FC<FloatingOrderSummaryProps> = ({
           {/* Discount Section */}
           {currentStore?.enable_points && (
             <div className="space-y-2 mb-3">
-              <Label className="text-xs sm:text-sm font-medium">Diskon (Opsional)</Label>
+              <Label className="text-xs sm:text-sm font-medium">Discount (Optional)</Label>
               <Tabs value={discountType} onValueChange={(v) => handleDiscountTypeChange(v as 'custom' | 'points')}>
                 <TabsList className="grid w-full grid-cols-2 h-8">
                   <TabsTrigger value="custom" className="flex items-center gap-1 text-xs">
                     <Percent className="h-3 w-3" />
-                    Kustom
+                    Custom
                   </TabsTrigger>
                   <TabsTrigger value="points" className="flex items-center gap-1 text-xs" disabled={!hasPoints || !isOnline}>
                     <Gift className="h-3 w-3" />
-                    Poin {hasPoints && `(${pointsAvailable})`}
+                    Points {hasPoints && `(${pointsAvailable})`}
                   </TabsTrigger>
                 </TabsList>
                 {!isOnline && (
-                  <p className="mt-1 text-xs text-muted-foreground">Penukaran poin tidak tersedia saat offline</p>
+                  <p className="mt-1 text-xs text-muted-foreground">Point redemption is unavailable offline</p>
                 )}
                 <TabsContent value="custom" className="space-y-1 mt-2">
                   <Input
                     type="number"
                     value={customDiscount}
                     onChange={(e) => handleCustomDiscountChange(e.target.value)}
-                    placeholder="Masukkan diskon (Rp)"
+                    placeholder="Enter discount (IDR)"
                     className="text-center h-8 text-sm"
                     min={0}
                     max={subtotal}
                   />
                   {discountError && (
-                    <p className="text-xs text-destructive">Diskon tidak boleh melebihi total pembayaran</p>
+                    <p className="text-xs text-destructive">Discount cannot exceed the payment total</p>
                   )}
                 </TabsContent>
                 <TabsContent value="points" className="space-y-1 mt-2">
                   {hasPoints ? (
                     <>
                       <div className="flex items-center justify-between text-xs text-muted-foreground mb-1">
-                        <span>Poin tersedia: {pointsAvailable}</span>
-                        <span>1 poin = Rp100</span>
+                        <span>Points available: {pointsAvailable}</span>
+                        <span>1 point = IDR 100</span>
                       </div>
                       <Input
                         type="number"
                         value={pointsToRedeem}
                         onChange={(e) => handlePointsToRedeemChange(e.target.value)}
-                        placeholder="Masukkan jumlah poin"
+                        placeholder="Enter number of points"
                         className="text-center h-8 text-sm"
                         min={0}
                         max={pointsAvailable}
                       />
                       {pointsError && (
-                        <p className="text-xs text-destructive">Poin tidak mencukupi! Maksimal: {pointsAvailable} poin</p>
+                        <p className="text-xs text-destructive">Insufficient points! Maximum: {pointsAvailable} points</p>
                       )}
                       {parseFloat(pointsToRedeem) > 0 && !pointsError && (
                         <p className="text-xs text-pos-success text-center">
-                          Diskon: Rp {formatCurrency(parseFloat(pointsToRedeem) * 100)}
+                          Discount: Rp {formatCurrency(parseFloat(pointsToRedeem) * 100)}
                         </p>
                       )}
                     </>
                   ) : (
                     <p className="text-xs sm:text-sm text-muted-foreground text-center py-2">
-                      Pelanggan belum memiliki poin
+                      Customer has no points yet
                     </p>
                   )}
                 </TabsContent>
@@ -473,24 +473,24 @@ export const FloatingOrderSummary: React.FC<FloatingOrderSummaryProps> = ({
           <div className="space-y-1 sm:space-y-2 mb-3 sm:mb-4">
             <div className="flex justify-between text-sm">
               <span className="text-muted-foreground">Subtotal:</span>
-              <span className="font-medium text-foreground">Rp{subtotal.toLocaleString('id-ID')}</span>
+              <span className="font-medium text-foreground">Rp{subtotal.toLocaleString('en-IN')}</span>
             </div>
             {discountAmount > 0 && (
               <div className="flex justify-between text-sm">
-                <span className="text-muted-foreground">Diskon:</span>
+                <span className="text-muted-foreground">Discount:</span>
                 <span className="font-medium text-pos-success">-Rp{formatCurrency(discountAmount)}</span>
               </div>
             )}
             <Separator />
             <div className="flex justify-between text-lg font-bold text-foreground">
               <span>Total:</span>
-              <span className="text-primary">Rp{totalAmount.toLocaleString('id-ID')}</span>
+              <span className="text-primary">Rp{totalAmount.toLocaleString('en-IN')}</span>
             </div>
           </div>
 
           {/* Payment Method Selection */}
           <div className="space-y-1 sm:space-y-2">
-            <label className="text-sm font-medium text-foreground">Metode Pembayaran</label>
+            <label className="text-sm font-medium text-foreground">Payment Method</label>
             <div className="grid grid-cols-3 gap-1 sm:gap-2">
               {paymentMethods.map((method) => {
                 const IconComponent = method.icon;
@@ -522,7 +522,7 @@ export const FloatingOrderSummary: React.FC<FloatingOrderSummaryProps> = ({
               disabled={isProcessing || isPaymentStarted || !customerName || !customerPhone || pointsError || discountError}
             >
               <CreditCard className="h-4 w-4 mr-2" />
-              {isProcessing || isPaymentStarted ? "Memproses..." : "Bayar Sekarang"}
+              {isProcessing || isPaymentStarted ? "Processing..." : "Pay Now"}
             </Button>
 
             <Button
@@ -532,7 +532,7 @@ export const FloatingOrderSummary: React.FC<FloatingOrderSummaryProps> = ({
               disabled={isProcessing || isPaymentStarted || !customerName || !customerPhone || pointsError || discountError}
             >
               <Clock className="h-4 w-4 mr-2" />
-              Bayar Nanti
+              Pay Later
             </Button>
           </div>
         </CardContent>

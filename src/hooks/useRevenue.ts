@@ -212,14 +212,14 @@ export const useCreateExpense = () => {
       queryClient.invalidateQueries({ queryKey: ['revenue-summary'] });
       queryClient.invalidateQueries({ queryKey: ['today-expenses'] });
       toast({
-        title: 'Berhasil',
-        description: 'Pengeluaran berhasil ditambahkan',
+        title: 'Success',
+        description: 'Expense added successfully',
       });
     },
     onError: (error: Error) => {
       toast({
-        title: 'Gagal',
-        description: error.message || 'Gagal menambahkan pengeluaran',
+        title: 'Failed',
+        description: error.message || 'Failed to add expense',
         variant: 'destructive',
       });
     },
@@ -252,14 +252,14 @@ export const useUpdateExpense = () => {
       queryClient.invalidateQueries({ queryKey: ['revenue-summary'] });
       queryClient.invalidateQueries({ queryKey: ['today-expenses'] });
       toast({
-        title: 'Berhasil',
-        description: 'Pengeluaran berhasil diperbarui',
+        title: 'Success',
+        description: 'Expense updated successfully',
       });
     },
     onError: (error: Error) => {
       toast({
-        title: 'Gagal',
-        description: error.message || 'Gagal memperbarui pengeluaran',
+        title: 'Failed',
+        description: error.message || 'Failed to update expense',
         variant: 'destructive',
       });
     },
@@ -288,14 +288,14 @@ export const useDeleteExpense = () => {
       queryClient.invalidateQueries({ queryKey: ['revenue-summary'] });
       queryClient.invalidateQueries({ queryKey: ['today-expenses'] });
       toast({
-        title: 'Berhasil',
-        description: 'Pengeluaran berhasil dihapus',
+        title: 'Success',
+        description: 'Expense deleted successfully',
       });
     },
     onError: (error: Error) => {
       toast({
-        title: 'Gagal',
-        description: error.message || 'Gagal menghapus pengeluaran',
+        title: 'Failed',
+        description: error.message || 'Failed to delete expense',
         variant: 'destructive',
       });
     },

@@ -4,7 +4,7 @@ import { authService } from '@/services/authService';
 
 export class OfflineSessionExpiredError extends Error {
   constructor() {
-    super('Sesi Anda telah berakhir. Silakan login ulang untuk membuat pesanan offline baru.');
+    super('Your session has expired. Please sign in again to create a new offline order.');
     this.name = 'OfflineSessionExpiredError';
   }
 }

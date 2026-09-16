@@ -38,9 +38,9 @@ export const OrderDetailsDialog: React.FC<OrderDetailsDialogProps> = ({
   };
 
   const getPaymentMethodDisplay = (method: string | null) => {
-    if (!method) return 'Tidak ditentukan';
+    if (!method) return 'Not specified';
     switch (method) {
-      case 'cash': return 'Tunai';
+      case 'cash': return 'Cash';
       case 'qris': return 'QRIS';
       case 'transfer': return 'Transfer';
       default: return method;
@@ -59,7 +59,7 @@ export const OrderDetailsDialog: React.FC<OrderDetailsDialogProps> = ({
     <Dialog open={isOpen} onOpenChange={onClose}>
       <DialogContent className="max-w-4xl w-[90vw] max-h-[90vh] overflow-y-auto">
         <DialogHeader>
-          <DialogTitle className="text-lg sm:text-xl">Detail Pesanan</DialogTitle>
+          <DialogTitle className="text-lg sm:text-xl">Order Details</DialogTitle>
         </DialogHeader>
 
         <div className="space-y-4 sm:space-y-6">
@@ -67,7 +67,7 @@ export const OrderDetailsDialog: React.FC<OrderDetailsDialogProps> = ({
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 sm:gap-4">
             <div className="flex-1">
               <h2 className="text-xl sm:text-2xl font-bold">
-                Pesanan #{order.id.slice(-8).toUpperCase()}
+                Order #{order.id.slice(-8).toUpperCase()}
               </h2>
               <p className="text-muted-foreground flex items-center mt-1 text-sm">
                 <Calendar className="h-4 w-4 mr-2" />
@@ -76,15 +76,15 @@ export const OrderDetailsDialog: React.FC<OrderDetailsDialogProps> = ({
             </div>
             <div className="flex flex-wrap gap-2">
               <Badge className={getExecutionStatusColor(order.execution_status)}>
-                <span className="hidden sm:inline">Eksekusi: </span>{order.execution_status}
+                <span className="hidden sm:inline">Execution: </span>{order.execution_status}
               </Badge>
               <Badge className={getPaymentStatusColor(order.payment_status)}>
-                <span className="hidden sm:inline">Pembayaran: </span>{order.payment_status}
+                <span className="hidden sm:inline">Payment: </span>{order.payment_status}
               </Badge>
               {isOrderOverdue(order) && (
                 <Badge variant="destructive" className="flex items-center gap-1">
                   <AlertTriangle className="h-3 w-3" />
-                  Terlambat
+                  Overdue
                 </Badge>
               )}
             </div>
@@ -97,7 +97,7 @@ export const OrderDetailsDialog: React.FC<OrderDetailsDialogProps> = ({
             <div className="space-y-3">
               <h3 className="font-semibold flex items-center text-base sm:text-lg">
                 <User className="h-4 w-4 mr-2" />
-                Informasi Pelanggan
+                Customer Information
               </h3>
               <div className="space-y-2">
                 <p className="text-muted-foreground text-sm sm:text-base">{order.customer_name}</p>
@@ -110,19 +110,19 @@ export const OrderDetailsDialog: React.FC<OrderDetailsDialogProps> = ({
             <div className="space-y-3">
               <h3 className="font-semibold flex items-center text-base sm:text-lg">
                 <Calendar className="h-4 w-4 mr-2" />
-                Waktu
+                Dates
               </h3>
               <div className="space-y-2">
                 <div className="text-sm sm:text-base">
-                  <span className="font-medium text-muted-foreground">Masuk: </span>
+                  <span className="font-medium text-muted-foreground">Created: </span>
                   <span>
                     {order.order_date ? formatDateLong(order.order_date) : formatDateLong(order.created_at)}
                   </span>
                 </div>
                 <div className="text-sm sm:text-base">
-                  <span className="font-medium text-muted-foreground">Est. Selesai: </span>
+                  <span className="font-medium text-muted-foreground">Est. Completed: </span>
                   <span className={`${isOrderOverdue(order) ? 'text-red-600 font-medium' : ''}`}>
-                    {order.estimated_completion ? formatDateLong(order.estimated_completion) : 'Tidak ditentukan'}
+                    {order.estimated_completion ? formatDateLong(order.estimated_completion) : 'Not specified'}
                   </span>
                   {isOrderOverdue(order) && (
                     <AlertTriangle className="h-3 w-3 inline ml-1 text-red-600" />
@@ -138,7 +138,7 @@ export const OrderDetailsDialog: React.FC<OrderDetailsDialogProps> = ({
           <div className="space-y-3 sm:space-y-4">
             <h3 className="font-semibold flex items-center text-base sm:text-lg">
               <CreditCard className="h-4 w-4 mr-2" />
-              Informasi Pembayaran
+              Payment Information
             </h3>
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6">
               <div className="space-y-3">
@@ -157,14 +157,14 @@ export const OrderDetailsDialog: React.FC<OrderDetailsDialogProps> = ({
                 <div>
                   <span className="text-sm font-medium text-muted-foreground">Total: </span>
                   <div className="text-lg sm:text-xl font-bold text-primary">
-                    Rp{order.total_amount.toLocaleString('id-ID')}
+                    Rp{order.total_amount.toLocaleString('en-IN')}
                   </div>
                 </div>
                 {order.payment_amount && order.payment_amount !== order.total_amount && (
                   <div>
-                    <span className="text-sm font-medium text-muted-foreground">Dibayar: </span>
+                    <span className="text-sm font-medium text-muted-foreground">Paid: </span>
                     <div className="text-lg sm:text-xl font-semibold text-green-600">
-                      Rp{order.payment_amount.toLocaleString('id-ID')}
+                      Rp{order.payment_amount.toLocaleString('en-IN')}
                     </div>
                   </div>
                 )}
@@ -172,7 +172,7 @@ export const OrderDetailsDialog: React.FC<OrderDetailsDialogProps> = ({
             </div>
             {order.payment_notes && (
               <div className="mt-3">
-                <span className="text-sm font-medium text-muted-foreground">Catatan: </span>
+                <span className="text-sm font-medium text-muted-foreground">Notes: </span>
                 <p className="text-sm sm:text-base mt-1">{order.payment_notes}</p>
               </div>
             )}
@@ -182,7 +182,7 @@ export const OrderDetailsDialog: React.FC<OrderDetailsDialogProps> = ({
 
           {/* Order Items */}
           <div>
-            <h3 className="font-semibold mb-3 sm:mb-4 text-base sm:text-lg">Item Pesanan</h3>
+            <h3 className="font-semibold mb-3 sm:mb-4 text-base sm:text-lg">Order Items</h3>
             <div className="space-y-3 sm:space-y-4">
               {order.order_items?.map((item: any, index: number) => (
                 <div key={index} className="p-3 sm:p-4 bg-secondary rounded-lg">
@@ -198,23 +198,23 @@ export const OrderDetailsDialog: React.FC<OrderDetailsDialogProps> = ({
                       </div>
                       <div className="text-xs sm:text-sm text-muted-foreground space-y-1">
                         {/* Basic pricing info */}
-                        <p>Rp{item.service_price.toLocaleString('id-ID')} × {item.quantity}</p>
+                        <p>Rp{item.service_price.toLocaleString('en-IN')} × {item.quantity}</p>
 
                         {/* Service type specific details */}
                         {item.service_type === 'kilo' && item.weight_kg && (
-                          <p>Berat: {item.weight_kg} kg</p>
+                          <p>Weight: {item.weight_kg} kg</p>
                         )}
 
                         {item.service_type === 'combined' && (
                           <div className="space-y-1">
-                            {item.weight_kg && <p>Berat: {item.weight_kg} kg</p>}
+                            {item.weight_kg && <p>Weight: {item.weight_kg} kg</p>}
                             {item.unit_items && item.unit_items.length > 0 && (
                               <div>
-                                <p className="font-medium">Item Satuan:</p>
+                                <p className="font-medium">Per-item details:</p>
                                 <div className="ml-2 space-y-1">
                                   {item.unit_items.map((unitItem: any, unitIndex: number) => (
                                     <p key={unitIndex} className="text-xs">
-                                      • {unitItem.item_name}: {unitItem.quantity} × Rp{unitItem.price_per_unit.toLocaleString('id-ID')}
+                                      • {unitItem.item_name}: {unitItem.quantity} × Rp{unitItem.price_per_unit.toLocaleString('en-IN')}
                                     </p>
                                   ))}
                                 </div>
@@ -225,11 +225,11 @@ export const OrderDetailsDialog: React.FC<OrderDetailsDialogProps> = ({
 
                         {item.service_type === 'unit' && item.unit_items && item.unit_items.length > 0 && (
                           <div>
-                            <p className="font-medium">Item Satuan:</p>
+                            <p className="font-medium">Per-item details:</p>
                             <div className="ml-2 space-y-1">
                               {item.unit_items.map((unitItem: any, unitIndex: number) => (
                                 <p key={unitIndex} className="text-xs">
-                                  • {unitItem.item_name}: {unitItem.quantity} × Rp{unitItem.price_per_unit.toLocaleString('id-ID')}
+                                  • {unitItem.item_name}: {unitItem.quantity} × Rp{unitItem.price_per_unit.toLocaleString('en-IN')}
                                 </p>
                               ))}
                             </div>
@@ -238,13 +238,13 @@ export const OrderDetailsDialog: React.FC<OrderDetailsDialogProps> = ({
 
                         {item.estimated_completion && (
                           <p className="text-xs">
-                            Siap: {formatDateLong(item.estimated_completion)}
+                            Ready: {formatDateLong(item.estimated_completion)}
                           </p>
                         )}
                       </div>
                     </div>
                     <div className="text-right sm:text-left sm:min-w-0">
-                      <p className="font-semibold text-sm sm:text-base">Rp{item.line_total.toLocaleString('id-ID')}</p>
+                      <p className="font-semibold text-sm sm:text-base">Rp{item.line_total.toLocaleString('en-IN')}</p>
                     </div>
                   </div>
                 </div>
@@ -258,7 +258,7 @@ export const OrderDetailsDialog: React.FC<OrderDetailsDialogProps> = ({
           <div className="space-y-2 sm:space-y-3 bg-secondary/30 p-3 sm:p-4 rounded-lg">
             <div className="flex justify-between text-sm sm:text-base">
               <span className="text-muted-foreground">Subtotal:</span>
-              <span>Rp{(order.subtotal || order.total_amount).toLocaleString('id-ID')}</span>
+              <span>Rp{(order.subtotal || order.total_amount).toLocaleString('en-IN')}</span>
             </div>
             
             {/* Points Redeemed */}
@@ -266,10 +266,10 @@ export const OrderDetailsDialog: React.FC<OrderDetailsDialogProps> = ({
               <div className="flex justify-between items-center text-sm sm:text-base bg-blue-50 -mx-3 sm:-mx-4 px-3 sm:px-4 py-2 rounded">
                 <div className="flex items-center gap-2">
                   <Star className="h-4 w-4 text-blue-500 fill-blue-500" />
-                  <span className="text-blue-700 font-medium">Poin Ditukar:</span>
+                  <span className="text-blue-700 font-medium">Points Redeemed:</span>
                 </div>
                 <span className="text-blue-600 font-semibold">
-                  -{order.points_redeemed} poin (-Rp{(order.discount_amount || order.points_redeemed * POINTS_TO_CURRENCY_RATE).toLocaleString('id-ID')})
+                  -{order.points_redeemed} points (-Rp{(order.discount_amount || order.points_redeemed * POINTS_TO_CURRENCY_RATE).toLocaleString('en-IN')})
                 </span>
               </div>
             )}
@@ -277,14 +277,14 @@ export const OrderDetailsDialog: React.FC<OrderDetailsDialogProps> = ({
             {/* Discount if any (without points) */}
             {order.discount_amount && order.discount_amount > 0 && !order.points_redeemed && (
               <div className="flex justify-between text-sm sm:text-base">
-                <span className="text-muted-foreground">Diskon:</span>
-                <span className="text-green-600">-Rp{order.discount_amount.toLocaleString('id-ID')}</span>
+                <span className="text-muted-foreground">Discount:</span>
+                <span className="text-green-600">-Rp{order.discount_amount.toLocaleString('en-IN')}</span>
               </div>
             )}
             
             <div className="flex justify-between text-lg sm:text-xl font-bold border-t pt-2">
               <span>Total:</span>
-              <span>Rp{order.total_amount.toLocaleString('id-ID')}</span>
+              <span>Rp{order.total_amount.toLocaleString('en-IN')}</span>
             </div>
             
             {/* Points Earned */}
@@ -292,10 +292,10 @@ export const OrderDetailsDialog: React.FC<OrderDetailsDialogProps> = ({
               <div className="flex justify-between items-center text-sm sm:text-base bg-amber-50 -mx-3 sm:-mx-4 px-3 sm:px-4 py-2 rounded mt-2">
                 <div className="flex items-center gap-2">
                   <Star className="h-4 w-4 text-amber-500 fill-amber-500" />
-                  <span className="text-amber-700 font-medium">Poin Didapat:</span>
+                  <span className="text-amber-700 font-medium">Points Earned:</span>
                 </div>
                 <span className="text-amber-600 font-semibold">
-                  +{order.points_earned} poin
+                  +{order.points_earned} points
                 </span>
               </div>
             )}
