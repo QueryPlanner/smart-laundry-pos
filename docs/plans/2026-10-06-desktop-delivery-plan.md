@@ -346,7 +346,7 @@ The clean Node.js 22 workflow passed: locked install, 72 existing tests,
 85 desktop tests with 100% statements/branches/functions/lines, desktop lint,
 typecheck, desktop build, and legacy web build. Native formatting, 58 tests,
 and Clippy passed. Native coverage remains below the requested floor:
-92.39% lines, 88.19% regions, and 67.21% functions, with no exclusions.
+92.38% lines, 88.18% regions, and 67.08% functions, with no exclusions.
 
 The rebuilt isolated Review app was installed and personally tested. Native
 printing displayed a receipt preview. Native restore Cancel created no pending
@@ -358,3 +358,8 @@ limits are in `docs/DESKTOP_ACCEPTANCE.md`.
 Publication will use draft status while native coverage remains below 100%.
 No exception to that requirement has been inferred. Ready-for-review status
 and its automatic Codex review cycle remain pending that boundary.
+
+PR #1 was published as a draft. Its first remote run found a newer-toolchain
+Clippy warning in the manual `StatementMode` default. Deriving the same Execute
+default preserves the public IPC contract; its existing omitted-mode tests pass.
+Formatting, all 58 tests, and strict Clippy pass locally on CI's Rust 1.99.0.

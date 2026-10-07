@@ -10,15 +10,18 @@ Its verified identifier is `com.smartlaundry.pos.review`; its executable is arm6
 Strict deep codesign verification passed before and after installation. The
 signature is ad hoc; the artifact has no Developer ID or notarization.
 The final installed executable SHA-256 is
-`1c4ce2dbcb032af397b42096d4209cc19d184b4999a1a7c78dcf621eb121c46d`.
+`dbd9eddb5251ab68b84ba4e46c03d36c09fefe6e84fad70a670b6d5a1498688b`.
 The previous installation was preserved before replacing the app. Existing
 review records persisted through the installation update.
+After the CI default-implementation patch, the parent reinstalled this final build
+and verified unlock, retained paid/collected records, a native settings save,
+native print dispatch and cancellation, and locking again.
 
 The final normal app and DMG were also built. Strict app signature verification
 and `hdiutil verify` passed. The normal executable SHA-256 is
-`d9dab04c57e001b7267a64ddb6bc98b84ab34977fec0124166e5c444a7b4417e`;
+`2372deae0bf9ed350d151415ace2027c12478d76fcd55889bfb68c5b5953e02d`;
 the DMG SHA-256 is
-`087b1d1ab62e27077bfbbf990f2fceee56ea8c3d4aae9782855d87f5c7c4a251`.
+`3b60f1feeba4d00ea3b94d7f3f59c0cde8d3fa31361e5ab6dd2d997ad4ec0e9f`.
 The normal app was not launched or installed. The supported Tauri DMG build
 required device-access escalation after its sandboxed bundling attempt failed.
 
@@ -62,8 +65,9 @@ The baseline snapshot checksum was
 ## Verification limits and remaining work
 
 - Native coverage is below the required 100% floor. The measured all-target
-  result is 92.39% lines (1,518/1,643), 88.19% regions, and 67.21% functions.
-  `storage.rs` has 92.95% lines, `lib.rs` has 84.81%, and `main.rs` has 0/3 lines.
+  result is 92.38% lines (1,515/1,640), 88.18% regions, and 67.08% functions.
+  `storage.rs` has 92.94% lines (1,448/1,558), `lib.rs` has 84.81%,
+  and `main.rs` has 0/3 lines.
   Stable LLVM branch counters are unavailable. No coverage exclusions were used.
   Remaining gaps include filesystem compensation failures, rollback failures,
   collision exhaustion, decoder paths, and the real desktop event loop.
@@ -72,7 +76,12 @@ The baseline snapshot checksum was
 - No packet capture or global network disable was performed. Local operation is
   supported by the standalone entry and restrictive CSP; GUI results alone do
   not establish the absence of all network traffic.
-- No PR, CI result, automatic review, merge, release, or distribution is claimed yet.
+- [PR #1](https://github.com/QueryPlanner/smart-laundry-pos/pull/1) is a draft.
+  Its initial remote run passed JavaScript checks, builds, formatting, and native
+  tests, then failed Rust 1.99 Clippy on a derivable default implementation.
+  The scoped fix passes local Rust 1.99 formatting, all 58 tests, and Clippy.
+  Final remote CI and the ready-for-review automatic review remain pending.
+  No merge, release, or distribution is claimed.
 
 ## Automated validation
 
@@ -94,6 +103,10 @@ The final native validation commands passed on 2026-10-07:
 - `cargo test`: 58 tests, including four shared startup/IPC harness cases.
 - `cargo clippy --all-targets -- -D warnings`
 - `cargo llvm-cov --summary-only`: measured coverage above; no exclusions.
+
+After the remote Clippy finding, the native checks also passed with `cargo +stable`
+on Rust 1.99.0. Coverage was remeasured with `cargo +1.89 llvm-cov --summary-only`
+to retain the original coverage toolchain and compare results consistently.
 
 The repository-wide legacy lint/typecheck failures recorded in the plan remain
 outside this desktop feature. These results do not claim those checks passed.

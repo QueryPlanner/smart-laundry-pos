@@ -270,17 +270,12 @@ pub struct SqlStatement {
     pub mode: Option<StatementMode>,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum StatementMode {
+    #[default]
     Execute,
     Select,
-}
-
-impl Default for StatementMode {
-    fn default() -> Self {
-        Self::Execute
-    }
 }
 
 #[derive(Debug, Serialize, PartialEq)]
