@@ -10,18 +10,20 @@ Its verified identifier is `com.smartlaundry.pos.review`; its executable is arm6
 Strict deep codesign verification passed before and after installation. The
 signature is ad hoc; the artifact has no Developer ID or notarization.
 The final installed executable SHA-256 is
-`dbd9eddb5251ab68b84ba4e46c03d36c09fefe6e84fad70a670b6d5a1498688b`.
+`ef121cfb6e1190f14971220d87c3c87cc020c3f2f890abb4e79bac8c6270be10`.
 The previous installation was preserved before replacing the app. Existing
 review records persisted through the installation update.
 After the CI default-implementation patch, the parent reinstalled this final build
 and verified unlock, retained paid/collected records, a native settings save,
 native print dispatch and cancellation, and locking again.
+The final diagnostic-warning correction was rebuilt and reinstalled afterward;
+startup, retained records, and locking were verified again on that final artifact.
 
 The final normal app and DMG were also built. Strict app signature verification
 and `hdiutil verify` passed. The normal executable SHA-256 is
-`2372deae0bf9ed350d151415ace2027c12478d76fcd55889bfb68c5b5953e02d`;
+`e87df9d9c915b8b11674bd679e641c2c70f8fa86e3cf88cc8b9db5150322a005`;
 the DMG SHA-256 is
-`3b60f1feeba4d00ea3b94d7f3f59c0cde8d3fa31361e5ab6dd2d997ad4ec0e9f`.
+`626631175f784c0e7604f9dd330a0df5d5ad963baa90dd24e5c6d1816c3b4332`.
 The normal app was not launched or installed. The supported Tauri DMG build
 required device-access escalation after its sandboxed bundling attempt failed.
 
@@ -116,3 +118,12 @@ and versions with the starting HEAD showed one additional affected node,
 `@vitest/coverage-v8`, through the existing vulnerable Vitest version. The other
 affected nodes and versions were already in the starting lockfile. No forced
 dependency upgrades were applied. This is not a dependency-security pass.
+
+## Recovery warning correction
+
+Source review found that a final directory-sync failure can occur after a valid
+replacement is installed. Both recovery fallback warnings now state only that
+the active database passed validation and ask the operator to check records.
+They do not claim which snapshot is active. Existing error-path tests retain
+data-preservation assertions and pass with the corrected wording. The rare
+post-journal directory-sync failure was not induced in the installed app.

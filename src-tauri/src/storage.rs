@@ -1195,7 +1195,7 @@ async fn apply_pending_restore(database_path: &Path) -> Result<Option<String>, S
                 })
                 .unwrap_or_default();
             warning = Some(format!(
-                "The staged database restore could not be applied. The original database remains active.{rejected_note} Select a valid backup to try again. Details: {error}"
+                "The staged database restore reported an error. The active database passed validation.{rejected_note} Check the database records before continuing. Details: {error}"
             ));
             Ok(warning)
         }
@@ -1232,7 +1232,7 @@ async fn recover_interrupted_restore(database_path: &Path) -> Result<Option<Stri
                 })
                 .unwrap_or_default();
             Ok(Some(format!(
-                "An interrupted database restore could not be applied. The original database was restored and remains active.{rejected_note} Details: {error}"
+                "Recovery of the interrupted database restore reported an error. The active database passed validation.{rejected_note} Check the database records before continuing. Details: {error}"
             )))
         }
     }

@@ -1822,8 +1822,13 @@ fn pending_restore_journal_write_error_keeps_original_and_reports_rejected_backu
         let warning = info
             .warning
             .expect("startup should report failure to begin the staged replacement");
+        assert!(warning.contains("restore reported an error"), "{warning}");
         assert!(
-            warning.contains("restore could not be applied"),
+            warning.contains("The active database passed validation."),
+            "{warning}"
+        );
+        assert!(
+            warning.contains("Check the database records before continuing."),
             "{warning}"
         );
         assert!(
@@ -2339,7 +2344,11 @@ fn interrupted_restore_with_missing_pending_file_reopens_the_original_with_warni
             "{warning}"
         );
         assert!(
-            warning.contains("original database was restored"),
+            warning.contains("The active database passed validation."),
+            "{warning}"
+        );
+        assert!(
+            warning.contains("Check the database records before continuing."),
             "{warning}"
         );
         assert!(live.path.exists());
@@ -2428,7 +2437,8 @@ fn interrupted_restore_warning_preserves_rejected_pending_after_original_rollbac
         let warning = info
             .warning
             .expect("startup should report the failed interrupted replacement");
-        assert!(warning.contains("original database was restored and remains active"));
+        assert!(warning.contains("The active database passed validation."));
+        assert!(warning.contains("Check the database records before continuing."));
         assert!(warning.contains("rejected staged file was preserved"));
         assert!(live.path.exists());
         assert!(!old.exists());
@@ -2495,7 +2505,11 @@ fn interrupted_restore_compensates_for_corrupt_live_replacement_in_each_phase() 
                 .warning
                 .expect("startup should report the rejected replacement");
             assert!(
-                warning.contains("original database was restored and remains active"),
+                warning.contains("The active database passed validation."),
+                "{phase:?}: {warning}"
+            );
+            assert!(
+                warning.contains("Check the database records before continuing."),
                 "{phase:?}: {warning}"
             );
             assert!(live.path.exists());
@@ -2689,9 +2703,10 @@ fn restore_recovery_preserves_original_after_journal_write_io_error() {
             .expect("recovery should restore the moved original after IO recovers")
             .expect("startup should report the abandoned restore");
         assert!(
-            warning.contains("The original database was restored and remains active"),
+            warning.contains("The active database passed validation."),
             "{warning}"
         );
+        assert!(warning.contains("Check the database records before continuing."));
         assert!(temporary.path.exists());
         assert!(!old.exists());
         assert!(!apply_journal_path(&temporary.path).exists());
@@ -2738,9 +2753,10 @@ fn interrupted_restore_with_missing_recovery_snapshot_restores_original() {
             .expect("the original should be restored after snapshot validation fails")
             .expect("recovery should report the rejected replacement");
         assert!(
-            warning.contains("The original database was restored and remains active"),
+            warning.contains("The active database passed validation."),
             "{warning}"
         );
+        assert!(warning.contains("Check the database records before continuing."));
         assert!(live.path.exists());
         assert!(!old.exists());
         assert!(!pending.exists());

@@ -363,3 +363,9 @@ PR #1 was published as a draft. Its first remote run found a newer-toolchain
 Clippy warning in the manual `StatementMode` default. Deriving the same Execute
 default preserves the public IPC contract; its existing omitted-mode tests pass.
 Formatting, all 58 tests, and strict Clippy pass locally on CI's Rust 1.99.0.
+
+A final adversarial source review identified an overconfident recovery warning
+after a possible late directory-sync failure. The warning now reports verified
+active-database validity without claiming the original snapshot is active.
+Existing recovery tests retain all preservation assertions. The final artifacts
+were rebuilt, verified, installed in the Review identifier, and smoke-tested.
