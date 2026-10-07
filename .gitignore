@@ -38,3 +38,11 @@ research/
 # regenerates this fresh from the web build via `cap add android` on every run.
 android/
 ios/
+
+# Generated Tauri build output
+src-tauri/target/
+src-tauri/gen/
+
+# Standalone desktop frontend and test coverage output
+/dist-desktop/
+/coverage/

@@ -31,11 +31,20 @@ npm run lint
 - NEVER CANCEL builds or installations - wait for completion
 
 ### Testing Individual Components
-There is no test suite configured. Test changes by:
-1. Running `npm run dev` and verifying in browser
-2. Testing specific workflows (create order, process payment, etc.)
-3. Checking browser console for errors
-4. Running `npm run build` to catch TypeScript errors
+Run the existing Vitest suite with `npm test`. Run desktop entry, view, and business-logic
+tests with `npm run test:desktop:coverage`; its V8 gate requires 100% statements,
+branches, functions, and lines in the desktop entry, `LocalFirstApp.tsx`, and
+executable `src/lib/localFirst/` modules. It does not measure the Rust runtime.
+
+Run `npm run lint:desktop`, `npm run typecheck:desktop`, and
+`npm run build:desktop` for the standalone desktop entry. The web build uses
+`npm run build`; Vite transpilation alone is not a TypeScript check.
+Native checks are `cargo fmt --all -- --check`, `cargo test`, and
+`cargo clippy --all-targets -- -D warnings` from `src-tauri/`.
+
+Verify installed desktop workflows using synthetic data in a separate review
+identifier and database directory. Unit coverage cannot establish native
+installation, restart persistence, printing, or restore behavior.
 
 ## Project Architecture
 
@@ -324,8 +333,8 @@ The application supports three service types defined in the database:
 - These warnings are expected and can be ignored
 
 ### Known Limitations
-- No automated test suite (manual testing required)
-- No CI/CD configured
+- Vitest covers web business helpers and desktop business logic.
+- Desktop CI validates JavaScript, the web build, and Rust storage.
 - Service worker may need manual unregister during development
 - WhatsApp integration requires external API setup
 
