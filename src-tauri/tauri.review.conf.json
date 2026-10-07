@@ -1,0 +1,8 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Smart Laundry POS Review",
+  "identifier": "com.smartlaundry.pos.review",
+  "bundle": {
+    "targets": ["app"]
+  }
+}

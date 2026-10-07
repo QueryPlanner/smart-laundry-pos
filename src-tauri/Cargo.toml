@@ -1,0 +1,24 @@
+[package]
+name = "smart-laundry-pos"
+version = "0.1.0"
+description = "Smart Laundry POS desktop application"
+authors = ["Smart Laundry"]
+edition = "2021"
+build = "build.rs"
+
+[lib]
+name = "smart_laundry_pos_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.0.0", features = [] }
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2.11.1", features = [] }
+tauri-plugin-dialog = "2.7.3"
+sqlx = { version = "0.8.6", default-features = false, features = ["runtime-tokio", "sqlite"] }
+
+[dev-dependencies]
+tauri = { version = "2.11.1", features = ["test"] }

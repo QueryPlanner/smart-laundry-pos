@@ -1,0 +1,73 @@
+name: Desktop checks
+
+on:
+  push:
+    branches:
+      - 'codex/**'
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  desktop:
+    runs-on: macos-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install locked npm dependencies
+        run: npm ci
+
+      - name: Run existing test suite
+        run: npm test
+
+      - name: Require complete desktop JavaScript coverage
+        run: npm run test:desktop:coverage
+
+      - name: Lint desktop entry and local-first code
+        run: npm run lint:desktop
+
+      - name: Typecheck desktop entry and local-first code
+        run: npm run typecheck:desktop
+
+      - name: Build desktop frontend
+        run: npm run build:desktop
+
+      - name: Check legacy web build compatibility
+        run: npm run build
+
+      - name: Set up Rust stable components
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy --component rustfmt
+          rustup default stable
+
+      - name: Check Rust formatting
+        working-directory: src-tauri
+        run: cargo fmt --all -- --check
+
+      - name: Run Rust tests
+        working-directory: src-tauri
+        run: cargo test
+
+      - name: Run Rust clippy
+        working-directory: src-tauri
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Package isolated macOS review app
+        run: npm run tauri:build -- --config src-tauri/tauri.review.conf.json
+
+      - name: Verify review app signature
+        run: codesign --verify --deep --strict "src-tauri/target/release/bundle/macos/Smart Laundry POS Review.app"
