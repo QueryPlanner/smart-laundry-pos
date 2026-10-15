@@ -9,5 +9,5 @@ export const StatusBadge = ({ status }: { status: string }) => (
 
 /** A bill number that opens the order in Orders / Pickup. */
 export const OrderLink = ({ id, number, onOpen }: { id: string; number: string; onOpen: (orderId: string) => void }) => (
-  <button type="button" className="counter-link-button" onClick={() => onOpen(id)}>{number}</button>
+  <button type="button" className="counter-link-button counter-bill-link" onClick={() => onOpen(id)}>{number}</button>
 );

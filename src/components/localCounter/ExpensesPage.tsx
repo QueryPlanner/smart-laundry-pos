@@ -109,7 +109,7 @@ export const ExpensesPage = ({ account, onError, onNotice }: SectionProps) => {
             <thead><tr><th>Date</th><th>Category</th><th>Details</th><th>Paid by</th><th className="num">Amount</th><th>Recorded by</th>{isAdmin && <th><span className="counter-visually-hidden">Actions</span></th>}</tr></thead>
             <tbody>{list.items.map(expense => (
               <tr key={expense.id}>
-                <td>{formatShopDate(expense.expenseDate)}</td>
+                <td className="counter-nowrap">{formatShopDate(expense.expenseDate)}</td>
                 <td>{expense.category}</td>
                 <td>{[expense.description, expense.notes].filter(Boolean).join(' · ') || '—'}</td>
                 <td>{METHOD_LABEL[expense.paymentMethod]}</td>

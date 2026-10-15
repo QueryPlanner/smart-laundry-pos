@@ -9,7 +9,7 @@ import {
   allowedBuckets, autoBucket, formatLocal, formatShopDateTime, joinLocal, methodText, presetRange, rangeProblem,
   splitLocal, statusText, type LocalRange, type SalesPreset,
 } from '@/lib/localFirst/salesRange';
-import { EmptyState, FormField, PageHeader, StatCard, money } from './ui';
+import { EmptyState, FormField, PageHeader, StatCard, count, money } from './ui';
 import { OrderLink, StatusBadge } from './InsightParts';
 import { SalesChart } from './SalesChart';
 import type { SectionProps } from './sections';
@@ -207,7 +207,7 @@ export const SalesPage = ({ onError, onOpenOrder }: SectionProps) => {
       {active && (
         <>
           <div className="counter-stats">
-            <StatCard label="Orders" value={summary.orders} hint={`${summary.pieces} pieces`} />
+            <StatCard label="Orders" value={summary.orders} hint={count(summary.pieces, 'piece')} />
             <StatCard label="Before discount" value={money(summary.grossMinor)} />
             <StatCard label="Discounts" value={money(summary.discountMinor)} />
             <StatCard label="Billed" value={money(summary.netBilledMinor)} hint={`Average ${money(summary.averageOrderMinor)} per order`} />
@@ -245,24 +245,24 @@ export const SalesPage = ({ onError, onOpenOrder }: SectionProps) => {
             <Breakdown
               title="By payment method" empty="No payments."
               rows={summary.byMethod.map(item => ({
-                key: item.method, name: methodText(item.method), detail: `${item.payments} payments`,
+                key: item.method, name: methodText(item.method), detail: count(item.payments, 'payment'),
                 value: item.refundedMinor > 0 ? `${money(item.collectedMinor)} (${money(item.refundedMinor)} back)` : money(item.collectedMinor),
               }))}
             />
             <Breakdown
               title="By staff" empty="No staff activity."
               rows={summary.byStaff.map(item => ({
-                key: item.staffId, name: item.name ?? 'Former account', detail: `${item.orders} orders, ${money(item.netBilledMinor)} billed`,
+                key: item.staffId, name: item.name ?? 'Former account', detail: `${count(item.orders, 'order')}, ${money(item.netBilledMinor)} billed`,
                 value: money(item.collectedMinor - item.refundedMinor),
               }))}
             />
             <Breakdown
               title="By service" empty="No orders."
-              rows={summary.byService.map(item => ({ key: item.service, name: item.service, detail: `${item.pieces} pieces, before discount`, value: money(item.amountMinor) }))}
+              rows={summary.byService.map(item => ({ key: item.service, name: item.service, detail: `${count(item.pieces, 'piece')}, before discount`, value: money(item.amountMinor) }))}
             />
             <Breakdown
               title="By order status" empty="No orders."
-              rows={summary.byStatus.map(item => ({ key: item.status, name: statusText(item.status), detail: `${item.orders} orders`, value: money(item.netBilledMinor) }))}
+              rows={summary.byStatus.map(item => ({ key: item.status, name: statusText(item.status), detail: count(item.orders, 'order'), value: money(item.netBilledMinor) }))}
             />
           </div>
         </>

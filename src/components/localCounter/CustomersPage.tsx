@@ -138,7 +138,7 @@ export const CustomersPage = ({ account, onError, onNotice, onOpenOrder }: Secti
                 <thead><tr><th>Bill</th><th>Date</th><th>Status</th><th className="num">Total</th><th className="num">Balance</th></tr></thead>
                 <tbody>{detail.recentOrders.map(order => (
                   <tr key={order.id}>
-                    <td><button type="button" className="counter-link-button" onClick={() => onOpenOrder(order.id)}>{order.orderNumber}</button></td>
+                    <td><button type="button" className="counter-link-button counter-bill-link" onClick={() => onOpenOrder(order.id)}>{order.orderNumber}</button></td>
                     <td>{formatShopDate(order.receivedAt)}</td>
                     <td>{statusLabel(order.status)}</td>
                     <td className="num">{money(order.totalMinor)}</td>

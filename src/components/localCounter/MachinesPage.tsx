@@ -117,8 +117,8 @@ export const MachinesPage = ({ account, onError, onNotice }: SectionProps) => {
               <tr key={machine.id}>
                 <td>{machine.name}{machine.capacity && <small className="counter-cell-note">{machine.capacity}</small>}{machine.notes && <small className="counter-cell-note">{machine.notes}</small>}</td>
                 <td>{machine.machineType}</td>
-                <td>{formatShopDate(machine.lastMaintenanceDate)}</td>
-                <td>{formatShopDate(machine.nextMaintenanceDate)}{machine.maintenanceDue && <> <span className="counter-badge warn">Due</span></>}</td>
+                <td className="counter-nowrap">{formatShopDate(machine.lastMaintenanceDate)}</td>
+                <td className="counter-nowrap">{formatShopDate(machine.nextMaintenanceDate)}{machine.maintenanceDue && <> <span className="counter-badge warn">Due</span></>}</td>
                 <td>
                   <div className="counter-form-row">
                     <Button size="sm" variant="outline" onClick={() => { setForm(null); setService({ machine, servicedOn: shopToday(), nextDue: '', notes: machine.notes ?? '' }); }}>Record service</Button>

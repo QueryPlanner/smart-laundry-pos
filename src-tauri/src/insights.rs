@@ -371,6 +371,10 @@ impl Scope {
             "(?1 IS NULL OR o.created_by = ?1)".to_string(),
         ];
         conditions.extend(self.order_traits(true));
+        // A status filter that leaves cancelled orders out also leaves them out of this card.
+        if !self.statuses.is_empty() && !self.statuses.contains(&"cancelled") {
+            conditions.push("1 = 0".to_string());
+        }
         conditions.join(" AND ")
     }
 
@@ -1313,7 +1317,7 @@ async fn overview_inner(
     )
     .await?;
 
-    let counts = sqlx::query("SELECT status, COUNT(*) AS n FROM orders WHERE status IN ('received','washing','drying','ironing','quality_check','packing','ready') GROUP BY status")
+    let counts = sqlx::query("SELECT status, COUNT(*) AS n FROM orders o WHERE status IN ('received','washing','drying','ironing','quality_check','packing','ready') AND EXISTS (SELECT 1 FROM order_pieces op WHERE op.order_id = o.id) GROUP BY status")
         .fetch_all(&mut *conn)
         .await
         .map_err(db_err)?;
@@ -1334,7 +1338,7 @@ async fn overview_inner(
     let ready_waiting = attention(conn, true, now_seconds).await?;
     let in_process = attention(conn, false, now_seconds).await?;
     let low_stock_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM inventory_items WHERE current_quantity <= minimum_quantity",
+        "SELECT COUNT(*) FROM inventory_items WHERE minimum_quantity > 0 AND current_quantity <= minimum_quantity",
     )
     .fetch_one(&mut *conn)
     .await

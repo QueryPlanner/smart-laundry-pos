@@ -1,12 +1,16 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { ConfirmDelete, EmptyState, FormField, PageHeader, StatCard, money } from './ui';
+import { ConfirmDelete, count, EmptyState, FormField, PageHeader, StatCard, money } from './ui';
 import { SECTION_ROLES, canOpen, type SectionId } from './sections';
 
 afterEach(cleanup);
 
 describe('counter workspace UI kit', () => {
+  it('pluralises counts', () => {
+    expect([count(0, 'order'), count(1, 'order'), count(2, 'piece')]).toEqual(['0 orders', '1 order', '2 pieces']);
+  });
+
   it('formats paise as Indian rupees', () => {
     expect(money(123456)).toBe('₹1,234.56');
     expect(money(0)).toBe('₹0.00');
@@ -42,6 +46,21 @@ describe('counter workspace UI kit', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Confirm delete' }));
     await waitFor(() => expect(onConfirm).toHaveBeenCalledWith('duplicate entry'));
     expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('ignores a second confirm tap while the first delete is still running', async () => {
+    let finish: () => void = () => undefined;
+    const onConfirm = vi.fn(() => new Promise<void>(resolve => { finish = resolve; }));
+    render(<ConfirmDelete what="expense Soap" onConfirm={onConfirm} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    fireEvent.change(screen.getByLabelText('Reason'), { target: { value: 'duplicate entry' } });
+    const confirmButton = screen.getByRole('button', { name: 'Confirm delete' }) as HTMLButtonElement;
+    fireEvent.click(confirmButton);
+    await waitFor(() => expect(confirmButton.disabled).toBe(true));
+    fireEvent.click(confirmButton);
+    expect(onConfirm).toHaveBeenCalledTimes(1);
+    finish();
+    await waitFor(() => expect(confirmButton.disabled).toBe(false));
   });
 
   it('can be dismissed without deleting, and disables actions while busy', () => {

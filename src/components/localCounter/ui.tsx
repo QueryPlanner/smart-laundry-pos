@@ -15,6 +15,10 @@ const rupees = new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'IN
 // eslint-disable-next-line react-refresh/only-export-components -- a pure helper shared by every page
 export const money = (minor: number): string => rupees.format(minor / 100);
 
+/** "1 piece" / "3 pieces": regular plurals only. */
+// eslint-disable-next-line react-refresh/only-export-components -- a pure helper shared by every page
+export const count = (n: number, noun: string): string => `${n} ${noun}${n === 1 ? '' : 's'}`;
+
 export const PageHeader = ({ title, subtitle, actions }: { title: string; subtitle?: string; actions?: ReactNode }) => (
   <div className="counter-page-head">
     <div><h1>{title}</h1>{subtitle && <p>{subtitle}</p>}</div>
@@ -51,6 +55,7 @@ export const ConfirmDelete = ({ what, busy = false, onConfirm }: { what: string;
   const [open, setOpen] = useState(false);
   const [reason, setReason] = useState('');
   const [problem, setProblem] = useState('');
+  const [working, setWorking] = useState(false);
   if (!open) return <Button variant="outline" size="sm" className="counter-danger-button" onClick={() => setOpen(true)}>Delete</Button>;
   const confirm = async () => {
     const trimmed = reason.trim();
@@ -59,7 +64,9 @@ export const ConfirmDelete = ({ what, busy = false, onConfirm }: { what: string;
       return;
     }
     setProblem('');
-    await onConfirm(trimmed);
+    // A second tap while the first delete is still running would only report "not found".
+    setWorking(true);
+    try { await onConfirm(trimmed); } finally { setWorking(false); }
   };
   return (
     <div className="counter-confirm-delete" role="group" aria-label={`Delete ${what}`}>
@@ -67,7 +74,7 @@ export const ConfirmDelete = ({ what, busy = false, onConfirm }: { what: string;
       <Label>Reason<Input value={reason} maxLength={REASON_MAX} onChange={event => setReason(event.target.value)} /></Label>
       {problem && <p role="alert">{problem}</p>}
       <div className="counter-confirm-actions">
-        <Button variant="destructive" size="sm" disabled={busy} onClick={() => void confirm()}>Confirm delete</Button>
+        <Button variant="destructive" size="sm" disabled={busy || working} onClick={() => void confirm()}>Confirm delete</Button>
         <Button variant="outline" size="sm" disabled={busy} onClick={() => { setOpen(false); setReason(''); setProblem(''); }}>Keep</Button>
       </div>
     </div>

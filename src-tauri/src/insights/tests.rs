@@ -714,6 +714,15 @@ fn cancelled_and_voided_money_follow_their_own_dates() {
             j.net_billed_minor + f.net_billed_minor
         );
         assert_eq!((all.cancelled_count, all.cancelled_minor), (1, 5_000));
+        // A status filter that leaves out "cancelled" leaves the cancelled card at zero too.
+        let mut only_ready = both();
+        only_ready.statuses = vec!["ready".into()];
+        let r = summary(&shop, &only_ready).await;
+        assert_eq!((r.cancelled_count, r.cancelled_minor), (0, 0));
+        let mut ready_or_cancelled = both();
+        ready_or_cancelled.statuses = vec!["ready".into(), "cancelled".into()];
+        let rc = summary(&shop, &ready_or_cancelled).await;
+        assert_eq!((rc.cancelled_count, rc.cancelled_minor), (1, 5_000));
         // A payment recorded and voided in the same window nets to zero inside it.
         let day = filter("2026-02-02T00:00", "2026-02-03T00:00");
         let d = summary(&shop, &day).await;
@@ -923,14 +932,15 @@ fn legacy_rows_are_shown_once_and_never_crash() {
             series.points.iter().map(|p| p.collected_minor).sum::<i64>(),
             45_000
         );
-        // Not on the attention lists (no tracked pieces) but counted as a ready order.
+        // A legacy order without tracked pieces cannot be collected at the counter, so it is on
+        // neither the attention lists nor the queue counts (the two always agree).
         let now = DateTime::parse_from_rfc3339("2026-03-20T00:00:00Z")
             .unwrap()
             .with_timezone(&Utc);
         let overview = dashboard_overview_at(&shop.db, &admin(), now)
             .await
             .unwrap();
-        assert_eq!(overview.queue.ready, 1);
+        assert_eq!(overview.queue.ready, 0);
         assert_eq!(
             (overview.ready_waiting.total, overview.in_process.total),
             (0, 0)
@@ -1406,7 +1416,7 @@ fn the_dashboard_lists_what_needs_attention() {
         shop.add(ready("r-edge", "2026-03-14T00:00")).await;
         shop.audit("order_status_changed", "r-edge", &plus("2026-03-13T12:00"))
             .await;
-        // Piece-less legacy order ignored by the list, still counted in the queue.
+        // Piece-less legacy order is ignored by the list and by the queue counts alike.
         shop.add(ready("r-nopieces", "2026-03-01T09:00").pieces(0))
             .await;
         shop.pay(
@@ -1444,7 +1454,7 @@ fn the_dashboard_lists_what_needs_attention() {
         )
         .await;
         shop.add(order("done", &z("2026-03-14T11:00"))).await;
-        shop.run("INSERT INTO inventory_items(id,name,current_quantity,unit,minimum_quantity,created_at,updated_at,origin_device_id) VALUES('i1','Soap',1,'kg',2,'2026-01-01','2026-01-01','t'),('i2','Bags',5,'pcs',2,'2026-01-01','2026-01-01','t'),('i3','Pegs',2,'pcs',2,'2026-01-01','2026-01-01','t')").await;
+        shop.run("INSERT INTO inventory_items(id,name,current_quantity,unit,minimum_quantity,created_at,updated_at,origin_device_id) VALUES('i1','Soap',1,'kg',2,'2026-01-01','2026-01-01','t'),('i2','Bags',5,'pcs',2,'2026-01-01','2026-01-01','t'),('i3','Pegs',2,'pcs',2,'2026-01-01','2026-01-01','t'),('i4','Hangers',0,'pcs',0,'2026-01-01','2026-01-01','t')").await;
 
         let overview = dashboard_overview_at(&shop.db, &staff(), now)
             .await
@@ -1457,12 +1467,13 @@ fn the_dashboard_lists_what_needs_attention() {
             ),
             ("2026-03-15", "2026-03-01")
         );
+        // The two piece-less legacy orders are in neither the lists nor these counts.
         assert_eq!(
             overview.queue,
             QueueCounts {
                 received: 1,
-                in_process: 3,
-                ready: 5
+                in_process: 2,
+                ready: 4
             }
         );
         let waiting = &overview.ready_waiting;

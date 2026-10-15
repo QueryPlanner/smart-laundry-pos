@@ -287,11 +287,12 @@ describe('narrow screens', () => {
     expect(bar.querySelectorAll('.counter-nav-group')).toHaveLength(4);
   });
 
-  it('styles that bar as horizontally scrollable with buttons that never shrink', () => {
+  it('styles that bar to wrap onto further rows, with buttons that never shrink', () => {
     const bar = /\.counter-nav\{[^}]*\}/.exec(css)?.[0] ?? '';
     expect(bar).toContain('display:flex');
-    expect(bar).toContain('overflow-x:auto');
-    expect(css).toMatch(/\.counter-nav-group\{[^}]*flex:none/);
+    expect(bar).toContain('flex-wrap:wrap');
+    expect(bar).not.toContain('overflow-x');
+    expect(css).toMatch(/\.counter-nav-group\{[^}]*flex-wrap:wrap/);
     expect(css).toMatch(/\.counter-nav button\{[^}]*flex:none;white-space:nowrap/);
     expect(css).toMatch(/@media\(max-width:620px\)\{[^@]*\.counter-nav-label\{display:none\}/);
   });
