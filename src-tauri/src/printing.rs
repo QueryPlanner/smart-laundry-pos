@@ -4,10 +4,15 @@
 //! change the user's default printer. The renderer submits structured documents;
 //! customer text is drawn as text and is never interpreted as printer commands.
 
+#[cfg(any(target_os = "linux", test))]
+use crate::print_layout::format_money;
+#[cfg(any(target_os = "windows", target_os = "linux", test))]
+use crate::print_layout::safe_text;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 #[cfg(any(target_os = "windows", test))]
 use std::mem::{align_of, size_of};
+use std::time::Duration;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -38,6 +43,11 @@ pub struct BillDocument {
     pub customer_phone: String,
     pub items: Vec<BillItem>,
     pub subtotal_minor: i64,
+    /// Automatic discount in basis points; absent in documents saved before discounts existed.
+    #[serde(default)]
+    pub discount_percent_bp: i64,
+    #[serde(default)]
+    pub discount_minor: i64,
     pub paid_minor: i64,
     pub balance_minor: i64,
     pub physical_piece_count: u32,
@@ -115,9 +125,101 @@ pub async fn enumerate_printers() -> Result<Vec<PrinterInfo>, PrintError> {
     enumerate_platform_printers()
 }
 
+/// How long one document may take to reach the operating-system spooler before the outcome is
+/// declared uncertain. The submission keeps running on its own thread; the operator is told to
+/// inspect the queue rather than being left with a frozen screen.
+const SUBMIT_DEADLINE: Duration = Duration::from_secs(120);
+/// A tag batch prints one label at a time, so large batches get a little longer.
+const EXTRA_DEADLINE_PER_TAG: Duration = Duration::from_secs(4);
+const MAX_DEADLINE: Duration = Duration::from_secs(30 * 60);
+/// More tags than this in one order is a data-entry mistake, not a laundry order.
+pub(crate) const MAX_TAGS_PER_DOCUMENT: usize = 500;
+
+fn deadline_for(document: &PrintDocument) -> Duration {
+    match document {
+        PrintDocument::Bill(_) => SUBMIT_DEADLINE,
+        PrintDocument::Tags(tags) => {
+            let extra = EXTRA_DEADLINE_PER_TAG.saturating_mul(tags.pieces.len() as u32);
+            (SUBMIT_DEADLINE + extra).min(MAX_DEADLINE)
+        }
+    }
+}
+
+fn busy_printers() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
+    static BUSY: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+        std::sync::OnceLock::new();
+    BUSY.get_or_init(Default::default)
+}
+
+/// Held by the thread that is talking to one printer queue. If an earlier submission timed out
+/// but its thread is still running, a new submission to the same queue is refused instead of
+/// racing it, so a late completion can never print a second copy behind the operator's back.
+struct PrinterSlot(String);
+
+impl PrinterSlot {
+    fn claim(printer_id: &str) -> Result<Self, PrintError> {
+        let mut busy = busy_printers()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !busy.insert(printer_id.to_owned()) {
+            return Err(PrintError::PrinterUnavailable(format!(
+                "{printer_id}: the previous print to this printer is still running"
+            )));
+        }
+        Ok(Self(printer_id.to_owned()))
+    }
+}
+
+impl Drop for PrinterSlot {
+    fn drop(&mut self) {
+        busy_printers()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.0);
+    }
+}
+
 pub async fn submit_document(
     request: SubmitDocumentRequest,
 ) -> Result<SubmissionReceipt, PrintError> {
+    let deadline = deadline_for(&request.document);
+    tauri::async_runtime::spawn_blocking(move || {
+        run_with_deadline(deadline, move || submit_blocking(request))
+    })
+    .await
+    .map_err(|error| {
+        PrintError::Uncertain(format!("The print task stopped unexpectedly: {error}"))
+    })?
+}
+
+/// Run blocking printer work on a dedicated thread and give up waiting after `deadline`.
+fn run_with_deadline<T: Send + 'static>(
+    deadline: Duration,
+    work: impl FnOnce() -> Result<T, PrintError> + Send + 'static,
+) -> Result<T, PrintError> {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("print-submit".into())
+        .spawn(move || {
+            let _ = sender.send(work());
+        })
+        .map_err(|error| {
+            PrintError::Adapter(format!("could not start the print worker: {error}"))
+        })?;
+    match receiver.recv_timeout(deadline) {
+        Ok(result) => result,
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(PrintError::Uncertain(
+            "The print system did not answer in time. Check the printer queue before retrying."
+                .into(),
+        )),
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(PrintError::Uncertain(
+            "The print worker stopped unexpectedly. Check the printer queue before retrying."
+                .into(),
+        )),
+    }
+}
+
+fn submit_blocking(request: SubmitDocumentRequest) -> Result<SubmissionReceipt, PrintError> {
     validate_document(&request.document)?;
     let printers = enumerate_platform_printers()?;
     let printer = printers
@@ -127,6 +229,7 @@ pub async fn submit_document(
     if !printer.is_available {
         return Err(PrintError::PrinterUnavailable(request.printer_id));
     }
+    let _slot = PrinterSlot::claim(&printer.id)?;
 
     #[cfg(target_os = "windows")]
     {
@@ -140,7 +243,7 @@ pub async fn submit_document(
     {
         let _ = printer;
         Err(PrintError::Adapter(
-            "Native printing is not implemented for this operating system".into(),
+            "Printing is only supported on Windows (and Linux for development)".into(),
         ))
     }
 }
@@ -169,6 +272,7 @@ fn validate_document(document: &PrintDocument) -> Result<(), PrintError> {
                 .iter()
                 .any(|item| item.unit_price_minor < 0 || item.line_total_minor < 0)
                 || bill.subtotal_minor < 0
+                || bill.discount_minor < 0
                 || bill.paid_minor < 0
                 || bill.balance_minor < 0
             {
@@ -182,14 +286,38 @@ fn validate_document(document: &PrintDocument) -> Result<(), PrintError> {
                     "bill item quantities do not match physical piece count".into(),
                 ));
             }
+            let line_sum: Option<i64> = bill
+                .items
+                .iter()
+                .try_fold(0i64, |sum, item| sum.checked_add(item.line_total_minor));
+            let lines_priced = bill.items.iter().all(|item| {
+                item.unit_price_minor.checked_mul(i64::from(item.quantity))
+                    == Some(item.line_total_minor)
+            });
+            if line_sum != Some(bill.subtotal_minor) || !lines_priced {
+                return Err(PrintError::Invalid(
+                    "bill line amounts do not add up to the subtotal".into(),
+                ));
+            }
+            if !(0..=10_000).contains(&bill.discount_percent_bp)
+                || bill.discount_minor > bill.subtotal_minor
+            {
+                return Err(PrintError::Invalid("bill discount is out of range".into()));
+            }
+            let due = bill.subtotal_minor - bill.discount_minor;
+            if bill.paid_minor.checked_add(bill.balance_minor) != Some(due) {
+                return Err(PrintError::Invalid(
+                    "bill paid amount and balance do not match the total".into(),
+                ));
+            }
             Ok(())
         }
         PrintDocument::Tags(tags) => {
             nonempty(&tags.order_number, "order number")?;
-            if tags.pieces.is_empty() || tags.pieces.len() > u32::MAX as usize {
-                return Err(PrintError::Invalid(
-                    "tag document must contain physical pieces".into(),
-                ));
+            if tags.pieces.is_empty() || tags.pieces.len() > MAX_TAGS_PER_DOCUMENT {
+                return Err(PrintError::Invalid(format!(
+                    "a tag document must contain between 1 and {MAX_TAGS_PER_DOCUMENT} pieces"
+                )));
             }
             let total = tags.pieces[0].total;
             if total == 0 {
@@ -219,37 +347,43 @@ fn validate_document(document: &PrintDocument) -> Result<(), PrintError> {
     }
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn render_lines(document: &PrintDocument) -> Vec<Vec<String>> {
     match document {
         PrintDocument::Bill(bill) => {
             let mut lines = vec![vec![
                 "SMART LAUNDRY".into(),
-                format!("Bill: {}", safe_line(&bill.order_number)),
-                format!("Date: {}", safe_line(&bill.created_at_ist)),
-                format!("Customer: {}", safe_line(&bill.customer_name)),
-                format!("Phone: {}", safe_line(&bill.customer_phone)),
+                format!("Bill: {}", safe_text(&bill.order_number)),
+                format!("Date: {}", safe_text(&bill.created_at_ist)),
+                format!("Customer: {}", safe_text(&bill.customer_name)),
+                format!("Phone: {}", safe_text(&bill.customer_phone)),
                 "----------------------------------------".into(),
             ]];
             for item in &bill.items {
                 lines[0].push(format!(
                     "{} / {}  x{}",
-                    safe_line(&item.garment),
-                    safe_line(&item.service),
+                    safe_text(&item.garment),
+                    safe_text(&item.service),
                     item.quantity
                 ));
                 lines[0].push(format!(
                     "  {}  {}",
-                    money(item.unit_price_minor),
-                    money(item.line_total_minor)
+                    format_money(item.unit_price_minor),
+                    format_money(item.line_total_minor)
                 ));
             }
             lines[0].extend([
                 "----------------------------------------".into(),
                 format!("Pieces: {}", bill.physical_piece_count),
-                format!("Subtotal: {}", money(bill.subtotal_minor)),
-                format!("Paid: {}", money(bill.paid_minor)),
-                format!("Balance: {}", money(bill.balance_minor)),
-                format!("Ready by: {}", safe_line(&bill.promised_at_ist)),
+                format!("Subtotal: {}", format_money(bill.subtotal_minor)),
+                format!("Discount: -{}", format_money(bill.discount_minor)),
+                format!(
+                    "Total: {}",
+                    format_money(bill.subtotal_minor - bill.discount_minor)
+                ),
+                format!("Paid: {}", format_money(bill.paid_minor)),
+                format!("Balance: {}", format_money(bill.balance_minor)),
+                format!("Ready by: {}", safe_text(&bill.promised_at_ist)),
                 "Thank you".into(),
             ]);
             lines
@@ -259,15 +393,15 @@ fn render_lines(document: &PrintDocument) -> Vec<Vec<String>> {
             .iter()
             .map(|piece| {
                 vec![
-                    format!("Bill {}", safe_line(&tags.order_number)),
+                    format!("Bill {}", safe_text(&tags.order_number)),
                     format!(
                         "{} / {}",
-                        safe_line(&piece.garment),
-                        safe_line(&piece.service)
+                        safe_text(&piece.garment),
+                        safe_text(&piece.service)
                     ),
                     format!(
                         "Piece {} ({}/{})",
-                        safe_line(&piece.piece_id),
+                        safe_text(&piece.piece_id),
                         piece.position,
                         piece.total
                     ),
@@ -275,22 +409,6 @@ fn render_lines(document: &PrintDocument) -> Vec<Vec<String>> {
             })
             .collect(),
     }
-}
-
-fn safe_line(value: &str) -> String {
-    value
-        .chars()
-        .map(|ch| if ch.is_control() { ' ' } else { ch })
-        .collect::<String>()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-fn money(minor: i64) -> String {
-    let sign = if minor < 0 { "-" } else { "" };
-    let value = minor.unsigned_abs();
-    format!("{sign}₹{}.{:02}", value / 100, value % 100)
 }
 
 #[cfg(target_os = "linux")]
@@ -453,8 +571,36 @@ fn enumerate_platform_printers() -> Result<Vec<PrinterInfo>, PrintError> {
     ))
 }
 
+#[cfg(any(target_os = "linux", target_os = "windows", test))]
 fn now_rfc3339() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+}
+
+#[cfg(any(target_os = "windows", test))]
+const PRINTER_ATTRIBUTE_DEFAULT: u32 = 0x0000_0004;
+#[cfg(any(target_os = "windows", test))]
+const PRINTER_ATTRIBUTE_WORK_OFFLINE: u32 = 0x0000_0400;
+/// PRINTER_STATUS_ flags that mean a job sent now would not print: paused, error, being deleted,
+/// paper jam/out/problem, offline, not available, needs user intervention, door open.
+/// PRINTING (0x400) and BUSY (0x200) are deliberately not here: a queue that is busy printing the
+/// previous order still accepts the next one.
+#[cfg(any(target_os = "windows", test))]
+const PRINTER_UNAVAILABLE_STATUS: u32 = 0x0000_0001
+    | 0x0000_0002
+    | 0x0000_0004
+    | 0x0000_0008
+    | 0x0000_0010
+    | 0x0000_0040
+    | 0x0000_0080
+    | 0x0000_1000
+    | 0x0010_0000
+    | 0x0040_0000;
+
+/// Whether a Windows print queue can take a job right now, from its status and attribute flags.
+/// A queue switched to "Use Printer Offline" accepts jobs and never prints them, so it counts.
+#[cfg(any(target_os = "windows", test))]
+fn printer_is_available(status: u32, attributes: u32) -> bool {
+    status & PRINTER_UNAVAILABLE_STATUS == 0 && attributes & PRINTER_ATTRIBUTE_WORK_OFFLINE == 0
 }
 
 /// Return only the typed record prefix in a native variable-length Win32 buffer.
@@ -507,15 +653,16 @@ fn native_utf16z(buffer: &[u8], offset: usize) -> Result<String, PrintError> {
 #[cfg(target_os = "windows")]
 mod windows_adapter {
     use super::*;
+    use crate::print_layout::{layout_document, PageSpec, TextMeter};
     use std::mem::size_of;
     use std::slice;
     use windows::core::{PCWSTR, PWSTR};
-    use windows::Win32::Foundation::RECT;
+    use windows::Win32::Foundation::SIZE;
     use windows::Win32::Graphics::Gdi::{
-        CreateDCW, CreateFontW, DeleteDC, DeleteObject, DrawTextW, GetDeviceCaps, SelectObject,
-        CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, DEFAULT_PITCH, DEFAULT_QUALITY, DT_NOPREFIX,
-        DT_WORDBREAK, FF_DONTCARE, FW_BOLD, HORZRES, LOGPIXELSX, LOGPIXELSY, OUT_DEFAULT_PRECIS,
-        VERTRES,
+        CreateDCW, CreateFontW, DeleteDC, DeleteObject, GetDeviceCaps, GetTextExtentPoint32W,
+        SelectObject, TextOutW, CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, DEFAULT_PITCH,
+        DEFAULT_QUALITY, FF_DONTCARE, FW_BOLD, HDC, HFONT, HORZRES, LOGPIXELSX, LOGPIXELSY,
+        OUT_DEFAULT_PRECIS, VERTRES,
     };
     use windows::Win32::Graphics::Printing::{
         EnumPrintersW, PRINTER_ENUM_CONNECTIONS, PRINTER_ENUM_LOCAL, PRINTER_INFO_2W,
@@ -625,20 +772,11 @@ mod windows_adapter {
             if name.is_empty() {
                 continue;
             }
-            let status = entry.Status;
-            let unavailable_bits = 0x0000_0002
-                | 0x0000_0008
-                | 0x0000_0010
-                | 0x0000_0040
-                | 0x0000_0080
-                | 0x0000_0400
-                | 0x0000_1000
-                | 0x0010_0000;
             result.push(PrinterInfo {
                 id: name.clone(),
                 name,
-                is_default: entry.Attributes & 0x0000_0004 != 0,
-                is_available: status & unavailable_bits == 0,
+                is_default: entry.Attributes & PRINTER_ATTRIBUTE_DEFAULT != 0,
+                is_available: printer_is_available(entry.Status, entry.Attributes),
             });
         }
         Ok(result)
@@ -661,6 +799,81 @@ mod windows_adapter {
         native_utf16z(buffer, address - base)
     }
 
+    /// Releases the printer device context on every exit path.
+    struct DeviceContext(HDC, std::cell::Cell<bool>);
+    impl DeviceContext {
+        fn new(hdc: HDC) -> Self {
+            Self(hdc, std::cell::Cell::new(false))
+        }
+    }
+    impl Drop for DeviceContext {
+        fn drop(&mut self) {
+            // A document left open (for example by a panic) would stay in the spooler.
+            if self.1.get() {
+                unsafe {
+                    let _ = AbortDoc(self.0);
+                }
+            }
+            unsafe {
+                let _ = DeleteDC(self.0);
+            }
+        }
+    }
+
+    fn create_font(size_pt: f32, bold: bool, y_dpi: i32) -> HFONT {
+        let height = (size_pt * y_dpi as f32 / 72.0).round().max(1.0) as i32;
+        let face: Vec<u16> = "Segoe UI".encode_utf16().chain([0]).collect();
+        unsafe {
+            CreateFontW(
+                -height,
+                0,
+                0,
+                0,
+                if bold { FW_BOLD.0 as i32 } else { 400 },
+                0,
+                0,
+                0,
+                DEFAULT_CHARSET,
+                OUT_DEFAULT_PRECIS,
+                CLIP_DEFAULT_PRECIS,
+                DEFAULT_QUALITY,
+                DEFAULT_PITCH.0 as u32 | FF_DONTCARE.0 as u32,
+                PCWSTR(face.as_ptr()),
+            )
+        }
+    }
+
+    /// Measures text with the printer's own font metrics so layout matches what is drawn.
+    struct GdiMeter {
+        hdc: HDC,
+        x_dpi: i32,
+        y_dpi: i32,
+    }
+
+    impl TextMeter for GdiMeter {
+        fn width_pt(&self, text: &str, size_pt: f32, bold: bool) -> f32 {
+            let font = create_font(size_pt, bold, self.y_dpi);
+            let previous = unsafe { SelectObject(self.hdc, font.into()) };
+            let wide: Vec<u16> = text.encode_utf16().collect();
+            let mut size = SIZE { cx: 0, cy: 0 };
+            let measured = unsafe { GetTextExtentPoint32W(self.hdc, &wide, &mut size) }.as_bool();
+            unsafe {
+                let _ = SelectObject(self.hdc, previous);
+                let _ = DeleteObject(font.into());
+            }
+            if measured {
+                size.cx as f32 * 72.0 / self.x_dpi as f32
+            } else {
+                // An unmeasurable line must not be treated as fitting.
+                f32::MAX
+            }
+        }
+    }
+
+    fn points_to_device(points: f32, dpi: i32) -> i32 {
+        (points * dpi as f32 / 72.0).round() as i32
+    }
+
     pub(super) fn submit(
         printer_name: &str,
         document: &PrintDocument,
@@ -672,20 +885,36 @@ mod windows_adapter {
                 "could not create a printer device context for {printer_name}"
             )));
         }
-        let lines = render_lines(document);
-        let is_tag = matches!(document, PrintDocument::Tags(_));
-        let (x_dpi, y_dpi) = unsafe {
+        let context = DeviceContext::new(hdc);
+        let (x_dpi, y_dpi, page_width_px, page_height_px) = unsafe {
             (
                 GetDeviceCaps(Some(hdc), LOGPIXELSX),
                 GetDeviceCaps(Some(hdc), LOGPIXELSY),
+                GetDeviceCaps(Some(hdc), HORZRES),
+                GetDeviceCaps(Some(hdc), VERTRES),
             )
         };
-        let left = ((x_dpi.max(1) * 3) / 10).max(1);
-        let top = ((y_dpi.max(1) * 3) / 10).max(1);
-        let base_line_height = ((y_dpi.max(1) * if is_tag { 4 } else { 5 }) / 10).max(1);
+        if x_dpi <= 0 || y_dpi <= 0 || page_width_px <= 0 || page_height_px <= 0 {
+            return Err(PrintError::Adapter(
+                "the printer driver did not report a usable page size".into(),
+            ));
+        }
+        let spec = PageSpec {
+            width_pt: page_width_px as f32 * 72.0 / x_dpi as f32,
+            height_pt: page_height_px as f32 * 72.0 / y_dpi as f32,
+        };
+        // Everything that can be wrong with the content is found here, before a spool job exists,
+        // so such failures are certain (nothing printed) rather than "uncertain".
+        let meter = GdiMeter {
+            hdc: context.0,
+            x_dpi,
+            y_dpi,
+        };
+        let pages = layout_document(document, spec, &meter)?;
+
         let doc_name: Vec<u16> = match document {
-            PrintDocument::Bill(b) => format!("Laundry bill {}", safe_line(&b.order_number)),
-            PrintDocument::Tags(t) => format!("Laundry tags {}", safe_line(&t.order_number)),
+            PrintDocument::Bill(b) => format!("Laundry bill {}", safe_text(&b.order_number)),
+            PrintDocument::Tags(t) => format!("Laundry tags {}", safe_text(&t.order_number)),
         }
         .encode_utf16()
         .chain([0])
@@ -697,97 +926,68 @@ mod windows_adapter {
             lpszDatatype: PCWSTR::null(),
             fwType: 0,
         };
-        let job_id = unsafe { StartDocW(hdc, &info) };
+        let job_id = unsafe { StartDocW(context.0, &info) };
         if job_id <= 0 {
-            unsafe {
-                let _ = DeleteDC(hdc);
-            }
             return Err(PrintError::Adapter(
                 "Windows spooler rejected StartDoc".into(),
             ));
         }
-        let page_height = unsafe { GetDeviceCaps(Some(hdc), VERTRES) };
-        let page_width = unsafe { GetDeviceCaps(Some(hdc), HORZRES) };
-        let right = (page_width - left).max(left + 1);
-        let mut uncertain = None;
-        for page in &lines {
-            if unsafe { StartPage(hdc) } <= 0 {
-                uncertain = Some("Windows spooler failed after accepting the document".to_owned());
-                break;
+        context.1.set(true);
+        // `may_have_printed` is true when the failing step could already have put a page on the
+        // printer (finishing a page); a failure before any page was finished is certain.
+        let stop = |pages_done: usize, reason: &str, may_have_printed: bool| {
+            unsafe {
+                let _ = AbortDoc(context.0);
             }
-            let mut y = top;
-            for (index, line) in page.iter().enumerate() {
-                let font_height = if index == 0 {
-                    base_line_height * 2
-                } else {
-                    base_line_height
-                };
-                let face: Vec<u16> = "Segoe UI".encode_utf16().chain([0]).collect();
-                let font = unsafe {
-                    CreateFontW(
-                        -font_height,
-                        0,
-                        0,
-                        0,
-                        if index == 0 { FW_BOLD.0 as i32 } else { 400 },
-                        0,
-                        0,
-                        0,
-                        DEFAULT_CHARSET,
-                        OUT_DEFAULT_PRECIS,
-                        CLIP_DEFAULT_PRECIS,
-                        DEFAULT_QUALITY,
-                        DEFAULT_PITCH.0 as u32 | FF_DONTCARE.0 as u32,
-                        PCWSTR(face.as_ptr()),
-                    )
-                };
-                let old = unsafe { SelectObject(hdc, font.into()) };
-                let mut text: Vec<u16> = line.encode_utf16().collect();
-                let mut rect = RECT {
-                    left,
-                    top: y,
-                    right,
-                    bottom: page_height - top,
-                };
-                let used_height =
-                    unsafe { DrawTextW(hdc, &mut text, &mut rect, DT_WORDBREAK | DT_NOPREFIX) };
+            context.1.set(false);
+            if pages_done == 0 && !may_have_printed {
+                // Nothing reached the printer: the job was removed, so a retry is safe.
+                Err(PrintError::Adapter(reason.to_owned()))
+            } else {
+                Ok(SubmissionReceipt {
+                    os_job_id: Some(job_id.to_string()),
+                    accepted_at: now_rfc3339(),
+                    certainty: SubmissionCertainty::Uncertain,
+                    detail: Some(format!(
+                        "{reason} after {pages_done} of {} pages were sent",
+                        pages.len()
+                    )),
+                })
+            }
+        };
+        for (done, page) in pages.iter().enumerate() {
+            if unsafe { StartPage(context.0) } <= 0 {
+                return stop(done, "Windows could not start a page", false);
+            }
+            let x = points_to_device(page.margin_pt, x_dpi);
+            for line in &page.lines {
+                let font = create_font(line.size_pt, line.bold, y_dpi);
+                let previous = unsafe { SelectObject(context.0, font.into()) };
+                let wide: Vec<u16> = line.text.encode_utf16().collect();
+                let drawn =
+                    unsafe { TextOutW(context.0, x, points_to_device(line.y_pt, y_dpi), &wide) }
+                        .as_bool();
                 unsafe {
-                    let _ = SelectObject(hdc, old);
+                    let _ = SelectObject(context.0, previous);
                     let _ = DeleteObject(font.into());
                 }
-                if used_height <= 0 || y + used_height > page_height - top {
-                    uncertain = Some(
-                        "Windows could not fit all text after the spool job was created".to_owned(),
-                    );
-                    break;
+                if !drawn {
+                    return stop(done, "Windows could not draw a line of text", false);
                 }
-                y += used_height + (base_line_height / 2).max(1);
             }
-            if uncertain.is_some() {
-                unsafe {
-                    let _ = AbortDoc(hdc);
-                }
-                break;
-            }
-            if unsafe { EndPage(hdc) } <= 0 {
-                uncertain =
-                    Some("Windows spooler status was lost after page submission".to_owned());
-                break;
+            if unsafe { EndPage(context.0) } <= 0 {
+                return stop(done, "Windows could not finish a page", true);
             }
         }
-        if uncertain.is_none() && unsafe { EndDoc(hdc) } <= 0 {
-            uncertain =
-                Some("Windows spooler status was lost after document submission".to_owned());
-        }
-        unsafe {
-            let _ = DeleteDC(hdc);
-        }
-        if let Some(message) = uncertain {
+        context.1.set(false);
+        if unsafe { EndDoc(context.0) } <= 0 {
             return Ok(SubmissionReceipt {
                 os_job_id: Some(job_id.to_string()),
                 accepted_at: now_rfc3339(),
                 certainty: SubmissionCertainty::Uncertain,
-                detail: Some(message),
+                detail: Some(
+                    "Windows spooler status was lost after document submission".to_owned(),
+                ),
             });
         }
         Ok(SubmissionReceipt {
@@ -829,6 +1029,8 @@ mod tests {
                 line_total_minor: 4500,
             }],
             subtotal_minor: 4500,
+            discount_percent_bp: 0,
+            discount_minor: 0,
             paid_minor: 1000,
             balance_minor: 3500,
             physical_piece_count: 1,
@@ -1027,7 +1229,159 @@ mod tests {
             char::from_u32(0x1b).unwrap(),
             char::from_u32(0x0a).unwrap()
         );
-        assert_eq!(safe_line(&text), "Asha [2J Patil");
+        assert_eq!(safe_text(&text), "Asha [2J Patil");
+    }
+
+    #[test]
+    fn deadline_returns_the_result_of_fast_work() {
+        let result = run_with_deadline(Duration::from_secs(5), || Ok(7));
+        assert_eq!(result.unwrap(), 7);
+        let failure: Result<u8, _> = run_with_deadline(Duration::from_secs(5), || {
+            Err(PrintError::Invalid("bad".into()))
+        });
+        assert!(matches!(failure, Err(PrintError::Invalid(_))));
+    }
+
+    #[test]
+    fn deadline_reports_hung_or_crashed_work_as_uncertain() {
+        let hung: Result<u8, _> = run_with_deadline(Duration::from_millis(30), || {
+            std::thread::sleep(Duration::from_millis(600));
+            Ok(1)
+        });
+        assert!(matches!(hung, Err(PrintError::Uncertain(m)) if m.contains("did not answer")));
+        let crashed: Result<u8, _> =
+            run_with_deadline(Duration::from_secs(5), || panic!("adapter bug"));
+        assert!(matches!(crashed, Err(PrintError::Uncertain(m)) if m.contains("stopped")));
+    }
+
+    #[test]
+    fn bills_with_inconsistent_money_are_rejected_before_printing() {
+        let PrintDocument::Bill(good) = bill() else {
+            unreachable!()
+        };
+        let mut wrong_sum = good.clone();
+        wrong_sum.subtotal_minor = 4600;
+        assert!(validate_document(&PrintDocument::Bill(wrong_sum)).is_err());
+        let mut wrong_line = good.clone();
+        wrong_line.items[0].line_total_minor = 4400;
+        wrong_line.subtotal_minor = 4400;
+        assert!(validate_document(&PrintDocument::Bill(wrong_line)).is_err());
+        let mut wrong_paid = good.clone();
+        wrong_paid.paid_minor = 100;
+        assert!(validate_document(&PrintDocument::Bill(wrong_paid)).is_err());
+        let mut big_discount = good.clone();
+        big_discount.discount_minor = 5000;
+        assert!(validate_document(&PrintDocument::Bill(big_discount)).is_err());
+        let mut bad_percent = good.clone();
+        bad_percent.discount_percent_bp = 10_001;
+        assert!(validate_document(&PrintDocument::Bill(bad_percent)).is_err());
+        let mut negative = good.clone();
+        negative.discount_minor = -1;
+        assert!(validate_document(&PrintDocument::Bill(negative)).is_err());
+        let mut discounted = good;
+        discounted.discount_percent_bp = 1000;
+        discounted.discount_minor = 450;
+        discounted.paid_minor = 4050;
+        discounted.balance_minor = 0;
+        validate_document(&PrintDocument::Bill(discounted)).unwrap();
+    }
+
+    #[test]
+    fn documents_saved_before_discounts_still_load() {
+        let mut value = serde_json::to_value(bill()).unwrap();
+        let inner = value["document"].as_object_mut().unwrap();
+        inner.remove("discountPercentBp");
+        inner.remove("discountMinor");
+        let loaded: PrintDocument = serde_json::from_value(value).unwrap();
+        let PrintDocument::Bill(loaded) = loaded else {
+            unreachable!()
+        };
+        assert_eq!((loaded.discount_percent_bp, loaded.discount_minor), (0, 0));
+    }
+
+    #[test]
+    fn a_printer_that_is_busy_printing_still_counts_as_available() {
+        const PRINTING: u32 = 0x400;
+        const BUSY: u32 = 0x200;
+        const WAITING: u32 = 0x2000;
+        const TONER_LOW: u32 = 0x20000;
+        assert!(printer_is_available(0, 0));
+        for harmless in [PRINTING, BUSY, WAITING, TONER_LOW, PRINTING | BUSY] {
+            assert!(printer_is_available(harmless, 0), "status {harmless:#x}");
+        }
+    }
+
+    #[test]
+    fn printers_that_cannot_print_right_now_are_unavailable() {
+        for (name, status) in [
+            ("paused", 0x1),
+            ("error", 0x2),
+            ("pending deletion", 0x4),
+            ("paper jam", 0x8),
+            ("paper out", 0x10),
+            ("paper problem", 0x40),
+            ("offline", 0x80),
+            ("not available", 0x1000),
+            ("user intervention", 0x10_0000),
+            ("door open", 0x40_0000),
+            ("printing but jammed", 0x400 | 0x8),
+        ] {
+            assert!(!printer_is_available(status, 0), "{name}");
+        }
+        assert!(
+            !printer_is_available(0, PRINTER_ATTRIBUTE_WORK_OFFLINE),
+            "'Use Printer Offline' accepts jobs and never prints them"
+        );
+        assert!(printer_is_available(0, PRINTER_ATTRIBUTE_DEFAULT));
+    }
+
+    #[test]
+    fn only_one_submission_can_talk_to_a_printer_at_a_time() {
+        let first = PrinterSlot::claim("Slot Test TSC").unwrap();
+        let blocked = PrinterSlot::claim("Slot Test TSC").err().unwrap();
+        assert!(
+            matches!(&blocked, PrintError::PrinterUnavailable(m) if m.contains("still running")),
+            "{blocked}"
+        );
+        assert!(
+            PrinterSlot::claim("Slot Test Canon").is_ok(),
+            "other printers are unaffected"
+        );
+        drop(first);
+        assert!(
+            PrinterSlot::claim("Slot Test TSC").is_ok(),
+            "released when the worker ends"
+        );
+    }
+
+    #[test]
+    fn large_tag_batches_get_more_time_but_never_more_than_the_cap() {
+        assert_eq!(deadline_for(&bill()), SUBMIT_DEADLINE);
+        let tags_of = |count: u32| {
+            PrintDocument::Tags(TagDocument {
+                order_number: "SL-1".into(),
+                pieces: (1..=count)
+                    .map(|n| TagPiece {
+                        piece_id: format!("p{n}"),
+                        garment: "Shirt".into(),
+                        service: "Wash".into(),
+                        position: n,
+                        total: count,
+                    })
+                    .collect(),
+            })
+        };
+        assert_eq!(
+            deadline_for(&tags_of(1)),
+            SUBMIT_DEADLINE + EXTRA_DEADLINE_PER_TAG
+        );
+        assert_eq!(
+            deadline_for(&tags_of(50)),
+            SUBMIT_DEADLINE + EXTRA_DEADLINE_PER_TAG * 50
+        );
+        assert!(deadline_for(&tags_of(MAX_TAGS_PER_DOCUMENT as u32)) <= MAX_DEADLINE);
+        assert!(validate_document(&tags_of(MAX_TAGS_PER_DOCUMENT as u32)).is_ok());
+        assert!(validate_document(&tags_of(MAX_TAGS_PER_DOCUMENT as u32 + 1)).is_err());
     }
 
     #[test]

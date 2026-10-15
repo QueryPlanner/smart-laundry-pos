@@ -1,9 +1,11 @@
 use std::path::PathBuf;
+use std::time::Duration;
 
 use counter::{AccountInput, CounterSession};
 use tauri::{AppHandle, Builder, Manager, Runtime, State};
 
 mod counter;
+mod print_layout;
 mod printing;
 mod storage;
 
@@ -21,7 +23,49 @@ fn app_database_path<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> 
     database_path_from_config_dir(app.path().app_config_dir())
 }
 
-fn app_builder<R, F>(builder: Builder<R>, database_path: F) -> Builder<R>
+/// How often the running app saves a backup, in addition to the one taken at every start. A shop
+/// computer may stay on for weeks, so start-up backups alone would leave a long unprotected gap.
+const PERIODIC_BACKUP_INTERVAL: Duration = Duration::from_secs(4 * 60 * 60);
+
+/// A restart within this time of the last backup does not make another one, so a computer that
+/// keeps crashing and restarting cannot push real history out of the retained backups.
+const RECENT_BACKUP_WINDOW_MINUTES: i64 = 10;
+
+fn run_backup(state: &DatabaseState) {
+    let info = state.info();
+    if info.error.is_none() && !info.restore_pending {
+        // A failure is recorded by the backup itself and shown to the owner at the next sign-in.
+        let _ = tauri::async_runtime::block_on(state.backup_database());
+    }
+}
+
+/// Backups run on their own thread so a slow or unplugged second drive can never delay the
+/// window opening: one soon after start-up (unless a very recent one exists), then one every
+/// `every` while the app stays open.
+fn spawn_backup_thread<R: Runtime>(handle: AppHandle<R>, every: Option<Duration>) {
+    let _ = std::thread::Builder::new()
+        .name("backup".into())
+        .spawn(move || {
+            let state = handle.state::<DatabaseState>();
+            let recent = tauri::async_runtime::block_on(
+                state.backed_up_within(chrono::Duration::minutes(RECENT_BACKUP_WINDOW_MINUTES)),
+            );
+            if !recent {
+                run_backup(&state);
+            }
+            let Some(every) = every else { return };
+            loop {
+                std::thread::sleep(every);
+                run_backup(&state);
+            }
+        });
+}
+
+fn app_builder<R, F>(
+    builder: Builder<R>,
+    database_path: F,
+    backup_every: Option<Duration>,
+) -> Builder<R>
 where
     R: Runtime,
     F: FnOnce(&AppHandle<R>) -> Result<PathBuf, String> + Send + 'static,
@@ -33,14 +77,16 @@ where
                 Err(error) => DatabaseState::unavailable(error),
             };
             let _ = tauri::async_runtime::block_on(counter::recover_submitting(&state));
-            let info = state.info();
-            if info.error.is_none() && !info.restore_pending {
-                if let Err(error) = tauri::async_runtime::block_on(state.backup_database()) {
-                    state.set_startup_warning(format!("Automatic startup backup failed: {error}"));
+            if state.info().error.is_none() {
+                if let Some(notice) =
+                    tauri::async_runtime::block_on(counter::apply_admin_pin_reset_file(&state))
+                {
+                    state.set_startup_warning(notice);
                 }
             }
             app.manage(state);
             app.manage(CounterSession::default());
+            spawn_backup_thread(app.handle().clone(), backup_every);
             Ok(())
         })
         .plugin(tauri_plugin_dialog::init())
@@ -60,7 +106,13 @@ where
             counter_record_payment,
             counter_update_order_status,
             counter_collect_order,
+            counter_cancel_order,
             counter_set_rate,
+            counter_backup_settings,
+            counter_set_backup_mirror,
+            counter_backup_now,
+            counter_list_discounts,
+            counter_set_discount,
             counter_quote_order,
             counter_save_order,
             counter_get_order_pieces,
@@ -207,6 +259,16 @@ async fn counter_collect_order(
 }
 
 #[tauri::command]
+async fn counter_cancel_order(
+    state: State<'_, DatabaseState>,
+    session: State<'_, CounterSession>,
+    order_id: String,
+    reason: String,
+) -> Result<counter::SavedOrder, String> {
+    counter::cancel_order(&state, &session, &order_id, &reason).await
+}
+
+#[tauri::command]
 async fn counter_set_rate(
     state: State<'_, DatabaseState>,
     session: State<'_, CounterSession>,
@@ -225,6 +287,59 @@ async fn counter_set_rate(
     )
     .await
 }
+#[tauri::command]
+async fn counter_backup_settings(
+    state: State<'_, DatabaseState>,
+    session: State<'_, CounterSession>,
+) -> Result<counter::BackupSettings, String> {
+    counter::backup_settings(&state, &session).await
+}
+
+#[tauri::command]
+async fn counter_set_backup_mirror(
+    state: State<'_, DatabaseState>,
+    session: State<'_, CounterSession>,
+    directory: Option<String>,
+) -> Result<(), String> {
+    counter::set_backup_mirror(&state, &session, directory.as_deref()).await
+}
+
+#[tauri::command]
+async fn counter_backup_now(
+    state: State<'_, DatabaseState>,
+    session: State<'_, CounterSession>,
+) -> Result<counter::BackupSettings, String> {
+    counter::backup_now(&state, &session).await
+}
+
+#[tauri::command]
+async fn counter_list_discounts(
+    state: State<'_, DatabaseState>,
+    session: State<'_, CounterSession>,
+) -> Result<Vec<counter::DiscountRule>, String> {
+    counter::list_discounts(&state, &session).await
+}
+
+#[tauri::command]
+async fn counter_set_discount(
+    state: State<'_, DatabaseState>,
+    session: State<'_, CounterSession>,
+    customer_id: Option<String>,
+    percent_bp: i64,
+    active: bool,
+    label: String,
+) -> Result<(), String> {
+    counter::set_discount(
+        &state,
+        &session,
+        customer_id.as_deref(),
+        percent_bp,
+        active,
+        &label,
+    )
+    .await
+}
+
 #[tauri::command]
 async fn counter_quote_order(
     state: State<'_, DatabaseState>,
@@ -389,9 +504,13 @@ async fn restore_database(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    app_builder(tauri::Builder::default(), app_database_path)
-        .run(tauri::generate_context!())
-        .expect("error while running Smart Laundry POS");
+    app_builder(
+        tauri::Builder::default(),
+        app_database_path,
+        Some(PERIODIC_BACKUP_INTERVAL),
+    )
+    .run(tauri::generate_context!())
+    .expect("error while running Smart Laundry POS");
 }
 
 #[cfg(test)]

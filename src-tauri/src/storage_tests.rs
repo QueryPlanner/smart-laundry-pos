@@ -338,6 +338,456 @@ fn version_zero_complete_legacy_database_migrates_without_losing_rows() {
     });
 }
 
+fn pre_upgrade_copies(directory: &Path) -> Vec<PathBuf> {
+    let backups = directory.join("backups");
+    let Ok(entries) = fs::read_dir(backups) else {
+        return Vec::new();
+    };
+    entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with("pre-upgrade-v1-"))
+        })
+        .collect()
+}
+
+async fn v1_database_with_marker(path: &Path) {
+    create_schema_file(path, 1).await;
+    let pool = connect_writer_pool(path, false, 1).await.unwrap();
+    sqlx::query("INSERT INTO app_settings(key,value,updated_at) VALUES('old-shop-marker','kept',CURRENT_TIMESTAMP)")
+        .execute(&pool)
+        .await
+        .unwrap();
+    pool.close().await;
+}
+
+#[test]
+fn upgrading_a_v1_database_first_keeps_a_verified_copy_that_pruning_never_removes() {
+    tauri::async_runtime::block_on(async {
+        let temporary = TempDatabase::new();
+        v1_database_with_marker(&temporary.path).await;
+
+        let upgraded = open(&temporary.path).await;
+        assert_eq!(upgraded.info().error, None);
+        let version: i64 = sqlx::query_scalar("PRAGMA user_version")
+            .fetch_one(&upgraded.pools().unwrap().writer)
+            .await
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+
+        let copies = pre_upgrade_copies(&temporary.directory);
+        assert_eq!(
+            copies.len(),
+            1,
+            "exactly one safety copy before the upgrade"
+        );
+        let copy = connect_reader_pool(&copies[0], 1).await.unwrap();
+        let old_version: i64 = sqlx::query_scalar("PRAGMA user_version")
+            .fetch_one(&copy)
+            .await
+            .unwrap();
+        assert!(
+            old_version < SCHEMA_VERSION,
+            "the copy is the original v1 database, not the upgraded one"
+        );
+        let marker: String =
+            sqlx::query_scalar("SELECT value FROM app_settings WHERE key='old-shop-marker'")
+                .fetch_one(&copy)
+                .await
+                .unwrap();
+        assert_eq!(marker, "kept");
+        let counter_tables: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM sqlite_master WHERE name='counter_accounts'")
+                .fetch_one(&copy)
+                .await
+                .unwrap();
+        assert_eq!(counter_tables, 0, "the copy predates the counter tables");
+        copy.close().await;
+
+        // Many later backups prune old automatic backups but never the pre-upgrade copy.
+        for _ in 0..(BACKUP_LIMIT + 3) {
+            upgraded.backup_database().await.unwrap();
+        }
+        assert_eq!(pre_upgrade_copies(&temporary.directory).len(), 1);
+        drop(upgraded);
+
+        // Reopening an already-upgraded database makes no further copy.
+        let reopened = open(&temporary.path).await;
+        assert_eq!(reopened.info().error, None);
+        assert_eq!(pre_upgrade_copies(&temporary.directory).len(), 1);
+    });
+}
+
+#[test]
+fn a_brand_new_database_needs_no_pre_upgrade_copy() {
+    tauri::async_runtime::block_on(async {
+        let temporary = TempDatabase::new();
+        let fresh = open(&temporary.path).await;
+        assert_eq!(fresh.info().error, None);
+        assert!(pre_upgrade_copies(&temporary.directory).is_empty());
+    });
+}
+
+#[test]
+fn an_upgrade_is_refused_and_the_database_untouched_if_the_safety_copy_cannot_be_made() {
+    tauri::async_runtime::block_on(async {
+        let temporary = TempDatabase::new();
+        v1_database_with_marker(&temporary.path).await;
+        // A file where the backups folder must be makes the safety copy impossible.
+        fs::write(temporary.directory.join("backups"), b"in the way").unwrap();
+
+        let refused = open(&temporary.path).await;
+        let error = refused.info().error.expect("the upgrade must be refused");
+        assert!(error.contains("safely copied before upgrading"), "{error}");
+        drop(refused);
+
+        let pool = connect_reader_pool(&temporary.path, 1).await.unwrap();
+        let tables: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM sqlite_master WHERE name='counter_accounts'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(tables, 0, "no upgrade happened without a safety copy");
+    });
+}
+
+#[test]
+fn backups_are_mirrored_to_a_second_folder_and_problems_are_recorded_not_fatal() {
+    tauri::async_runtime::block_on(async {
+        let temporary = TempDatabase::new();
+        let mirror = TempDatabase::new();
+        let state = open(&temporary.path).await;
+        assert_eq!(state.setting(BACKUP_MIRROR_DIR).await, None);
+
+        // No second folder configured: backup works, status is blank.
+        state.backup_database().await.unwrap();
+        assert_eq!(
+            state.setting(BACKUP_MIRROR_STATUS).await.as_deref(),
+            Some("")
+        );
+        assert!(state.setting(BACKUP_LAST_AT).await.is_some());
+        assert!(state.backup_folder().unwrap().ends_with("backups"));
+        assert_eq!(state.data_folder().unwrap(), temporary.directory);
+
+        let configure = |value: String| {
+            let pool = state.pools().unwrap().writer.clone();
+            async move {
+                sqlx::query("INSERT INTO app_settings(key,value,updated_at) VALUES(?,?,CURRENT_TIMESTAMP) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
+                    .bind(BACKUP_MIRROR_DIR)
+                    .bind(value)
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+            }
+        };
+        configure(mirror.directory.to_string_lossy().into_owned()).await;
+        // Until the subfolder for this computer exists (it is made when the owner picks the
+        // folder), a backup is not copied: this is what protects a different USB stick.
+        state.backup_database().await.unwrap();
+        let status = state.setting(BACKUP_MIRROR_STATUS).await.unwrap();
+        assert!(
+            status.starts_with("failed:") && status.contains("not available"),
+            "{status}"
+        );
+        let target = state.mirror_target(&mirror.directory).await;
+        assert!(target.starts_with(&mirror.directory));
+        assert!(target
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("SmartLaundry-backups-"));
+        fs::create_dir_all(&target).unwrap();
+        let foreign = target.join("someone-elses-notes.txt");
+        let other_shop = mirror.directory.join("laundry-from-another-shop.db");
+        fs::write(&foreign, b"keep").unwrap();
+        fs::write(&other_shop, b"keep").unwrap();
+        let saved = state.backup_database().await.unwrap();
+        assert_eq!(
+            state.setting(BACKUP_MIRROR_STATUS).await.as_deref(),
+            Some("ok")
+        );
+        let copied = target.join(Path::new(&saved).file_name().unwrap());
+        assert_eq!(fs::read(&copied).unwrap(), fs::read(&saved).unwrap());
+        assert!(
+            fs::read_dir(&target)
+                .unwrap()
+                .filter_map(Result::ok)
+                .all(|entry| !entry.file_name().to_string_lossy().ends_with(".partial")),
+            "no half-written copy is left behind"
+        );
+
+        // The second folder keeps only the newest BACKUP_LIMIT copies of its own.
+        for _ in 0..(BACKUP_LIMIT + 2) {
+            state.backup_database().await.unwrap();
+        }
+        let mirrored = fs::read_dir(&target)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with("laundry-"))
+            .count();
+        assert_eq!(mirrored, BACKUP_LIMIT);
+        assert!(
+            foreign.exists() && other_shop.exists(),
+            "only this app's own copies are ever pruned"
+        );
+
+        // An unplugged drive must not fail the backup that already succeeded locally.
+        configure(
+            mirror
+                .directory
+                .join("unplugged")
+                .to_string_lossy()
+                .into_owned(),
+        )
+        .await;
+        state.backup_database().await.unwrap();
+        let status = state.setting(BACKUP_MIRROR_STATUS).await.unwrap();
+        assert!(
+            status.starts_with("failed:") && status.contains("not available"),
+            "{status}"
+        );
+    });
+}
+
+#[test]
+fn mirror_copy_failures_clean_up_and_report_why() {
+    let temporary = TempDatabase::new();
+    let mirror = TempDatabase::new();
+    let snapshot = temporary.directory.join("laundry-snapshot.db");
+    fs::write(&snapshot, b"snapshot-bytes").unwrap();
+
+    assert!(mirror_backup(&snapshot, &mirror.directory.join("missing"))
+        .unwrap_err()
+        .contains("not available"));
+    assert!(mirror_backup(Path::new("/"), &mirror.directory)
+        .unwrap_err()
+        .contains("no file name"));
+    let missing_source = temporary.directory.join("laundry-gone.db");
+    assert!(mirror_backup(&missing_source, &mirror.directory)
+        .unwrap_err()
+        .contains("could not copy"));
+    // The destination name is occupied by a directory, so the final rename fails.
+    fs::create_dir(mirror.directory.join("laundry-snapshot.db")).unwrap();
+    let error = mirror_backup(&snapshot, &mirror.directory).unwrap_err();
+    assert!(error.contains("could not finish"), "{error}");
+    assert!(
+        !mirror
+            .directory
+            .join(".laundry-snapshot.db.partial")
+            .exists(),
+        "a failed copy leaves no partial file"
+    );
+    assert!(prune_mirror(&mirror.directory.join("missing"), 1)
+        .unwrap_err()
+        .contains("could not list"));
+}
+
+#[test]
+fn state_helpers_report_a_failed_database_without_panicking() {
+    tauri::async_runtime::block_on(async {
+        let failed = DatabaseState::unavailable("no database");
+        assert_eq!(failed.setting("anything").await, None);
+        failed.record_backup(Path::new("/nonexistent")).await;
+    });
+}
+
+#[test]
+fn drive_letters_are_compared_so_a_second_copy_on_the_same_drive_is_recognised() {
+    assert_eq!(drive_letter(r"E:\Backups"), Some('E'));
+    assert_eq!(drive_letter("e:/Backups"), Some('E'));
+    assert_eq!(drive_letter(r"\\?\C:\Users\Shop\AppData"), Some('C'));
+    for none in [
+        "/home/shop/backups",
+        r"\\server\share\x",
+        "",
+        "C",
+        r"1:\x",
+        r":\x",
+    ] {
+        assert_eq!(drive_letter(none), None, "{none}");
+    }
+    assert!(same_drive(
+        r"C:\Backups",
+        r"\\?\c:\Users\Shop\AppData\Roaming"
+    ));
+    assert!(!same_drive(r"E:\Backups", r"C:\Users"));
+    assert!(
+        !same_drive("/a", "/b"),
+        "no drive letters means no conflict is claimed"
+    );
+    assert!(!same_drive(r"C:\x", "/b"));
+}
+
+#[test]
+fn the_mirror_folder_name_is_short_safe_and_stable_per_computer() {
+    assert_eq!(
+        mirror_folder_name("0123456789abcdef"),
+        "SmartLaundry-backups-01234567"
+    );
+    assert_eq!(
+        mirror_folder_name("a/b\\c:d*e?f"),
+        "SmartLaundry-backups-abcdef"
+    );
+    assert_eq!(mirror_folder_name(""), "SmartLaundry-backups-");
+}
+
+#[test]
+fn syncing_works_on_ordinary_files_and_reports_missing_ones() {
+    let temporary = TempDatabase::new();
+    let file = temporary.directory.join("synced.db");
+    fs::write(&file, b"contents stay as they are").unwrap();
+    sync_file(&file).unwrap();
+    assert_eq!(fs::read(&file).unwrap(), b"contents stay as they are");
+    let missing = sync_file(&temporary.directory.join("absent.db")).unwrap_err();
+    assert!(
+        missing.contains("Could not sync database file"),
+        "{missing}"
+    );
+    sync_parent_directory(&file).unwrap();
+}
+
+#[test]
+fn a_database_file_left_empty_by_an_interrupted_first_run_is_set_up_normally() {
+    tauri::async_runtime::block_on(async {
+        let temporary = TempDatabase::new();
+        fs::write(&temporary.path, b"").unwrap();
+        let state = open(&temporary.path).await;
+        assert_eq!(
+            state.info().error,
+            None,
+            "an empty file must not wedge the app forever"
+        );
+        let tables: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master WHERE name IN ('orders','counter_accounts','counter_discounts')",
+        )
+        .fetch_one(&state.pools().unwrap().writer)
+        .await
+        .unwrap();
+        assert_eq!(tables, 3);
+        assert!(
+            pre_upgrade_copies(&temporary.directory).is_empty(),
+            "nothing to preserve in an empty file"
+        );
+        drop(state);
+        let reopened = open(&temporary.path).await;
+        assert_eq!(reopened.info().error, None);
+    });
+}
+
+#[test]
+fn snapshots_appear_complete_or_not_at_all_and_stale_partials_are_cleared_at_start() {
+    tauri::async_runtime::block_on(async {
+        let temporary = TempDatabase::new();
+        let state = open(&temporary.path).await;
+        let saved = state.backup_database().await.unwrap();
+        let name = Path::new(&saved)
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        assert!(name.starts_with("laundry-") && name.ends_with(".db"));
+        assert!(!partial_path(Path::new(&saved)).exists());
+        drop(state);
+
+        let directory = backup_directory(&temporary.path).unwrap();
+        let stale = directory.join("laundry-123.db.partial");
+        fs::write(&stale, b"half a snapshot from a power cut").unwrap();
+        let reopened = open(&temporary.path).await;
+        assert_eq!(reopened.info().error, None);
+        assert!(
+            !stale.exists(),
+            "a half-written snapshot never lingers as a candidate backup"
+        );
+        assert!(Path::new(&saved).exists(), "real backups are untouched");
+    });
+}
+
+#[test]
+fn a_failed_snapshot_leaves_no_file_and_is_recorded_for_the_owner() {
+    tauri::async_runtime::block_on(async {
+        let temporary = TempDatabase::new();
+        let state = open(&temporary.path).await;
+        assert_eq!(state.backup_health().await, None, "no problem recorded yet");
+        // A file where the backups folder must be makes every backup fail.
+        fs::remove_dir_all(backup_directory(&temporary.path).unwrap()).ok();
+        fs::write(temporary.directory.join("backups"), b"in the way").unwrap();
+        let error = state.backup_database().await.unwrap_err();
+        let health = state
+            .backup_health()
+            .await
+            .expect("the failure is remembered");
+        assert!(
+            health.contains("The last automatic backup failed")
+                && health.contains("Admin > Backups"),
+            "{health}"
+        );
+        assert!(health.contains(&error[..error.len().min(20)]), "{health}");
+        fs::remove_file(temporary.directory.join("backups")).unwrap();
+        state.backup_database().await.unwrap();
+        assert_eq!(
+            state.backup_health().await,
+            None,
+            "a good backup clears the warning"
+        );
+        state.record_backup_failure(&"x".repeat(1000)).await;
+        assert!(
+            state.backup_health().await.unwrap().len() < 400,
+            "long errors are cut short"
+        );
+    });
+}
+
+#[test]
+fn a_recent_backup_is_recognised_so_a_restart_loop_does_not_flood_the_history() {
+    tauri::async_runtime::block_on(async {
+        let temporary = TempDatabase::new();
+        let state = open(&temporary.path).await;
+        let ten_minutes = chrono::Duration::minutes(10);
+        assert!(
+            !state.backed_up_within(ten_minutes).await,
+            "no backup recorded yet"
+        );
+        state.backup_database().await.unwrap();
+        assert!(state.backed_up_within(ten_minutes).await);
+        assert!(!state.backed_up_within(chrono::Duration::zero()).await);
+        sqlx::query("UPDATE app_settings SET value='yesterday' WHERE key=?")
+            .bind(BACKUP_LAST_AT)
+            .execute(&state.pools().unwrap().writer)
+            .await
+            .unwrap();
+        assert!(
+            !state.backed_up_within(ten_minutes).await,
+            "an unreadable time never blocks a backup"
+        );
+    });
+}
+
+#[test]
+fn pruning_never_removes_the_backup_just_written_even_if_the_clock_ran_backwards() {
+    let temporary = TempDatabase::new();
+    let directory = backup_directory(&temporary.path).unwrap();
+    fs::create_dir_all(&directory).unwrap();
+    // The clock went back: the newest backup sorts first by name.
+    let newest_but_sorts_oldest = directory.join("laundry-0001.db");
+    fs::write(&newest_but_sorts_oldest, b"just written").unwrap();
+    for name in ["laundry-9001.db", "laundry-9002.db", "laundry-9003.db"] {
+        fs::write(directory.join(name), b"from the future").unwrap();
+    }
+    prune_backups(&temporary.path, 3, Some(&newest_but_sorts_oldest)).unwrap();
+    assert!(
+        newest_but_sorts_oldest.exists(),
+        "the protected backup survives"
+    );
+    assert!(
+        !directory.join("laundry-9001.db").exists()
+            || !directory.join("laundry-9002.db").exists()
+            || directory.read_dir().unwrap().count() <= 4
+    );
+    assert!(directory.join("laundry-9003.db").exists());
+}
+
 #[test]
 fn failed_legacy_migration_rolls_back_schema_changes() {
     tauri::async_runtime::block_on(async {
@@ -1366,15 +1816,16 @@ fn checkpoint_refuses_to_truncate_wal_while_a_reader_holds_a_snapshot() {
 }
 
 #[test]
-fn backup_and_restore_prune_errors_remove_new_snapshot_files() {
+fn a_backup_that_cannot_tidy_old_files_still_keeps_the_new_backup_and_restore_still_stages() {
     tauri::async_runtime::block_on(async {
         let live = TempDatabase::new();
         let source = TempDatabase::new();
-        create_database_with_marker(&live.path, "original-after-backup-error").await;
-        create_database_with_marker(&source.path, "replacement-not-staged").await;
+        create_database_with_marker(&live.path, "original-after-prune-problem").await;
+        create_database_with_marker(&source.path, "replacement-to-stage").await;
 
         let backup_directory = backup_directory(&live.path).unwrap();
         fs::create_dir_all(&backup_directory).unwrap();
+        // A directory with a backup-like name makes removing the oldest "file" fail.
         fs::create_dir(backup_directory.join("laundry-000.db")).unwrap();
         for index in 1..=BACKUP_LIMIT {
             fs::write(
@@ -1385,43 +1836,23 @@ fn backup_and_restore_prune_errors_remove_new_snapshot_files() {
         }
 
         let state = open(&live.path).await;
-        let backup_error = state.backup_database().await.unwrap_err();
-        assert!(
-            backup_error.contains("Could not remove an expired database backup"),
-            "{backup_error}"
-        );
-        let restore_error = state
+        let saved = state
+            .backup_database()
+            .await
+            .expect("tidying old backups must not fail a good backup");
+        assert!(Path::new(&saved).exists(), "the new backup is kept");
+        assert_eq!(state.setting(BACKUP_LAST_ERROR).await.as_deref(), Some(""));
+        let message = state
             .restore_database(source.path.to_string_lossy().to_string())
             .apply()
             .await
-            .unwrap_err();
-        assert!(
-            restore_error.contains("Could not remove an expired database backup"),
-            "{restore_error}"
-        );
-
-        let retained_fixture_count = fs::read_dir(&backup_directory)
-            .unwrap()
-            .filter_map(Result::ok)
-            .filter(|entry| {
-                let name = entry.file_name();
-                let name = name.to_string_lossy();
-                name.starts_with("laundry-")
-                    && entry
-                        .path()
-                        .extension()
-                        .is_some_and(|extension| extension == "db")
-            })
-            .count();
-        assert_eq!(
-            retained_fixture_count,
-            BACKUP_LIMIT + 1,
-            "failed operations must remove their new backup and ready snapshot"
-        );
-        assert!(!pending_restore_path(&live.path).exists());
+            .expect("tidying old backups must not stop a restore from being staged");
+        assert!(!message.is_empty());
+        assert!(pending_restore_path(&live.path).exists());
         assert_eq!(
             marker_value(&state, "restore-marker").await.as_deref(),
-            Some("original-after-backup-error")
+            Some("original-after-prune-problem"),
+            "the live data is untouched until restart"
         );
     });
 }
@@ -2982,7 +3413,7 @@ fn failed_recovery_snapshot_validation_removes_its_temporary_file() {
 #[test]
 fn safe_path_helpers_and_backup_retention_keep_only_the_requested_newest_files() {
     let temporary = TempDatabase::new();
-    prune_backups(&temporary.path, 0).unwrap();
+    prune_backups(&temporary.path, 0, None).unwrap();
     let backup_dir = backup_directory(&temporary.path).unwrap();
     fs::create_dir_all(&backup_dir).unwrap();
     let old = backup_dir.join("laundry-a.db");
@@ -2993,7 +3424,7 @@ fn safe_path_helpers_and_backup_retention_keep_only_the_requested_newest_files()
         fs::write(path, b"temp").unwrap();
     }
     fs::write(&temporary.path, b"temporary live path").unwrap();
-    prune_backups(&temporary.path, 2).unwrap();
+    prune_backups(&temporary.path, 2, None).unwrap();
     assert!(!old.exists());
     assert!(recent.exists());
     assert!(newest.exists());

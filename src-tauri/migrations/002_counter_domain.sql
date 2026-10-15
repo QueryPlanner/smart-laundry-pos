@@ -122,6 +122,22 @@ CREATE TABLE counter_collection_requests (
   order_id TEXT NOT NULL UNIQUE REFERENCES orders(id) ON DELETE CASCADE,
   created_at TEXT NOT NULL
 );
+-- Admin-managed automatic discounts. One shop-wide rule at most, and one rule per customer.
+-- A customer rule always wins over the shop-wide rule so an admin can also grant 0%.
+CREATE TABLE counter_discounts (
+  id TEXT PRIMARY KEY NOT NULL,
+  scope TEXT NOT NULL CHECK (scope IN ('all','customer')),
+  customer_id TEXT REFERENCES customers(id) ON DELETE CASCADE,
+  percent_bp INTEGER NOT NULL CHECK (percent_bp BETWEEN 0 AND 10000),
+  label TEXT NOT NULL DEFAULT '',
+  active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0,1)),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  updated_by TEXT REFERENCES counter_accounts(id),
+  CHECK ((scope = 'all' AND customer_id IS NULL) OR (scope = 'customer' AND customer_id IS NOT NULL))
+);
+CREATE UNIQUE INDEX idx_counter_discount_all ON counter_discounts(scope) WHERE scope = 'all';
+CREATE UNIQUE INDEX idx_counter_discount_customer ON counter_discounts(customer_id) WHERE scope = 'customer';
 CREATE TABLE counter_audit (
   id TEXT PRIMARY KEY NOT NULL,
   actor_id TEXT NOT NULL REFERENCES counter_accounts(id),
@@ -164,3 +180,86 @@ INSERT INTO garment_service_rates(garment_id,service_id,configured,available,upd
  SELECT g.id,s.id,0,0,CURRENT_TIMESTAMP FROM garments g CROSS JOIN service_methods s;
 UPDATE garment_service_rates SET available=1 WHERE garment_id='g-shoes' AND service_id IN ('svc-wash','svc-dry-clean');
 UPDATE garment_service_rates SET available=1 WHERE garment_id<>'g-shoes';
+
+-- Starter rate card (rupees converted to paise). These are UNSOURCED ESTIMATES in the typical Pune
+-- range, not a published price list; the owner replaces them from Admin > Rate card.
+WITH seed(garment_id, service_id, price) AS (VALUES
+ ('g-shirt','svc-wash',1500),
+ ('g-shirt','svc-iron',1000),
+ ('g-shirt','svc-wash-iron',2500),
+ ('g-shirt','svc-dry-clean',8000),
+ ('g-tshirt','svc-wash',1200),
+ ('g-tshirt','svc-iron',800),
+ ('g-tshirt','svc-wash-iron',2000),
+ ('g-tshirt','svc-dry-clean',7000),
+ ('g-jeans','svc-wash',2300),
+ ('g-jeans','svc-iron',1200),
+ ('g-jeans','svc-wash-iron',3500),
+ ('g-jeans','svc-dry-clean',12000),
+ ('g-trousers','svc-wash',1800),
+ ('g-trousers','svc-iron',1200),
+ ('g-trousers','svc-wash-iron',3000),
+ ('g-trousers','svc-dry-clean',10000),
+ ('g-shorts','svc-wash',1200),
+ ('g-shorts','svc-iron',800),
+ ('g-shorts','svc-wash-iron',2000),
+ ('g-shorts','svc-dry-clean',7000),
+ ('g-kurta','svc-wash',2300),
+ ('g-kurta','svc-iron',1200),
+ ('g-kurta','svc-wash-iron',3500),
+ ('g-kurta','svc-dry-clean',12000),
+ ('g-pyjama','svc-wash',1200),
+ ('g-pyjama','svc-iron',800),
+ ('g-pyjama','svc-wash-iron',2000),
+ ('g-pyjama','svc-dry-clean',8000),
+ ('g-salwar','svc-wash',1500),
+ ('g-salwar','svc-iron',1000),
+ ('g-salwar','svc-wash-iron',2500),
+ ('g-salwar','svc-dry-clean',10000),
+ ('g-leggings','svc-wash',900),
+ ('g-leggings','svc-iron',600),
+ ('g-leggings','svc-wash-iron',1500),
+ ('g-leggings','svc-dry-clean',6000),
+ ('g-saree','svc-wash',3500),
+ ('g-saree','svc-iron',2500),
+ ('g-saree','svc-wash-iron',6000),
+ ('g-saree','svc-dry-clean',20000),
+ ('g-blouse','svc-wash',900),
+ ('g-blouse','svc-iron',600),
+ ('g-blouse','svc-wash-iron',1500),
+ ('g-blouse','svc-dry-clean',6000),
+ ('g-petticoat','svc-wash',900),
+ ('g-petticoat','svc-iron',600),
+ ('g-petticoat','svc-wash-iron',1500),
+ ('g-petticoat','svc-dry-clean',6000),
+ ('g-dupatta','svc-wash',1200),
+ ('g-dupatta','svc-iron',800),
+ ('g-dupatta','svc-wash-iron',2000),
+ ('g-dupatta','svc-dry-clean',7000),
+ ('g-dhoti','svc-wash',1800),
+ ('g-dhoti','svc-iron',1200),
+ ('g-dhoti','svc-wash-iron',3000),
+ ('g-dhoti','svc-dry-clean',10000),
+ ('g-lungi','svc-wash',1200),
+ ('g-lungi','svc-iron',800),
+ ('g-lungi','svc-wash-iron',2000),
+ ('g-lungi','svc-dry-clean',8000),
+ ('g-dress','svc-wash',3000),
+ ('g-dress','svc-iron',2000),
+ ('g-dress','svc-wash-iron',5000),
+ ('g-dress','svc-dry-clean',25000),
+ ('g-jacket','svc-wash',5500),
+ ('g-jacket','svc-iron',2500),
+ ('g-jacket','svc-wash-iron',8000),
+ ('g-jacket','svc-dry-clean',30000),
+ ('g-sweater','svc-wash',4000),
+ ('g-sweater','svc-iron',2000),
+ ('g-sweater','svc-wash-iron',6000),
+ ('g-sweater','svc-dry-clean',20000),
+ ('g-shoes','svc-wash',15000),
+ ('g-shoes','svc-dry-clean',35000)
+)
+UPDATE garment_service_rates
+SET price_minor = (SELECT price FROM seed WHERE seed.garment_id = garment_service_rates.garment_id AND seed.service_id = garment_service_rates.service_id),
+    configured = 1
+WHERE EXISTS (SELECT 1 FROM seed WHERE seed.garment_id = garment_service_rates.garment_id AND seed.service_id = garment_service_rates.service_id);

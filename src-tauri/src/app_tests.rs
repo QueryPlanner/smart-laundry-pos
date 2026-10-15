@@ -50,14 +50,25 @@ impl Drop for TempDirectory {
     }
 }
 
-fn run_mock_app<F>(
+fn run_mock_app<F>(database_path: F, requests: Vec<(String, Value)>) -> Vec<Result<Value, Value>>
+where
+    F: FnOnce(&AppHandle<MockRuntime>) -> Result<PathBuf, String> + Send + 'static,
+{
+    run_mock_app_with(database_path, requests, None, Duration::ZERO)
+}
+
+/// Like `run_mock_app`, optionally starting the periodic backup thread and keeping the app alive
+/// for `linger` after the requests so that background work can happen.
+fn run_mock_app_with<F>(
     database_path: F,
     mut requests: Vec<(String, Value)>,
+    backup_every: Option<Duration>,
+    linger: Duration,
 ) -> Vec<Result<Value, Value>>
 where
     F: FnOnce(&AppHandle<MockRuntime>) -> Result<PathBuf, String> + Send + 'static,
 {
-    let app = app_builder(mock_builder(), database_path)
+    let app = app_builder(mock_builder(), database_path, backup_every)
         .build(mock_context(noop_assets()))
         .expect("mock Tauri app should build");
     let window = WebviewWindowBuilder::new(&app, "main", WebviewUrl::App("index.html".into()))
@@ -82,6 +93,7 @@ where
             for (command, payload) in pending_requests {
                 results.push(invoke(&window, &command, payload));
             }
+            std::thread::sleep(linger);
             window.destroy().expect("mock window should be destroyed");
         }
     });
@@ -353,4 +365,100 @@ fn app_config_path_mapping_preserves_the_runtime_error() {
         .expect_err("config path errors should be reported");
     assert!(failure.contains("Could not find the local database directory"));
     assert!(failure.contains("config path unavailable"));
+}
+
+fn backup_files(directory: &TempDirectory) -> usize {
+    fs::read_dir(directory.path.join("backups"))
+        .map(|entries| {
+            entries
+                .filter_map(Result::ok)
+                .filter(|entry| entry.file_name().to_string_lossy().starts_with("laundry-"))
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+#[test]
+fn the_running_app_keeps_backing_up_in_the_background() {
+    let live = TempDirectory::new();
+    let path = live.database_path();
+    let responses = run_mock_app_with(
+        move |_| Ok(path),
+        vec![("local_database_info".to_string(), json!({}))],
+        Some(Duration::from_millis(60)),
+        Duration::from_millis(900),
+    );
+    assert!(responses[0].is_ok());
+    assert!(
+        backup_files(&live) >= 3,
+        "one start-up backup plus periodic ones, found {}",
+        backup_files(&live)
+    );
+}
+
+#[test]
+fn without_a_periodic_interval_only_the_startup_backup_is_taken() {
+    let live = TempDirectory::new();
+    let path = live.database_path();
+    run_mock_app_with(
+        move |_| Ok(path),
+        vec![("local_database_info".to_string(), json!({}))],
+        None,
+        Duration::from_millis(300),
+    );
+    assert_eq!(backup_files(&live), 1);
+}
+
+#[test]
+fn a_reset_file_resets_the_admin_pin_at_startup_and_is_reported_then_deleted() {
+    let live = TempDirectory::new();
+    let path = live.database_path();
+    tauri::async_runtime::block_on(async {
+        let state = DatabaseState::open(path.clone()).await;
+        let pool = state.writer_pool().unwrap();
+        sqlx::query("INSERT INTO local_users(id,full_name,pin_hash,pin_salt,role,created_at,updated_at) VALUES('boss','Owner','old','old','admin',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)")
+            .execute(pool).await.unwrap();
+        sqlx::query("INSERT INTO counter_accounts(id,full_name,pin_hash,pin_salt,role,active,created_at,updated_at,failed_attempts,locked_until) VALUES('boss','Owner','old','old','admin',1,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,5,'2999-01-01T00:00:00Z')")
+            .execute(pool).await.unwrap();
+    });
+    let reset_file = live.path.join(crate::counter::ADMIN_PIN_RESET_FILE);
+    fs::write(&reset_file, "  2468\n").unwrap();
+    let resolver = path.clone();
+    let responses = run_mock_app(
+        move |_| Ok(resolver),
+        vec![("local_database_info".to_string(), json!({}))],
+    );
+    let info = responses[0].as_ref().unwrap();
+    assert!(
+        info["warning"]
+            .as_str()
+            .is_some_and(|w| w.contains("administrator PIN was reset")),
+        "{info}"
+    );
+    assert!(!reset_file.exists(), "the PIN file is deleted once applied");
+}
+
+#[test]
+fn a_quick_restart_does_not_make_another_backup() {
+    let live = TempDirectory::new();
+    let path = live.database_path();
+    let first_path = path.clone();
+    run_mock_app_with(
+        move |_| Ok(first_path),
+        vec![("local_database_info".to_string(), json!({}))],
+        None,
+        Duration::from_millis(400),
+    );
+    assert_eq!(backup_files(&live), 1, "the first start saves a backup");
+    run_mock_app_with(
+        move |_| Ok(path),
+        vec![("local_database_info".to_string(), json!({}))],
+        None,
+        Duration::from_millis(400),
+    );
+    assert_eq!(
+        backup_files(&live),
+        1,
+        "a restart minutes later must not add a near-identical backup"
+    );
 }

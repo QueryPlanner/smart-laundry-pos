@@ -19,7 +19,8 @@ const SCHEMA_VERSION: i64 = 2;
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const WRITER_CONNECTIONS: u32 = 1;
 const READER_CONNECTIONS: u32 = 4;
-const BACKUP_LIMIT: usize = 30;
+/// Backups are small; keeping 90 spans weeks of normal use even with several saves a day.
+const BACKUP_LIMIT: usize = 90;
 
 static TEMP_PATH_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -351,6 +352,7 @@ impl DatabaseState {
             }
         }
 
+        remove_partial_snapshots(&database_path);
         let lock_file = match acquire_instance_lock(&database_path) {
             Ok(file) => file,
             Err(error) => return Self::failed(database_path, error, None, pending_path.exists()),
@@ -397,6 +399,9 @@ impl DatabaseState {
         let pool_result = async {
             let existed = database_path.exists();
             let bootstrap = connect_writer_pool(database_path, false, WRITER_CONNECTIONS).await?;
+            if existed {
+                preserve_before_upgrade(&bootstrap, database_path).await?;
+            }
             initialize_schema(&bootstrap, existed).await?;
             bootstrap.close().await;
             validate_database(database_path).await?;
@@ -624,25 +629,127 @@ impl DatabaseState {
         let mut connection = pools.writer.acquire().await.map_err(|error| {
             format!("Could not acquire the writable database connection: {error}")
         })?;
-        let destination = new_backup_path(&self.database_path, "laundry")?;
+        let destination = match new_backup_path(&self.database_path, "laundry") {
+            Ok(path) => path,
+            Err(error) => {
+                // The backups folder itself is unusable: still tell the owner.
+                drop(connection);
+                self.record_backup_failure(&error).await;
+                return Err(error);
+            }
+        };
 
-        let result = async {
-            vacuum_into(&mut connection, &destination).await?;
-            sync_file(&destination)?;
-            sync_parent_directory(&destination)?;
-            validate_database(&destination).await?;
-            prune_backups(&self.database_path, BACKUP_LIMIT)?;
-            Ok::<_, String>(destination.clone())
-        }
-        .await;
+        let result = write_verified_snapshot(&mut connection, &destination).await;
+        // The single writer connection must be free again before bookkeeping uses the pool.
+        drop(connection);
 
         match result {
-            Ok(path) => Ok(path.to_string_lossy().to_string()),
+            Ok(()) => {
+                // Tidying old backups must never undo a good new one (a locked old file,
+                // or a clock that jumped backwards, must not cost the newest backup).
+                let _ = prune_backups(&self.database_path, BACKUP_LIMIT, Some(&destination));
+                self.record_backup(&destination).await;
+                Ok(destination.to_string_lossy().to_string())
+            }
             Err(error) => {
                 let _ = remove_database_files(&destination);
+                self.record_backup_failure(&error).await;
                 Err(error)
             }
         }
+    }
+
+    /// Remember when the last backup finished and copy it to the optional second folder.
+    /// Bookkeeping never fails a backup that already succeeded; problems are recorded for Admin.
+    async fn record_backup(&self, snapshot: &Path) {
+        let Ok(pools) = self.pools() else { return };
+        let mirror_dir = self
+            .setting(BACKUP_MIRROR_DIR)
+            .await
+            .filter(|d| !d.is_empty());
+        let status = match mirror_dir {
+            None => String::new(),
+            Some(directory) => {
+                let target = self.mirror_target(Path::new(&directory)).await;
+                match mirror_backup(snapshot, &target) {
+                    Ok(()) => "ok".to_string(),
+                    Err(error) => format!("failed: {error}"),
+                }
+            }
+        };
+        let now = chrono::Utc::now().to_rfc3339();
+        for (key, value) in [
+            (BACKUP_LAST_AT, now.as_str()),
+            (BACKUP_MIRROR_STATUS, status.as_str()),
+            (BACKUP_LAST_ERROR, ""),
+        ] {
+            let _ = sqlx::query("INSERT INTO app_settings(key,value,updated_at) VALUES(?,?,CURRENT_TIMESTAMP) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at")
+                .bind(key)
+                .bind(value)
+                .execute(&pools.writer)
+                .await;
+        }
+    }
+
+    /// Remember why the latest backup failed, so the owner is told instead of finding out later.
+    pub(crate) async fn record_backup_failure(&self, error: &str) {
+        let Ok(pools) = self.pools() else { return };
+        let message: String = error.chars().take(300).collect();
+        let _ = sqlx::query("INSERT INTO app_settings(key,value,updated_at) VALUES(?,?,CURRENT_TIMESTAMP) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at")
+            .bind(BACKUP_LAST_ERROR)
+            .bind(message)
+            .execute(&pools.writer)
+            .await;
+    }
+
+    /// A message for the sign-in screen when the latest backup failed, otherwise `None`.
+    pub(crate) async fn backup_health(&self) -> Option<String> {
+        let error = self
+            .setting(BACKUP_LAST_ERROR)
+            .await
+            .filter(|e| !e.is_empty())?;
+        Some(format!(
+            "The last automatic backup failed: {error}. Open Admin > Backups to check."
+        ))
+    }
+
+    /// True when a backup finished within `window` (used to avoid a backup on every restart of a
+    /// crash loop, which would push real history out of the retained set).
+    pub(crate) async fn backed_up_within(&self, window: chrono::Duration) -> bool {
+        let Some(last) = self.setting(BACKUP_LAST_AT).await.filter(|v| !v.is_empty()) else {
+            return false;
+        };
+        chrono::DateTime::parse_from_rfc3339(&last)
+            .map(|at| chrono::Utc::now().signed_duration_since(at) < window)
+            .unwrap_or(false)
+    }
+
+    /// Where backups for this computer go inside the chosen second folder: a subfolder named for
+    /// this computer, so several shops sharing one USB stick never prune each other's files.
+    pub(crate) async fn mirror_target(&self, base: &Path) -> PathBuf {
+        let device = self.setting("device_id").await.unwrap_or_default();
+        base.join(mirror_folder_name(&device))
+    }
+
+    pub(crate) async fn setting(&self, key: &str) -> Option<String> {
+        let pools = self.pools().ok()?;
+        sqlx::query_scalar("SELECT value FROM app_settings WHERE key=?")
+            .bind(key)
+            .fetch_optional(&pools.writer)
+            .await
+            .ok()
+            .flatten()
+    }
+
+    pub(crate) fn backup_folder(&self) -> Result<PathBuf, String> {
+        backup_directory(&self.database_path)
+    }
+
+    pub(crate) fn data_folder(&self) -> Result<PathBuf, String> {
+        self.database_path
+            .parent()
+            .map(Path::to_path_buf)
+            .ok_or_else(|| "The local database directory is unavailable.".to_string())
     }
 
     pub fn restore_database(&self, source_path: String) -> RestoreRequest {
@@ -797,13 +904,16 @@ async fn initialize_schema(pool: &SqlitePool, existed: bool) -> Result<(), Strin
     } else if version == 0 {
         validate_integrity_and_foreign_keys(&mut connection).await?;
     }
+    // A file left by an interrupted first run exists but holds no tables; it must still get the
+    // full schema, so "is this a new database" is decided by what is inside, not by the file.
+    let has_existing_tables = existed && count_app_tables(&mut connection).await? > 0;
     if version < SCHEMA_VERSION && !has_v2 {
         let mut transaction = connection
             .begin_with("BEGIN IMMEDIATE")
             .await
             .map_err(|error| format!("Could not begin the schema migration: {error}"))?;
         let migration_result = async {
-            if version == 0 && !existed {
+            if version == 0 && !has_existing_tables {
                 sqlx::raw_sql(MIGRATION_SQL)
                     .execute(&mut *transaction)
                     .await
@@ -854,6 +964,42 @@ async fn initialize_schema(pool: &SqlitePool, existed: bool) -> Result<(), Strin
     .execute(&mut *connection)
     .await
     .map_err(|error| format!("Could not repair the device identifier: {error}"))?;
+    Ok(())
+}
+
+/// Before an existing version-1 database is upgraded for the first time, keep a verified copy of
+/// it. This app cannot downgrade a database, so the copy is the way back if anything is wrong.
+/// The copy lives in the backups folder under a name the automatic pruning never touches.
+/// The upgrade is refused (the app reports why) if the copy cannot be made and verified.
+async fn preserve_before_upgrade(pool: &SqlitePool, database_path: &Path) -> Result<(), String> {
+    let mut connection = pool
+        .acquire()
+        .await
+        .map_err(|error| format!("Could not inspect the local database: {error}"))?;
+    let version = sqlx::query_scalar::<_, i64>("PRAGMA user_version")
+        .fetch_one(&mut *connection)
+        .await
+        .map_err(|error| format!("Could not read the local schema version: {error}"))?;
+    let already_upgraded =
+        version >= SCHEMA_VERSION || table_exists(&mut connection, "counter_accounts").await?;
+    if already_upgraded || count_app_tables(&mut connection).await? == 0 {
+        return Ok(());
+    }
+    let mut created = None;
+    let result = async {
+        let destination = new_backup_path(database_path, "pre-upgrade-v1")?;
+        created = Some(destination.clone());
+        write_verified_snapshot(&mut connection, &destination).await
+    }
+    .await;
+    if let Err(error) = result {
+        if let Some(destination) = created {
+            let _ = remove_database_files(&destination);
+        }
+        return Err(format!(
+            "The database could not be safely copied before upgrading, so it was left unchanged: {error}"
+        ));
+    }
     Ok(())
 }
 
@@ -1627,20 +1773,57 @@ async fn create_backup_on_connection(
     fs::create_dir_all(&directory)
         .map_err(|error| format!("Could not create the backup directory: {error}"))?;
     let backup = unique_path_in(&directory, "laundry", "db")?;
-    let backup_result = async {
-        vacuum_into(connection, &backup).await?;
-        sync_file(&backup)?;
-        sync_parent_directory(&backup)?;
-        validate_database(&backup).await?;
-        prune_backups(database_path, BACKUP_LIMIT)?;
-        Ok::<_, String>(())
-    }
-    .await;
-    if let Err(error) = backup_result {
+    if let Err(error) = write_verified_snapshot(connection, &backup).await {
         let _ = remove_database_files(&backup);
         return Err(error);
     }
+    // Tidying old backups must never undo a good new one.
+    let _ = prune_backups(database_path, BACKUP_LIMIT, Some(&backup));
     Ok(backup)
+}
+
+fn partial_path(destination: &Path) -> PathBuf {
+    let mut name = destination.file_name().unwrap_or_default().to_os_string();
+    name.push(".partial");
+    destination.with_file_name(name)
+}
+
+/// Write a snapshot that is either complete and verified or absent. It is written under a
+/// `.partial` name, flushed, checked as a database, and only then renamed to its real name, so a
+/// power cut or crash can never leave a truncated file that looks like the newest backup.
+async fn write_verified_snapshot(
+    connection: &mut sqlx::pool::PoolConnection<sqlx::Sqlite>,
+    destination: &Path,
+) -> Result<(), String> {
+    let partial = partial_path(destination);
+    let result = async {
+        vacuum_into(connection, &partial).await?;
+        sync_file(&partial)?;
+        validate_database(&partial).await?;
+        fs::rename(&partial, destination)
+            .map_err(|error| format!("Could not finish the database snapshot: {error}"))?;
+        sync_parent_directory(destination)
+    }
+    .await;
+    if result.is_err() {
+        let _ = remove_database_files(&partial);
+    }
+    result
+}
+
+/// Remove snapshot files that a crash left half-written. They never carry a real backup name.
+fn remove_partial_snapshots(database_path: &Path) {
+    let Ok(directory) = backup_directory(database_path) else {
+        return;
+    };
+    let Ok(entries) = fs::read_dir(directory) else {
+        return;
+    };
+    for entry in entries.filter_map(Result::ok) {
+        if entry.file_name().to_string_lossy().ends_with(".partial") {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
 }
 
 async fn vacuum_into(
@@ -1859,6 +2042,11 @@ fn acquire_instance_lock(database_path: &Path) -> Result<File, String> {
     Ok(file)
 }
 
+#[cfg(test)]
+pub(crate) fn pending_restore_path_for_tests(database_path: &Path) -> PathBuf {
+    pending_restore_path(database_path)
+}
+
 fn pending_restore_path(database_path: &Path) -> PathBuf {
     sibling_named(database_path, "laundry.restore.pending.db")
 }
@@ -2032,7 +2220,87 @@ fn quarantine_database_file(database_path: &Path) -> Result<PathBuf, String> {
     Ok(rejected)
 }
 
-fn prune_backups(database_path: &Path, keep: usize) -> Result<(), String> {
+pub(crate) const BACKUP_MIRROR_DIR: &str = "backup_mirror_dir";
+pub(crate) const BACKUP_MIRROR_STATUS: &str = "backup_mirror_status";
+pub(crate) const BACKUP_LAST_AT: &str = "backup_last_at";
+pub(crate) const BACKUP_LAST_ERROR: &str = "backup_last_error";
+
+pub(crate) fn mirror_folder_name(device_id: &str) -> String {
+    let short: String = device_id
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .take(8)
+        .collect();
+    format!("SmartLaundry-backups-{short}")
+}
+
+/// Drive letter of a Windows path (`E:\x`, `e:/x`, `\\?\E:\x`), upper-cased.
+pub(crate) fn drive_letter(path: &str) -> Option<char> {
+    let trimmed = path.strip_prefix(r"\\?\").unwrap_or(path);
+    let mut chars = trimmed.chars();
+    let letter = chars.next().filter(char::is_ascii_alphabetic)?;
+    (chars.next() == Some(':')).then(|| letter.to_ascii_uppercase())
+}
+
+/// Whether two paths are on the same Windows drive (always false where there are no drive letters).
+pub(crate) fn same_drive(a: &str, b: &str) -> bool {
+    matches!((drive_letter(a), drive_letter(b)), (Some(x), Some(y)) if x == y)
+}
+
+/// Copy a finished snapshot to the second backup folder (for example a USB drive) and keep the
+/// newest `BACKUP_LIMIT` copies there. The copy is written under a temporary name, checked
+/// against the source size, then renamed, so a half-written file never looks like a backup.
+fn mirror_backup(snapshot: &Path, mirror_dir: &Path) -> Result<(), String> {
+    if !mirror_dir.is_dir() {
+        return Err("the second backup folder is not available (is the drive connected, and is it the same one you chose?)".into());
+    }
+    let name = snapshot
+        .file_name()
+        .ok_or_else(|| "the backup has no file name".to_string())?;
+    let temporary = mirror_dir.join(format!(".{}.partial", name.to_string_lossy()));
+    let final_path = mirror_dir.join(name);
+    let result = (|| {
+        let copied = fs::copy(snapshot, &temporary)
+            .map_err(|error| format!("could not copy the backup: {error}"))?;
+        let expected = fs::metadata(snapshot)
+            .map_err(|error| format!("could not read the backup: {error}"))?
+            .len();
+        if copied != expected {
+            return Err("the copied backup is incomplete".to_string());
+        }
+        sync_file(&temporary)?;
+        fs::rename(&temporary, &final_path)
+            .map_err(|error| format!("could not finish the backup copy: {error}"))
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+        return result;
+    }
+    prune_mirror(mirror_dir, BACKUP_LIMIT)
+}
+
+fn prune_mirror(mirror_dir: &Path, keep: usize) -> Result<(), String> {
+    let mut copies = fs::read_dir(mirror_dir)
+        .map_err(|error| format!("could not list the second backup folder: {error}"))?
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            name.starts_with("laundry-") && name.ends_with(".db")
+        })
+        .collect::<Vec<_>>();
+    copies.sort_by_key(|entry| entry.file_name());
+    while copies.len() > keep {
+        let oldest = copies.remove(0);
+        fs::remove_file(oldest.path())
+            .map_err(|error| format!("could not remove an old backup copy: {error}"))?;
+    }
+    Ok(())
+}
+
+/// Keep the newest `keep` automatic backups. `protect` (the backup just written) is never removed,
+/// even if its name sorts as old because the computer's clock moved backwards.
+fn prune_backups(database_path: &Path, keep: usize, protect: Option<&Path>) -> Result<(), String> {
     let directory = backup_directory(database_path)?;
     if !directory.exists() {
         return Ok(());
@@ -2052,8 +2320,11 @@ fn prune_backups(database_path: &Path, keep: usize) -> Result<(), String> {
         })
         .collect::<Vec<_>>();
     backups.sort_by_key(|entry| entry.file_name());
-    while backups.len() > keep {
-        let oldest = backups.remove(0);
+    let expired = backups.len().saturating_sub(keep);
+    for oldest in backups.into_iter().take(expired) {
+        if protect == Some(oldest.path().as_path()) {
+            continue;
+        }
         fs::remove_file(oldest.path())
             .map_err(|error| format!("Could not remove an expired database backup: {error}"))?;
     }
@@ -2074,12 +2345,26 @@ fn remove_database_files(database_path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Flush a file to disk. The handle is opened for writing (without changing the contents)
+/// because on Windows `FlushFileBuffers` is refused on a read-only handle.
 fn sync_file(path: &Path) -> Result<(), String> {
-    File::open(path)
+    fs::OpenOptions::new()
+        .write(true)
+        .open(path)
         .and_then(|file| file.sync_all())
         .map_err(|error| format!("Could not sync database file {}: {error}", path.display()))
 }
 
+/// Windows cannot open a directory with `File::open` (access denied), and NTFS journals
+/// directory metadata, so the directory sync is only meaningful on Unix filesystems.
+#[cfg(windows)]
+fn sync_parent_directory(path: &Path) -> Result<(), String> {
+    path.parent()
+        .map(|_| ())
+        .ok_or_else(|| "The local database directory is unavailable.".to_string())
+}
+
+#[cfg(not(windows))]
 fn sync_parent_directory(path: &Path) -> Result<(), String> {
     let parent = path
         .parent()
