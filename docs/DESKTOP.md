@@ -1,7 +1,7 @@
-# macOS local-first desktop app
+# Local-first desktop app
 
 The desktop entry runs the existing local-first POS screen in a Tauri window.
-It stores its records in SQLite on this Mac. It does not use the web app's
+It stores its records in SQLite on this computer. It does not use the web app's
 Supabase account or sync records to the cloud. The browser and Android builds
 continue to use their existing entries.
 
@@ -16,7 +16,7 @@ directory.
 
 The app creates a backup when it starts after a local administrator exists.
 The Settings screen can also create a backup. The current implementation keeps
-the newest 30 `.db` files. These copies stay on the same Mac, so keep another
+the newest 30 `.db` files. These copies stay on the same computer, so keep another
 copy somewhere safe if the business needs protection from device loss.
 
 Backup uses SQLite's `VACUUM INTO` to capture a consistent database snapshot.
@@ -30,7 +30,7 @@ connections. A recovery journal preserves the original database if application
 is interrupted. Verify the restored records after reopening.
 
 The PIN locks the app screen. It does not encrypt the SQLite files or backups.
-Protect the Mac account and store independent copies of business backups.
+Protect the operating-system account and store independent copies of business backups.
 
 The bundled renderer is trusted and can read or mutate business records through
 the native SQL bridge. The bridge rejects multiple statements, transaction
@@ -73,8 +73,27 @@ npm run tauri:build -- --config src-tauri/tauri.review.conf.json
 
 The review overlay uses `com.smartlaundry.pos.review`, the product name
 `Smart Laundry POS Review`, and an app-only bundle target. Its database directory
-is separate from `com.smartlaundry.pos`. Verify the identifier before launching
-a test build on a Mac that already has business data.
+is separate from `com.smartlaundry.pos`. The Linux review overlay
+(`src-tauri/tauri.review.linux.conf.json`) packages this isolated app as a Debian
+`.deb` for Ubuntu. Build it with `npm run tauri:build:linux-review` after
+installing the [Tauri Linux prerequisites](https://v2.tauri.app/start/prerequisites/#linux).
+Verify the review identifier before launching a test build on a computer that
+already has business data.
+
+On Ubuntu, install the prerequisites and build/install the review package with:
+
+```sh
+sudo apt update
+sudo apt install libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+rustup toolchain install stable --profile minimal
+rustup default stable
+npm ci
+npm run tauri:build:linux-review
+sudo apt install ./src-tauri/target/release/bundle/deb/*.deb
+```
+
+The CI workflow also builds this `.deb` on Ubuntu 24.04 and uploads it as the
+`smart-laundry-pos-ubuntu-review` artifact.
 
 The default Tauri configuration uses the ad-hoc signing identity `-`. Tauri
 signs the app bundle with this pseudo-identity, so the signature can be checked
@@ -109,6 +128,10 @@ npm run tauri:build -- --config src-tauri/tauri.review.conf.json
 codesign --verify --deep --strict "src-tauri/target/release/bundle/macos/Smart Laundry POS Review.app"
 ```
 
+Its Ubuntu 24.04 job separately builds and uploads the isolated `.deb` review
+package. The package uses `com.smartlaundry.pos.review`, so it has its own local
+database directory.
+
 The V8 coverage gate requires 100% statements, branches, functions, and lines
 for the desktop entry, `LocalFirstApp.tsx`, and executable `src/lib/localFirst`
 modules. Rust uses separate validation; this gate does not measure it. Native tests use isolated
@@ -121,8 +144,4 @@ administrator, reject a wrong PIN, create records, quit and reopen to check
 persistence, make a backup, stage a restore, reopen, and verify the restored
 records and safety backup.
 
-On macOS, receipt printing uses Tauri's native webview print command. The main
-window capability explicitly permits that command. The receipt remains mounted
-after IPC dispatch because command completion does not establish that the print
-dialog has closed. Print errors appear in the workspace notice. A real printer
-still needs device verification; DOM tests cannot establish paper output.
+The counter uses the native spooler adapter for Canon bills and TSC garment tags on Windows and Linux. See [printer setup and Windows acceptance](PRINTING_WINDOWS.md) for driver configuration, queue selection, recovery, and the required target-machine checklist. Spool acceptance is not proof of physical output.

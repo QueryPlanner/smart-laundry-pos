@@ -112,6 +112,9 @@ async fn create_schema_file(path: &Path, version: i64) {
         .execute(&mut *connection)
         .await
         .expect("initial migration should create the schema");
+    if version >= 2 {
+        sqlx::raw_sql(MIGRATION_V2_SQL).execute(&mut *connection).await.expect("v2 migration should add counter data");
+    }
     sqlx::query(&format!("PRAGMA user_version = {version}"))
         .execute(&mut *connection)
         .await
@@ -128,6 +131,9 @@ async fn create_schema_file_from_sql(path: &Path, schema: &str, version: i64) {
         .execute(&pool)
         .await
         .expect("fixture schema should execute");
+    if version >= 2 {
+        sqlx::raw_sql(MIGRATION_V2_SQL).execute(&pool).await.expect("v2 fixture migration should execute");
+    }
     sqlx::query(&format!("PRAGMA user_version = {version}"))
         .execute(&pool)
         .await
@@ -1464,6 +1470,7 @@ fn invalid_backup_and_live_database_paths_are_rejected_without_touching_live_dat
             .await
             .unwrap();
         sqlx::raw_sql(&schema).execute(&pool).await.unwrap();
+        sqlx::raw_sql(MIGRATION_V2_SQL).execute(&pool).await.unwrap();
         pool.close().await;
         let error = state
             .restore_database(missing_column.to_string_lossy().to_string())
@@ -1670,6 +1677,7 @@ fn restore_schema_normalization_accepts_ignored_comments_case_and_whitespace() {
             .execute(&pool)
             .await
             .expect("case, comments, and spacing should be accepted by SQLite");
+        sqlx::raw_sql(MIGRATION_V2_SQL).execute(&pool).await.expect("v2 schema should be added");
         sqlx::query(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))
             .execute(&pool)
             .await

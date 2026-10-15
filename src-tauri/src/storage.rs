@@ -14,7 +14,8 @@ use sqlx::sqlite::{
 use sqlx::{Column, Connection, Row, TypeInfo, ValueRef};
 
 const MIGRATION_SQL: &str = include_str!("../migrations/001_initial_schema.sql");
-const SCHEMA_VERSION: i64 = 1;
+const MIGRATION_V2_SQL: &str = include_str!("../migrations/002_counter_domain.sql");
+const SCHEMA_VERSION: i64 = 2;
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const WRITER_CONNECTIONS: u32 = 1;
 const READER_CONNECTIONS: u32 = 4;
@@ -421,6 +422,10 @@ impl DatabaseState {
         }
     }
 
+    pub(crate) fn writer_pool(&self) -> Result<&SqlitePool, String> {
+        Ok(&self.pools()?.writer)
+    }
+
     fn pools(&self) -> Result<&DatabasePools, String> {
         self.pools.as_ref().map_err(Clone::clone)
     }
@@ -751,47 +756,43 @@ async fn initialize_schema(pool: &SqlitePool, existed: bool) -> Result<(), Strin
         ));
     }
 
-    if version == SCHEMA_VERSION {
+    let has_v2 = version == 0 && existed && table_exists(&mut connection, "counter_accounts").await?;
+    if version == SCHEMA_VERSION || has_v2 {
         validate_schema(&mut connection).await?;
         validate_integrity_and_foreign_keys(&mut connection).await?;
-    } else {
-        let app_tables = count_app_tables(&mut connection).await?;
-        if existed && app_tables > 0 {
-            validate_schema(&mut connection).await?;
-            validate_integrity_and_foreign_keys(&mut connection).await?;
-        } else {
-            validate_integrity_and_foreign_keys(&mut connection).await?;
-        }
-        let mut transaction = connection
-            .begin_with("BEGIN IMMEDIATE")
-            .await
+    } else if version == 0 && existed && count_app_tables(&mut connection).await? > 0 {
+        validate_v1_schema(&mut connection).await?;
+        validate_integrity_and_foreign_keys(&mut connection).await?;
+    } else if version == 0 {
+        validate_integrity_and_foreign_keys(&mut connection).await?;
+    }
+    if version < SCHEMA_VERSION && !has_v2 {
+        let mut transaction = connection.begin_with("BEGIN IMMEDIATE").await
             .map_err(|error| format!("Could not begin the schema migration: {error}"))?;
         let migration_result = async {
-            sqlx::raw_sql(MIGRATION_SQL)
-                .execute(&mut *transaction)
-                .await
-                .map_err(|error| format!("The local database migration failed: {error}"))?;
-            sqlx::query("PRAGMA user_version = 1")
-                .execute(&mut *transaction)
-                .await
-                .map_err(|error| format!("Could not record the local schema version: {error}"))?;
+            if version == 0 && !existed {
+                sqlx::raw_sql(MIGRATION_SQL).execute(&mut *transaction).await
+                    .map_err(|error| format!("The v1 local database migration failed: {error}"))?;
+            }
+            sqlx::raw_sql(MIGRATION_V2_SQL).execute(&mut *transaction).await
+                .map_err(|error| format!("The v2 counter migration failed: {error}"))?;
+            sqlx::query("PRAGMA user_version = 2").execute(&mut *transaction).await
+                .map_err(|error| format!("Could not record the schema version: {error}"))?;
             Ok::<_, String>(())
-        }
-        .await;
+        }.await;
         if let Err(error) = migration_result {
             return match transaction.rollback().await {
                 Ok(()) => Err(error),
-                Err(rollback_error) => Err(format!(
-                    "{error} The schema migration rollback also failed: {rollback_error}"
-                )),
+                Err(rollback_error) => Err(format!("{error} The schema migration rollback also failed: {rollback_error}")),
             };
         }
-        transaction
-            .commit()
-            .await
-            .map_err(|error| format!("Could not commit the local schema migration: {error}"))?;
+        transaction.commit().await.map_err(|error| format!("Could not commit the schema migration: {error}"))?;
+    }
+    if version < SCHEMA_VERSION {
         validate_schema(&mut connection).await?;
         validate_integrity_and_foreign_keys(&mut connection).await?;
+        sqlx::query("PRAGMA user_version = 2").execute(&mut *connection).await
+            .map_err(|error| format!("Could not record the upgraded schema version: {error}"))?;
     }
 
     sqlx::query(
@@ -809,6 +810,12 @@ async fn initialize_schema(pool: &SqlitePool, existed: bool) -> Result<(), Strin
     Ok(())
 }
 
+async fn table_exists(connection:&mut sqlx::pool::PoolConnection<sqlx::Sqlite>,table:&str)->Result<bool,String>{
+    sqlx::query_scalar::<_,i64>("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?")
+      .bind(table).fetch_one(&mut **connection).await.map(|count|count>0)
+      .map_err(|error|format!("Could not inspect table {table}: {error}"))
+}
+
 async fn count_app_tables(
     connection: &mut sqlx::pool::PoolConnection<sqlx::Sqlite>,
 ) -> Result<i64, String> {
@@ -818,6 +825,28 @@ async fn count_app_tables(
     .fetch_one(&mut **connection)
     .await
     .map_err(|error| format!("Could not inspect the local schema: {error}"))
+}
+
+async fn validate_v1_schema(connection: &mut sqlx::pool::PoolConnection<sqlx::Sqlite>) -> Result<(), String> {
+    for (table, required_columns) in REQUIRED_TABLES {
+        let exists: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?")
+            .bind(table).fetch_one(&mut **connection).await
+            .map_err(|error| format!("Could not inspect v1 table {table}: {error}"))?;
+        if exists == 0 { return Err(format!("The v1 database is missing table {table}.")); }
+        let rows = sqlx::query(&format!("PRAGMA table_info(\"{table}\")"))
+            .fetch_all(&mut **connection).await
+            .map_err(|error| format!("Could not inspect v1 table {table}: {error}"))?;
+        let columns = rows.iter().map(|row| row.try_get::<String,_>("name"))
+            .collect::<Result<Vec<_>,_>>()
+            .map_err(|error| format!("Could not read v1 table {table}: {error}"))?;
+        for required in *required_columns {
+            if !columns.iter().any(|column| column.eq_ignore_ascii_case(required)) {
+                return Err(format!("The v1 database table {table} is missing required column {required}."));
+            }
+        }
+    }
+    validate_schema_contract_version(connection, false).await?;
+    Ok(())
 }
 
 async fn validate_schema(
@@ -887,6 +916,13 @@ async fn validate_schema(
 async fn validate_schema_contract(
     actual_connection: &mut sqlx::pool::PoolConnection<sqlx::Sqlite>,
 ) -> Result<(), String> {
+    validate_schema_contract_version(actual_connection, true).await
+}
+
+async fn validate_schema_contract_version(
+    actual_connection: &mut sqlx::pool::PoolConnection<sqlx::Sqlite>,
+    include_v2: bool,
+) -> Result<(), String> {
     let expected_pool = SqlitePoolOptions::new()
         .max_connections(1)
         .connect_with(
@@ -902,6 +938,12 @@ async fn validate_schema_contract(
             .execute(&expected_pool)
             .await
             .map_err(|error| format!("Could not prepare the schema contract: {error}"))?;
+        if include_v2 {
+            sqlx::raw_sql(MIGRATION_V2_SQL)
+                .execute(&expected_pool)
+                .await
+                .map_err(|error| format!("Could not prepare the v2 schema contract: {error}"))?;
+        }
         let mut connection = expected_pool
             .acquire()
             .await
@@ -1076,7 +1118,12 @@ async fn validate_database_pool(pool: &SqlitePool) -> Result<(), String> {
             "The database uses unsupported schema version {version}. This app supports versions 0 and {SCHEMA_VERSION}."
         ));
     }
-    validate_schema(&mut connection).await?;
+    match version {
+        0 if table_exists(&mut connection, "counter_accounts").await? => validate_schema(&mut connection).await?,
+        0 | 1 => validate_v1_schema(&mut connection).await?,
+        2 => validate_schema(&mut connection).await?,
+        _ => unreachable!("schema version was range checked"),
+    }
 
     validate_integrity_and_foreign_keys(&mut connection).await
 }

@@ -63,6 +63,13 @@ where
     let window = WebviewWindowBuilder::new(&app, "main", WebviewUrl::App("index.html".into()))
         .build()
         .expect("mock webview should build");
+    app.state::<crate::counter::CounterSession>().set(crate::counter::SessionActor { id: "fixture-admin".into(), role: "admin".into() }).expect("test session should be initialized");
+    if let Ok(pool) = app.state::<DatabaseState>().writer_pool() {
+        tauri::async_runtime::block_on(async {
+            sqlx::query("INSERT OR IGNORE INTO counter_accounts(id,full_name,pin_hash,pin_salt,role,active,created_at,updated_at) VALUES('fixture-admin','Fixture Admin','hash','salt','admin',1,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)")
+                .execute(pool).await.expect("fixture administrator should be seeded");
+        });
+    }
     let responses = Arc::new(Mutex::new(Vec::new()));
     let recorded_responses = Arc::clone(&responses);
 

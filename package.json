@@ -15,10 +15,12 @@
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
+    "tauri:build:linux-review": "tauri build --config src-tauri/tauri.review.linux.conf.json",
     "dev:desktop": "vite --config vite.desktop.config.ts",
     "build:desktop": "vite build --config vite.desktop.config.ts",
     "test:desktop": "vitest run --config vitest.desktop.config.ts",
-    "test:desktop:coverage": "vitest run --config vitest.desktop.config.ts --coverage"
+    "test:desktop:coverage": "vitest run --config vitest.desktop.config.ts --coverage",
+    "tauri:build:windows-review": "tauri build --config src-tauri/tauri.review.windows.conf.json"
   },
   "dependencies": {
     "@capacitor-community/bluetooth-le": "^7.3.2",

@@ -1,0 +1,14 @@
+{
+  "identifier": "com.smartlaundry.pos.review",
+  "productName": "Smart Laundry POS Review",
+  "bundle": {
+    "targets": [
+      "nsis"
+    ],
+    "windows": {
+      "nsis": {
+        "installMode": "perMachine"
+      }
+    }
+  }
+}
