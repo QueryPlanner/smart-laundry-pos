@@ -1,3 +1,5 @@
+> **Status: historical.** This is the original design plan. Parts of it were changed or dropped during implementation (for example the plan expects a payment balance, while payment is now always collected in full at save, and admin-managed discounts and a second backup folder were added). It is not a description of the current app. For the current behaviour and what is and is not verified, see [DESKTOP_ACCEPTANCE.md](../DESKTOP_ACCEPTANCE.md).
+
 # Friendly garment POS, staff access, and garment tracking plan
 
 Date: 2026-10-15

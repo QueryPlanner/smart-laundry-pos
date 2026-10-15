@@ -1,3 +1,5 @@
+> **Status: historical.** This is the work order that was given to the implementation workers. It is not a description of the current app and its "definition of done" items are not a record of what was verified. For the current behaviour and an honest list of what is and is not verified, see [DESKTOP_ACCEPTANCE.md](../DESKTOP_ACCEPTANCE.md).
+
 # Delegated implementation tasks: friendly counter POS and Windows printing
 
 Date: 2026-10-15
