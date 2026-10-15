@@ -1,0 +1,25 @@
+{
+  "style": "soft 3D catalogue illustration, centered front view, square crop, transparent background, no in-image text",
+  "generator": "built-in ImageGen tool",
+  "assets": [
+    {"key":"shirt","file":"shirt-transparent.png","labelEn":"Shirt"},
+    {"key":"tshirt","file":"tshirt-transparent.png","labelEn":"T-shirt"},
+    {"key":"jeans","file":"jeans-transparent.png","labelEn":"Jeans"},
+    {"key":"trousers","file":"trousers-transparent.png","labelEn":"Trousers"},
+    {"key":"shorts","file":"shorts-transparent.png","labelEn":"Shorts"},
+    {"key":"kurta","file":"kurta-transparent.png","labelEn":"Kurta / kameez"},
+    {"key":"pyjama","file":"pyjama-transparent.png","labelEn":"Pyjama"},
+    {"key":"salwar","file":"salwar-transparent.png","labelEn":"Salwar / churidar"},
+    {"key":"leggings","file":"leggings-transparent.png","labelEn":"Leggings"},
+    {"key":"saree","file":"saree-transparent.png","labelEn":"Saree"},
+    {"key":"blouse","file":"blouse-transparent.png","labelEn":"Blouse"},
+    {"key":"petticoat","file":"petticoat-transparent.png","labelEn":"Petticoat / parkar"},
+    {"key":"dupatta","file":"dupatta-transparent.png","labelEn":"Dupatta"},
+    {"key":"dhoti","file":"dhoti-transparent.png","labelEn":"Dhoti"},
+    {"key":"lungi","file":"lungi-transparent.png","labelEn":"Lungi"},
+    {"key":"dress","file":"dress-transparent.png","labelEn":"Dress / frock"},
+    {"key":"jacket","file":"jacket-transparent.png","labelEn":"Jacket"},
+    {"key":"sweater","file":"sweater-transparent.png","labelEn":"Sweater"},
+    {"key":"shoes","file":"shoes-transparent.png","labelEn":"Shoes, billed by pair"}
+  ]
+}

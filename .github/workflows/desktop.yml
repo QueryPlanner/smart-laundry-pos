@@ -1,0 +1,185 @@
+name: Desktop checks
+
+on:
+  push:
+    branches:
+      - 'codex/**'
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux-package:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install Tauri Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes \
+            build-essential \
+            curl \
+            file \
+            libayatana-appindicator3-dev \
+            libssl-dev \
+            libwebkit2gtk-4.1-dev \
+            libxdo-dev \
+            librsvg2-dev \
+            pkg-config
+
+      - name: Set up Rust stable
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Install locked npm dependencies
+        run: npm ci
+
+      - name: Build isolated Ubuntu review package
+        run: npm run tauri:build:linux-review
+
+      - name: Upload Ubuntu review package
+        uses: actions/upload-artifact@v4
+        with:
+          name: smart-laundry-pos-ubuntu-review
+          path: src-tauri/target/release/bundle/deb/*.deb
+          if-no-files-found: error
+
+  desktop:
+    runs-on: macos-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install locked npm dependencies
+        run: npm ci
+
+      - name: Run existing test suite
+        run: npm test
+
+      - name: Require complete desktop JavaScript coverage
+        run: npm run test:desktop:coverage
+
+      - name: Lint desktop entry and local-first code
+        run: npm run lint:desktop
+
+      - name: Typecheck desktop entry and local-first code
+        run: npm run typecheck:desktop
+
+      - name: Build desktop frontend
+        run: npm run build:desktop
+
+      - name: Check legacy web build compatibility
+        run: npm run build
+
+      - name: Set up Rust stable components
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy --component rustfmt
+          rustup default stable
+
+      - name: Check Rust formatting
+        working-directory: src-tauri
+        run: cargo fmt --all -- --check
+
+      - name: Run Rust tests
+        working-directory: src-tauri
+        run: cargo test
+
+      - name: Run Rust clippy
+        working-directory: src-tauri
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Package isolated macOS review app
+        run: npm run tauri:build -- --config src-tauri/tauri.review.conf.json
+
+      - name: Verify review app signature
+        run: codesign --verify --deep --strict "src-tauri/target/release/bundle/macos/Smart Laundry POS Review.app"
+
+  windows-package:
+    runs-on: windows-2022
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Set up Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install locked npm dependencies
+        run: npm ci
+
+      - name: Run desktop JavaScript tests
+        run: npm run test:desktop
+
+      - name: Check native Windows code
+        working-directory: src-tauri
+        run: cargo check --locked --all-targets
+
+      - name: Run native tests on Windows
+        working-directory: src-tauri
+        run: cargo test --locked
+
+      - name: Run Rust clippy on Windows
+        working-directory: src-tauri
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      # Production installer (identifier com.smartlaundry.pos, offline WebView2).
+      # Unsigned: no signing secrets or certificate settings are referenced.
+      - name: Build production Windows installer
+        run: npm run tauri:build:windows
+
+      # Copy out immediately so the review build below cannot overwrite it.
+      - name: Stage production Windows installer
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path staging/production | Out-Null
+          Copy-Item "src-tauri/target/release/bundle/nsis/Smart Laundry POS_*-setup.exe" staging/production/
+
+      - name: Upload production Windows installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: smart-laundry-pos-windows
+          path: staging/production/*.exe
+          if-no-files-found: error
+
+      - name: Build isolated Windows review installer
+        run: npm run tauri:build:windows-review
+
+      - name: Stage Windows review installer
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path staging/review | Out-Null
+          Copy-Item "src-tauri/target/release/bundle/nsis/Smart Laundry POS Review_*-setup.exe" staging/review/
+
+      - name: Upload Windows review installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: smart-laundry-pos-windows-review
+          path: staging/review/*.exe
+          if-no-files-found: error

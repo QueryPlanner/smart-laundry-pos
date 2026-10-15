@@ -1,0 +1,15 @@
+{
+  "extends": "./tsconfig.app.json",
+  "include": [
+    "src/desktop.tsx",
+    "src/pages/LocalFirstApp.tsx",
+    "src/lib/localFirst/**/*.ts",
+    "src/vite-env.d.ts"
+  ],
+  "exclude": [
+    "src/**/*.test.ts",
+    "src/**/*.test.tsx",
+    "src/**/*.spec.ts",
+    "src/**/*.spec.tsx"
+  ]
+}
