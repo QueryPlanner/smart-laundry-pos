@@ -275,10 +275,16 @@ export const LegacyLocalFirstApp = ({ onCounterReturn, nativeAdminAccount }: { o
       .finally(() => setLoading(false));
   }, [nativeAdminAccount]);
 
-  if (loading) return <div className="flex min-h-screen items-center justify-center bg-slate-950 text-white">Opening local database...</div>;
-  if (error) return <div className="flex min-h-screen items-center justify-center bg-slate-950 px-4 text-red-200">{error}</div>;
-  if (setupRequired) return <SetupScreen warning={backupWarning} onComplete={createdUser => { setUser(createdUser); setSetupRequired(false); }} />;
-  if (!user) return <LoginScreen warning={backupWarning} onLogin={setUser} />;
+  // Before the workspace itself is showing (and so before its header has "Back to counter"),
+  // a bar in normal page flow is the way back, so nobody gets stuck on a start-up screen.
+  const withCounterReturn = (screen: React.ReactNode) => <>
+    {onCounterReturn && <div className="counter-return-bar"><button type="button" onClick={onCounterReturn}>← Back to counter</button></div>}
+    {screen}
+  </>;
+  if (loading) return withCounterReturn(<div className="flex min-h-screen items-center justify-center bg-slate-950 text-white">Opening local database...</div>);
+  if (error) return withCounterReturn(<div className="flex min-h-screen items-center justify-center bg-slate-950 px-4 text-red-200">{error}</div>);
+  if (setupRequired) return withCounterReturn(<SetupScreen warning={backupWarning} onComplete={createdUser => { setUser(createdUser); setSetupRequired(false); }} />);
+  if (!user) return withCounterReturn(<LoginScreen warning={backupWarning} onLogin={setUser} />);
 
   return <LocalWorkspace
     user={user}
@@ -298,12 +304,20 @@ export const LegacyLocalFirstApp = ({ onCounterReturn, nativeAdminAccount }: { o
 
 export const LocalFirstApp = () => {
   const [nativeAdminAccount, setNativeAdminAccount] = useState<CounterAccount | null>(null);
+  const [lockError, setLockError] = useState('');
+  // Leaving the admin workspace locks the native session too. If that fails the session may
+  // still be open, so stay where we are and say so instead of pretending it is locked.
   const returnToCounter = async () => {
-    await lockCounter();
-    setNativeAdminAccount(null);
+    try {
+      await lockCounter();
+      setLockError('');
+      setNativeAdminAccount(null);
+    } catch (error) {
+      setLockError(`The app could not be locked: ${errorMessage(error)}`);
+    }
   };
   return nativeAdminAccount
-    ? <><button type="button" className="counter-return" onClick={() => void returnToCounter()}>← Back to counter</button><LegacyLocalFirstApp nativeAdminAccount={nativeAdminAccount} onCounterReturn={() => void returnToCounter()} /></>
+    ? <>{lockError && <p role="alert" className="counter-error">{lockError}</p>}<LegacyLocalFirstApp nativeAdminAccount={nativeAdminAccount} onCounterReturn={() => void returnToCounter()} /></>
     : <CounterApp onAdminWorkspace={setNativeAdminAccount} />;
 };
 

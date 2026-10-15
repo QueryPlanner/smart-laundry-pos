@@ -32,7 +32,7 @@ export interface CounterQuoteLine {
   quantity: number; unitPriceMinor: number; lineTotalMinor: number; rateVersion: number;
 }
 export interface CounterQuote {
-  lines: CounterQuoteLine[]; subtotalMinor: number; totalMinor: number;
+  lines: CounterQuoteLine[]; subtotalMinor: number; discountPercentBp: number; discountMinor: number; totalMinor: number;
   pieceCount: number; promisedAt: string; catalogueVersion: string;
 }
 export interface CounterSaveInput extends CounterOrderInput {
@@ -60,7 +60,12 @@ export interface PieceMatchResult {
 }
 export interface NativePrinter { id: string; name: string; isDefault: boolean; isAvailable: boolean }
 export interface PrinterProfiles { billPrinterId: string; tagPrinterId: string }
+export interface CounterBackupSettings { folder: string; mirrorDir: string | null; mirrorStatus: string | null; lastBackupAt: string | null }
 export interface CounterStaffInput { fullName: string; pin: string }
+export interface CounterDiscountRule {
+  id: string; scope: 'all' | 'customer'; customerId: string | null; customerName: string | null;
+  customerPhone: string | null; percentBp: number; label: string; active: boolean;
+}
 
 export const getCounterBootstrap = (): Promise<CounterBootstrap> => call('counter_bootstrap');
 export const setupCounterAdmin = (input: CounterStaffInput): Promise<CounterAccount> => call('counter_setup_admin', { input });
@@ -78,6 +83,14 @@ export const getCounterCatalogue = (): Promise<CounterCatalogue> => call('counte
 export const searchCounterCustomers = (phone: string): Promise<Array<{id: string; name: string; phone: string}>> => call('counter_search_customers', { phone });
 export const setCounterRate = (garmentId: string, serviceId: string, priceMinor: number | null, available: boolean): Promise<void> =>
   call('counter_set_rate', { garmentId, serviceId, priceMinor, available });
+export const listCounterDiscounts = (): Promise<CounterDiscountRule[]> => call('counter_list_discounts');
+/** `customerId` null sets the shop-wide rule; otherwise that customer's own rule. Admin only. */
+export const setCounterDiscount = (customerId: string | null, percentBp: number, active: boolean, label: string): Promise<void> =>
+  call('counter_set_discount', { customerId, percentBp, active, label });
+export const getCounterBackupSettings = (): Promise<CounterBackupSettings> => call('counter_backup_settings');
+/** A blank or null directory clears the second backup folder. Admin only. */
+export const setCounterBackupMirror = (directory: string | null): Promise<void> => call('counter_set_backup_mirror', { directory });
+export const runCounterBackup = (): Promise<CounterBackupSettings> => call('counter_backup_now');
 export const quoteCounterOrder = (input: CounterOrderInput): Promise<CounterQuote> => call('counter_quote_order', { input });
 export const saveCounterOrder = (input: CounterSaveInput): Promise<CounterSavedOrder> => call('counter_save_order', { input });
 export const getOrderPieces = (orderId: string): Promise<CounterPiece[]> => call('counter_get_order_pieces', { orderId });
@@ -88,6 +101,8 @@ export const getCounterOrder = (orderId: string): Promise<CounterSavedOrder | nu
 export const recordCounterPayment = (orderId: string, input: CounterRecordPaymentInput): Promise<CounterSavedOrder> => call('counter_record_payment', { orderId, input });
 export const updateCounterOrderStatus = (orderId: string, status: CounterProcessingStatus): Promise<CounterSavedOrder> => call('counter_update_order_status', { orderId, status });
 export const collectCounterOrder = (orderId: string, pieceIds: string[], requestId: string): Promise<CounterSavedOrder> => call('counter_collect_order', { orderId, pieceIds, requestId });
+/** Admin only. Voids every payment on the order and marks it cancelled; `reason` must be 3 to 200 characters. */
+export const cancelCounterOrder = (orderId: string, reason: string): Promise<CounterSavedOrder> => call('counter_cancel_order', { orderId, reason });
 export const enumeratePrinters = (): Promise<NativePrinter[]> => call('counter_enumerate_printers');
 export const setPrinterProfiles = (profiles: PrinterProfiles): Promise<void> => call('counter_set_printer_profiles', { profiles });
 export const getPrinterProfiles = (): Promise<PrinterProfiles | null> => call('counter_get_printer_profiles');

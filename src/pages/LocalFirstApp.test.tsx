@@ -3,7 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { LegacyLocalFirstApp as LocalFirstApp } from './LocalFirstApp';
+import { LegacyLocalFirstApp as LocalFirstApp, LocalFirstApp as AppShell } from './LocalFirstApp';
+import type { CounterAccount } from '@/lib/localFirst/counter';
 import type {
   Customer,
   DashboardSummary,
@@ -24,6 +25,7 @@ const mocks = vi.hoisted(() => ({
   open: vi.fn(),
   backupDatabase: vi.fn(),
   restoreDatabase: vi.fn(),
+  lockCounter: vi.fn(),
   repository: {
     createAdmin: vi.fn(),
     authenticate: vi.fn(),
@@ -56,6 +58,13 @@ vi.mock('@/lib/localFirst/repository', () => ({ localLaundryRepository: mocks.re
 vi.mock('@/lib/localFirst/backup', () => ({
   backupDatabase: mocks.backupDatabase,
   restoreDatabase: mocks.restoreDatabase,
+}));
+vi.mock('@/lib/localFirst/counter', () => ({ lockCounter: mocks.lockCounter }));
+const nativeAdmin: CounterAccount = { id: 'user-1', fullName: 'Riley Patel', role: 'admin', active: true };
+vi.mock('@/components/localCounter/CounterApp', () => ({
+  CounterApp: ({ onAdminWorkspace }: { onAdminWorkspace: (account: CounterAccount) => void }) => (
+    <button type="button" onClick={() => onAdminWorkspace(nativeAdmin)}>Enter admin workspace</button>
+  ),
 }));
 vi.mock('@tauri-apps/plugin-dialog', () => ({ confirm: mocks.confirm, open: mocks.open }));
 
@@ -338,6 +347,8 @@ beforeEach(() => {
   mocks.open.mockReset();
   mocks.backupDatabase.mockReset();
   mocks.restoreDatabase.mockReset();
+  mocks.lockCounter.mockReset();
+  mocks.lockCounter.mockResolvedValue(undefined);
 
   mocks.startLocalFirstApp.mockResolvedValue({ hasLocalUser: true });
   mocks.confirm.mockResolvedValue(true);
@@ -1183,4 +1194,61 @@ describe('LocalFirstApp settings and recovery', () => {
     expect(repository.adjustInventory).not.toHaveBeenCalled();
     expect(repository.createMachine).not.toHaveBeenCalled();
   }, 15_000);
+});
+
+describe('counter and admin workspace share one native session', () => {
+  const openAdminWorkspace = async () => {
+    mocks.startLocalFirstApp.mockResolvedValueOnce({ hasLocalUser: true });
+    render(<AppShell />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Enter admin workspace' }));
+    await screen.findByRole('heading', { name: 'Dashboard' });
+  };
+
+  it('enters the full workspace already signed in, and Back to counter locks the native session', async () => {
+    await openAdminWorkspace();
+    expect(screen.queryByRole('heading', { name: 'Unlock Smart Laundry' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Back to counter' }));
+    await screen.findByRole('button', { name: 'Enter admin workspace' });
+    expect(mocks.lockCounter).toHaveBeenCalledOnce();
+  });
+
+  it('offers one Back to counter control inside the workspace header, with no floating button on top of it', async () => {
+    await openAdminWorkspace();
+    expect(screen.getAllByRole('button', { name: /Back to counter/ }).length).toBe(1);
+    const control = screen.getByRole('button', { name: 'Back to counter' });
+    expect(control.closest('header')).not.toBeNull();
+    expect(document.querySelector('.counter-return')).toBeNull();
+  });
+
+  it('keeps a way back to the counter on start-up screens that have no workspace header', async () => {
+    mocks.startLocalFirstApp.mockResolvedValueOnce({ hasLocalUser: false });
+    render(<AppShell />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Enter admin workspace' }));
+    fireEvent.click(await screen.findByRole('button', { name: '← Back to counter' }));
+    await screen.findByRole('button', { name: 'Enter admin workspace' });
+    expect(mocks.lockCounter).toHaveBeenCalledOnce();
+    cleanup();
+    mocks.startLocalFirstApp.mockRejectedValueOnce(new Error('database is locked'));
+    render(<AppShell />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Enter admin workspace' }));
+    await screen.findByText('database is locked');
+    expect(screen.getByRole('button', { name: '← Back to counter' })).toBeTruthy();
+  });
+
+  it('treats Lock app inside the workspace as locking the native session and returning to the counter', async () => {
+    await openAdminWorkspace();
+    fireEvent.click(screen.getByRole('button', { name: 'Lock app' }));
+    await screen.findByRole('button', { name: 'Enter admin workspace' });
+    expect(mocks.lockCounter).toHaveBeenCalledOnce();
+  });
+
+  it('stays in the workspace and explains it if the native session cannot be locked', async () => {
+    await openAdminWorkspace();
+    mocks.lockCounter.mockRejectedValueOnce(new Error('session store unavailable'));
+    fireEvent.click(screen.getByRole('button', { name: 'Back to counter' }));
+    await waitFor(() => expect(screen.getByText('The app could not be locked: session store unavailable')).toBeTruthy());
+    expect(screen.getByRole('heading', { name: 'Dashboard' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Back to counter' }));
+    await screen.findByRole('button', { name: 'Enter admin workspace' });
+  });
 });

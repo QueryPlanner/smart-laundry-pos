@@ -1,14 +1,28 @@
 import { Minus, Plus } from 'lucide-react';
-import type { CounterCatalogue } from '@/lib/localFirst/counter';
+import type { CounterCatalogue, CounterGarment, CounterRate, CounterService } from '@/lib/localFirst/counter';
+
+/** Shoes are billed per pair and cannot be ironed. */
+const isForbidden = (garment: CounterGarment, service: CounterService | undefined) =>
+  garment.billingUnit === 'pair' && (service?.key === 'iron' || service?.key === 'wash_iron');
+
+const isSellable = (garment: CounterGarment, service: CounterService | undefined, rate: CounterRate | undefined) =>
+  !!rate?.available && !!rate.configured && !isForbidden(garment, service);
+
+/** True when no active garment can be sold under any active service, for example before the owner has set any rate. */
+const nothingIsSellable = (catalogue: CounterCatalogue) =>
+  !catalogue.garments.some(garment => garment.active && catalogue.services.some(service =>
+    service.active && isSellable(garment, service, catalogue.rates.find(r => r.garmentId === garment.id && r.serviceId === service.id))));
 
 export const GarmentGrid = ({catalogue,serviceId,lines,onAdd,onQuantity}:{catalogue:CounterCatalogue|null;serviceId:string;lines:Record<string,number>;onAdd:(id:string)=>void;onQuantity:(id:string,n:number)=>void}) => {
   const service = catalogue?.services.find(s=>s.id===serviceId);
-  return <div className="counter-garment-grid" aria-label="Garments">
+  return <>
+  {catalogue && nothingIsSellable(catalogue) && <p className="counter-no-rates" role="status">No prices are set yet. Ask the owner to set the rate card.</p>}
+  <div className="counter-garment-grid" aria-label="Garments">
     {(catalogue?.garments||[]).filter(g=>g.active).map(g=>{
       const rate=catalogue?.rates.find(r=>r.garmentId===g.id&&r.serviceId===serviceId);
       const key=`${g.id}|${serviceId}`; const quantity=lines[key]||0;
-      const forbidden=g.billingUnit==='pair'&&(service?.key==='iron'||service?.key==='wash_iron');
-      const available=!!rate?.available&&!!rate.configured&&!forbidden;
+      const forbidden=isForbidden(g,service);
+      const available=isSellable(g,service,rate);
       return <article className={`counter-garment ${available?'':'unavailable'}`} key={g.id}>
         <button type="button" className="counter-garment-picture" disabled={!available} aria-label={`Add ${g.nameEn}`} onClick={()=>onAdd(g.id)}>
           <GarmentPicture src={`/garments/${g.imageKey||g.key}-transparent.png`} label={g.nameEn} />
@@ -22,7 +36,8 @@ export const GarmentGrid = ({catalogue,serviceId,lines,onAdd,onQuantity}:{catalo
         </div>
       </article>;
     })}
-  </div>;
+  </div>
+  </>;
 };
 import { useState } from 'react';
 
