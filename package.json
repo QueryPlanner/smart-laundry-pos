@@ -20,6 +20,7 @@
     "build:desktop": "vite build --config vite.desktop.config.ts",
     "test:desktop": "vitest run --config vitest.desktop.config.ts",
     "test:desktop:coverage": "vitest run --config vitest.desktop.config.ts --coverage",
+    "tauri:build:windows": "tauri build --config src-tauri/tauri.windows.conf.json",
     "tauri:build:windows-review": "tauri build --config src-tauri/tauri.review.windows.conf.json"
   },
   "dependencies": {

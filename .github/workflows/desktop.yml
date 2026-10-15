@@ -134,19 +134,52 @@ jobs:
       - name: Install locked npm dependencies
         run: npm ci
 
-      - name: Test print document contract
-        run: npm run test:desktop -- src/lib/localFirst/printDocuments.test.ts
+      - name: Run desktop JavaScript tests
+        run: npm run test:desktop
 
-      - name: Check native Windows printing code
+      - name: Check native Windows code
         working-directory: src-tauri
         run: cargo check --locked --all-targets
 
-      - name: Build isolated Windows installer
+      - name: Run native tests on Windows
+        working-directory: src-tauri
+        run: cargo test --locked
+
+      - name: Run Rust clippy on Windows
+        working-directory: src-tauri
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      # Production installer (identifier com.smartlaundry.pos, offline WebView2).
+      # Unsigned: no signing secrets or certificate settings are referenced.
+      - name: Build production Windows installer
+        run: npm run tauri:build:windows
+
+      # Copy out immediately so the review build below cannot overwrite it.
+      - name: Stage production Windows installer
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path staging/production | Out-Null
+          Copy-Item "src-tauri/target/release/bundle/nsis/Smart Laundry POS_*-setup.exe" staging/production/
+
+      - name: Upload production Windows installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: smart-laundry-pos-windows
+          path: staging/production/*.exe
+          if-no-files-found: error
+
+      - name: Build isolated Windows review installer
         run: npm run tauri:build:windows-review
+
+      - name: Stage Windows review installer
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path staging/review | Out-Null
+          Copy-Item "src-tauri/target/release/bundle/nsis/Smart Laundry POS Review_*-setup.exe" staging/review/
 
       - name: Upload Windows review installer
         uses: actions/upload-artifact@v4
         with:
           name: smart-laundry-pos-windows-review
-          path: src-tauri/target/release/bundle/nsis/*.exe
+          path: staging/review/*.exe
           if-no-files-found: error

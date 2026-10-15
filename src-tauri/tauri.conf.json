@@ -28,7 +28,7 @@
   "bundle": {
     "active": true,
     "category": "Business",
-    "icon": ["../public/favicon-512.png"],
+    "icon": ["icons/icon.png", "icons/icon.ico"],
     "targets": ["app", "dmg"],
     "macOS": {
       "signingIdentity": "-"
