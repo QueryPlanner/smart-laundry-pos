@@ -12,6 +12,7 @@ import { Label } from '@/components/ui/label';
 const rupees = new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR' });
 
 /** Formats whole paise as rupees, e.g. 123456 → "₹1,234.56". */
+// eslint-disable-next-line react-refresh/only-export-components -- a pure helper shared by every page
 export const money = (minor: number): string => rupees.format(minor / 100);
 
 export const PageHeader = ({ title, subtitle, actions }: { title: string; subtitle?: string; actions?: ReactNode }) => (

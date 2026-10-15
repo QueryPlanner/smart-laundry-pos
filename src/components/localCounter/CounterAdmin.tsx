@@ -15,12 +15,12 @@ interface CounterAdminProps {
   onCatalogue: (catalogue: CounterCatalogue) => void;
   printers: NativePrinter[];
   onReloadPrinters: () => void;
-  onOldAdmin: () => void;
   onError: (error: unknown) => void;
   onNotice: (message: string) => void;
+  onRestoreStaged: () => void;
 }
 
-export const CounterAdmin = ({ catalogue, onCatalogue, printers, onReloadPrinters, onOldAdmin, onError, onNotice }: CounterAdminProps) => {
+export const CounterAdmin = ({ catalogue, onCatalogue, printers, onReloadPrinters, onError, onNotice, onRestoreStaged }: CounterAdminProps) => {
   const [tab, setTab] = useState<AdminTab>('rates');
   const [staff, setStaff] = useState<CounterAccount[]>([]);
   const [name, setName] = useState('');
@@ -53,7 +53,6 @@ export const CounterAdmin = ({ catalogue, onCatalogue, printers, onReloadPrinter
   return <section className="counter-panel counter-admin">
     <div className="counter-admin-heading">
       <div><span className="counter-section-label">Admin controls</span><h1>Rates, staff & printers</h1></div>
-      <Button variant="outline" onClick={onOldAdmin}>Open full admin workspace</Button>
     </div>
     <div className="counter-admin-tabs">
       {(Object.keys(TAB_LABEL) as AdminTab[]).map(t => <button key={t} className={tab === t ? 'selected' : ''} onClick={() => setTab(t)}>{TAB_LABEL[t]}</button>)}
@@ -77,7 +76,7 @@ export const CounterAdmin = ({ catalogue, onCatalogue, printers, onReloadPrinter
       }))}
     </div>}
     {tab === 'discounts' && <CounterDiscounts onError={onError} onNotice={onNotice} />}
-    {tab === 'backups' && <CounterBackups onError={onError} onNotice={onNotice} />}
+    {tab === 'backups' && <CounterBackups onError={onError} onNotice={onNotice} onRestoreStaged={onRestoreStaged} />}
     {tab === 'staff' && <>
       <form className="counter-add-staff" onSubmit={async e => {
         e.preventDefault();

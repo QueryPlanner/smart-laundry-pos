@@ -9,7 +9,12 @@
 //! (and unit-tested) but intentionally unused.
 #![cfg_attr(not(any(target_os = "windows", test)), allow(dead_code))]
 
-use crate::printing::{BillDocument, PrintDocument, PrintError, TagDocument, TagPiece};
+use crate::printing::{BillDocument, BillHeader, PrintDocument, PrintError, TagDocument, TagPiece};
+
+/// Title used when the saved bill carries no shop name (bills saved before shop settings).
+const DEFAULT_BILL_TITLE: &str = "SMART LAUNDRY";
+/// Closing line used when the shop has not set a receipt footer.
+const DEFAULT_BILL_FOOTER: &str = "Thank you";
 
 const POINTS_PER_LINE_HEIGHT: f32 = 1.3;
 const BILL_MARGIN_PT: f32 = 36.0;
@@ -135,6 +140,40 @@ pub fn safe_text(value: &str) -> String {
         .join(" ")
 }
 
+/// The bill title: the shop name, or the built-in title when none was saved.
+pub fn bill_title(header: &BillHeader) -> String {
+    let name = safe_text(&header.shop_name);
+    if name.is_empty() {
+        DEFAULT_BILL_TITLE.into()
+    } else {
+        name
+    }
+}
+
+/// Lines under the title: the address, then the phone. Empty fields are left out entirely.
+pub fn bill_header_lines(header: &BillHeader) -> Vec<String> {
+    let mut lines = Vec::new();
+    let address = safe_text(&header.address);
+    if !address.is_empty() {
+        lines.push(address);
+    }
+    let phone = safe_text(&header.phone);
+    if !phone.is_empty() {
+        lines.push(format!("Tel: {phone}"));
+    }
+    lines
+}
+
+/// The closing line: the shop's receipt footer, or a plain thank-you when none was saved.
+pub fn bill_footer(header: &BillHeader) -> String {
+    let footer = safe_text(&header.footer);
+    if footer.is_empty() {
+        DEFAULT_BILL_FOOTER.into()
+    } else {
+        footer
+    }
+}
+
 struct Block {
     text: String,
     size_pt: f32,
@@ -152,8 +191,11 @@ fn block(text: impl Into<String>, size_pt: f32, bold: bool, gap_before_pt: f32) 
 }
 
 fn bill_blocks(bill: &BillDocument) -> Vec<Block> {
-    let mut blocks = vec![
-        block("SMART LAUNDRY", 18.0, true, 0.0),
+    let mut blocks = vec![block(bill_title(&bill.header), 18.0, true, 0.0)];
+    for (index, line) in bill_header_lines(&bill.header).into_iter().enumerate() {
+        blocks.push(block(line, 10.0, false, if index == 0 { 2.0 } else { 1.0 }));
+    }
+    blocks.extend([
         block(
             format!("Bill: {}", safe_text(&bill.order_number)),
             12.0,
@@ -172,7 +214,7 @@ fn bill_blocks(bill: &BillDocument) -> Vec<Block> {
             false,
             2.0,
         ),
-    ];
+    ]);
     let phone = safe_text(&bill.customer_phone);
     if !phone.is_empty() {
         blocks.push(block(format!("Phone: {phone}"), 10.0, false, 2.0));
@@ -254,7 +296,7 @@ fn bill_blocks(bill: &BillDocument) -> Vec<Block> {
         true,
         12.0,
     ));
-    blocks.push(block("Thank you", 10.0, false, 8.0));
+    blocks.push(block(bill_footer(&bill.header), 10.0, false, 8.0));
     blocks
 }
 
@@ -431,6 +473,7 @@ mod tests {
 
     fn bill(items: usize) -> BillDocument {
         BillDocument {
+            header: BillHeader::default(),
             order_number: "LA-2026-00123".into(),
             created_at_ist: "15 Oct 2026 10:30 AM".into(),
             promised_at_ist: "17 Oct 2026 05:00 PM".into(),
@@ -719,5 +762,132 @@ mod tests {
         document.customer_phone = "  ".into();
         let pages = layout_bill(&document, A4, &FakeMeter).unwrap();
         assert!(!texts(&pages[0]).iter().any(|l| l.starts_with("Phone")));
+    }
+
+    const BILL_80MM: PageSpec = PageSpec {
+        width_pt: 226.0,
+        height_pt: 600.0,
+    };
+
+    fn full_header() -> BillHeader {
+        BillHeader {
+            shop_name: "Sunrise Cleaners".into(),
+            address: "12 MG Road, Pune".into(),
+            phone: "020 5550 1234".into(),
+            footer: "Visit again soon".into(),
+        }
+    }
+
+    #[test]
+    fn bill_header_prints_name_address_and_phone_above_the_bill_number() {
+        let mut document = bill(1);
+        document.header = full_header();
+        let pages = layout_bill(&document, A4, &FakeMeter).unwrap();
+        let lines = texts(&pages[0]);
+        assert_eq!(
+            lines[..4],
+            [
+                "Sunrise Cleaners",
+                "12 MG Road, Pune",
+                "Tel: 020 5550 1234",
+                "Bill: LA-2026-00123"
+            ]
+        );
+        assert_eq!(pages[0].lines[0].size_pt, 18.0);
+        assert!(pages[0].lines[1].size_pt < pages[0].lines[0].size_pt);
+        assert!(!lines.contains(&"SMART LAUNDRY"));
+        assert_eq!(lines.last(), Some(&"Visit again soon"));
+        assert!(!lines.contains(&"Thank you"));
+    }
+
+    #[test]
+    fn empty_header_fields_are_omitted_and_defaults_apply() {
+        let mut document = bill(1);
+        document.header = BillHeader {
+            shop_name: "  ".into(),
+            address: "".into(),
+            phone: "\n".into(),
+            footer: " ".into(),
+        };
+        let pages = layout_bill(&document, A4, &FakeMeter).unwrap();
+        let lines = texts(&pages[0]);
+        assert_eq!(lines[0], "SMART LAUNDRY");
+        assert_eq!(lines[1], "Bill: LA-2026-00123");
+        assert!(!lines.iter().any(|l| l.starts_with("Tel")));
+        assert_eq!(lines.last(), Some(&"Thank you"));
+        let name_only = BillHeader {
+            shop_name: "Only Name".into(),
+            ..BillHeader::default()
+        };
+        document.header = name_only;
+        let pages = layout_bill(&document, A4, &FakeMeter).unwrap();
+        assert_eq!(texts(&pages[0])[..2], ["Only Name", "Bill: LA-2026-00123"]);
+    }
+
+    #[test]
+    fn long_shop_name_address_and_footer_wrap_on_an_80mm_bill() {
+        let mut document = bill(1);
+        document.header = BillHeader {
+            shop_name: "Sunrise Premium Dry Cleaners And Laundry Services".into(),
+            address: "Shop 12, Ground Floor, Mahatma Gandhi Road, Near The Old Market, Pune".into(),
+            phone: "020 5550 1234".into(),
+            footer: "Thank you for choosing us. Collect within 30 days or items may be donated."
+                .into(),
+        };
+        let pages = layout_bill(&document, BILL_80MM, &FakeMeter).unwrap();
+        for page in &pages {
+            assert_within(page, BILL_80MM);
+        }
+        let first = texts(&pages[0]);
+        let name_lines = first
+            .iter()
+            .take_while(|l| !l.starts_with("Shop") && !l.starts_with("Mahatma"))
+            .count();
+        assert!(name_lines > 1, "a long shop name wraps: {first:?}");
+        let joined = pages
+            .iter()
+            .flat_map(|p| p.lines.iter())
+            .map(|l| l.text.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(joined.contains("Collect within 30 days"));
+        assert!(joined.contains("Near The Old Market"));
+    }
+
+    #[test]
+    fn header_is_on_the_first_page_and_footer_on_the_last_page_only() {
+        let mut document = bill(40);
+        document.header = full_header();
+        let pages = layout_bill(&document, A4, &FakeMeter).unwrap();
+        assert!(pages.len() > 1);
+        let count = |page: &LaidOutPage, needle: &str| {
+            page.lines.iter().filter(|l| l.text == needle).count()
+        };
+        assert_eq!(count(&pages[0], "Sunrise Cleaners"), 1);
+        assert_eq!(count(&pages[0], "Visit again soon"), 0);
+        for page in &pages[1..] {
+            assert_eq!(count(page, "Sunrise Cleaners"), 0);
+            assert_eq!(count(page, "Tel: 020 5550 1234"), 0);
+        }
+        let last = pages.last().unwrap();
+        assert_eq!(count(last, "Visit again soon"), 1);
+        let footer_total: usize = pages.iter().map(|p| count(p, "Visit again soon")).sum();
+        assert_eq!(footer_total, 1);
+        for page in &pages {
+            assert_within(page, A4);
+        }
+    }
+
+    #[test]
+    fn header_control_characters_cannot_reach_the_printer() {
+        let header = BillHeader {
+            shop_name: "Shop\u{1b}[0mName".into(),
+            address: "Line1\nLine2".into(),
+            phone: "\u{7}".into(),
+            footer: "Bye\r\n".into(),
+        };
+        assert_eq!(bill_title(&header), "Shop [0mName");
+        assert_eq!(bill_header_lines(&header), vec!["Line1 Line2"]);
+        assert_eq!(bill_footer(&header), "Bye");
     }
 }

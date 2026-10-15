@@ -171,94 +171,143 @@ fn commands_round_trip_through_mock_ipc() {
     let responses = run_mock_app(
         move |_| Ok(resolver_path),
         vec![
+            ("counter_bootstrap".to_string(), json!({})),
+            ("counter_backup_now".to_string(), json!({})),
             (
-                "local_select".to_string(),
-                json!({"query": "SELECT 1 AS answer", "values": []}),
-            ),
-            (
-                "local_read_batch".to_string(),
-                json!({
-                    "statements": [
-                        {"sql": "SELECT 2 AS answer", "values": [], "mode": "select"}
-                    ]
-                }),
-            ),
-            (
-                "local_read_batch".to_string(),
-                json!({"statements": [{"sql": "DELETE FROM app_settings", "mode": "select"}]}),
-            ),
-            (
-                "local_batch".to_string(),
-                json!({
-                    "statements": [
-                        {
-                            "sql": "INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)",
-                            "values": ["ipc-marker", "before-restore"],
-                            "expectedRows": 1,
-                            "error": "IPC insert should affect one row"
-                        }
-                    ]
-                }),
-            ),
-            (
-                "local_batch".to_string(),
-                json!({"statements": [{"sql": "SELECT 1"}]}),
-            ),
-            ("local_database_info".to_string(), json!({})),
-            ("backup_database".to_string(), json!({})),
-            (
-                "restore_database".to_string(),
+                "counter_restore_backup".to_string(),
                 json!({"sourcePath": live_path.to_string_lossy()}),
             ),
             (
-                "restore_database".to_string(),
+                "counter_restore_backup".to_string(),
                 json!({"sourcePath": source_path.to_string_lossy()}),
             ),
-            ("local_database_info".to_string(), json!({})),
-            ("local_batch".to_string(), json!({"statements": []})),
+            ("counter_bootstrap".to_string(), json!({})),
+            (
+                "counter_set_backup_mirror".to_string(),
+                json!({"directory": null}),
+            ),
         ],
     );
 
-    assert_eq!(responses[0], Ok(json!([{"answer": 1}])));
-    assert_eq!(responses[1], Ok(json!([[{"answer": 2}]])));
-    assert!(responses[2].is_err());
-    let batch = responses[3]
+    let info = responses[0]
         .as_ref()
-        .expect("local batch should return a serialized result");
-    assert_eq!(batch[0]["rowsAffected"], 1);
-    assert!(batch[0].get("lastInsertId").is_some());
-    assert!(responses[4].is_err());
-
-    let info = responses[5]
-        .as_ref()
-        .expect("database info should serialize as JSON");
-    assert_eq!(info["path"], live_path.to_string_lossy().as_ref());
+        .expect("bootstrap should serialize as JSON");
     assert_eq!(info["restorePending"], false);
-    assert!(info.get("error").is_none());
+    assert_eq!(info["authenticated"], true);
 
-    let backup_path = responses[6]
+    let backup = responses[1]
         .as_ref()
-        .expect("backup command should return its path");
-    let backup_path = PathBuf::from(
-        backup_path
+        .expect("backup command should return the backup settings");
+    assert!(backup["lastBackupAt"].is_string());
+    let folder = PathBuf::from(
+        backup["folder"]
             .as_str()
-            .expect("backup path should serialize as a string"),
+            .expect("backup folder should serialize as a string"),
     );
-    assert!(backup_path.exists());
-    assert!(responses[7].is_err());
-    let staged_restore = &responses[8];
+    assert!(folder.exists());
+    assert!(
+        responses[2].is_err(),
+        "the active database is not a valid backup to restore"
+    );
     assert_eq!(
-        staged_restore
+        responses[3]
             .as_ref()
             .expect("restore command should stage the replacement")
             .as_str(),
         Some("Restore staged. Close and reopen the app to apply it.")
     );
-    let staged_info = responses[9]
+    let staged = responses[4]
         .as_ref()
-        .expect("database info should serialize after staging");
-    assert_eq!(staged_info["restorePending"], true);
-    assert!(responses[10].is_err());
+        .expect("bootstrap should serialize after staging");
+    assert_eq!(staged["restorePending"], true);
+    assert!(responses[5]
+        .as_ref()
+        .expect_err("writes are blocked once a restore is staged")
+        .as_str()
+        .is_some_and(|message| message.contains("restore is staged")),);
+}
+
+#[test]
+fn the_raw_sql_bridge_and_unguarded_backup_commands_are_not_registered() {
+    let live = TempDirectory::new();
+    let path = live.database_path();
+    let retired = [
+        "local_select",
+        "local_read_batch",
+        "local_batch",
+        "local_database_info",
+        "backup_database",
+        "restore_database",
+    ];
+    let requests = retired
+        .iter()
+        .map(|name| {
+            (
+                name.to_string(),
+                json!({"query": "SELECT 1", "values": [], "statements": [], "sourcePath": "x.db"}),
+            )
+        })
+        .collect();
+    let responses = run_mock_app(move |_| Ok(path), requests);
+    for (name, response) in retired.iter().zip(responses) {
+        let error = response.expect_err("a retired command must not be callable");
+        assert!(
+            error.to_string().contains("not found"),
+            "{name} should be unknown, got {error}"
+        );
+    }
+}
+
+#[test]
+fn a_staff_session_cannot_restore_or_back_up_through_the_ipc_layer() {
+    let live = TempDirectory::new();
+    let path = live.database_path();
+    let source = TempDirectory::new();
+    let source_path = source.database_path();
+    tauri::async_runtime::block_on(async {
+        assert_eq!(
+            DatabaseState::open(source_path.clone()).await.info().error,
+            None
+        );
+    });
+    let staff_source = source_path.to_string_lossy().into_owned();
+    let app = app_builder(mock_builder(), move |_| Ok(path), None)
+        .build(mock_context(noop_assets()))
+        .expect("mock Tauri app should build");
+    let window = WebviewWindowBuilder::new(&app, "main", WebviewUrl::App("index.html".into()))
+        .build()
+        .expect("mock webview should build");
+    let responses = Arc::new(Mutex::new(Vec::new()));
+    let recorded = Arc::clone(&responses);
+    app.run_return(move |app, event| {
+        if matches!(event, tauri::RunEvent::Ready) {
+            app.state::<crate::counter::CounterSession>()
+                .set(crate::counter::SessionActor {
+                    id: "fixture-staff".into(),
+                    role: "staff".into(),
+                })
+                .expect("test session should be initialized");
+            let mut results = recorded.lock().expect("response storage");
+            results.push(invoke(
+                &window,
+                "counter_restore_backup",
+                json!({"sourcePath": staff_source}),
+            ));
+            results.push(invoke(&window, "counter_backup_now", json!({})));
+            window.destroy().expect("mock window should be destroyed");
+        }
+    });
+    let responses = Arc::try_unwrap(responses)
+        .expect("event loop released the responses")
+        .into_inner()
+        .expect("response storage");
+    for response in responses {
+        let error = response.expect_err("staff cannot restore or back up");
+        assert!(
+            error.to_string().contains("Administrator access"),
+            "{error}"
+        );
+    }
 }
 
 #[test]
@@ -283,26 +332,35 @@ fn mock_startup_applies_staged_restore_before_serving_commands() {
         assert!(staged.starts_with("Restore staged."));
     });
 
-    let resolver_path = live_path;
+    let resolver_path = live_path.clone();
     let responses = run_mock_app(
         move |_| Ok(resolver_path),
-        vec![
-            ("local_database_info".to_string(), json!({})),
-            (
-                "local_select".to_string(),
-                json!({
-                    "query": "SELECT value FROM app_settings WHERE key = ?",
-                    "values": ["restore-marker"]
-                }),
-            ),
-        ],
+        vec![("counter_bootstrap".to_string(), json!({}))],
     );
     let info = responses[0]
         .as_ref()
-        .expect("database info should serialize after startup recovery");
+        .expect("bootstrap should serialize after startup recovery");
     assert_eq!(info["restorePending"], false);
     assert!(info.get("error").is_none());
-    assert_eq!(responses[1], Ok(json!([{"value": "from-source"}])));
+
+    // The application's own startup ran the staged restore: the replacement's marker is live.
+    tauri::async_runtime::block_on(async {
+        // The app still holds its instance lock, so read the file directly (read-only).
+        let options = sqlx::sqlite::SqliteConnectOptions::new()
+            .filename(&live_path)
+            .read_only(true);
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .expect("restored database should open read-only");
+        let marker: String =
+            sqlx::query_scalar("SELECT value FROM app_settings WHERE key = 'restore-marker'")
+                .fetch_one(&pool)
+                .await
+                .expect("restored database should contain the marker");
+        assert_eq!(marker, "from-source");
+    });
 }
 
 #[test]
@@ -310,43 +368,30 @@ fn unavailable_database_state_is_serialized_through_every_command() {
     let failure = "injected app config directory failure".to_string();
     let resolver_failure = failure.clone();
     let requests = vec![
-        ("local_database_info".to_string(), json!({})),
+        ("counter_bootstrap".to_string(), json!({})),
+        ("counter_backup_now".to_string(), json!({})),
         (
-            "local_select".to_string(),
-            json!({"query": "SELECT 1", "values": []}),
-        ),
-        (
-            "local_read_batch".to_string(),
-            json!({"statements": [{"sql": "SELECT 1", "mode": "select"}]}),
-        ),
-        (
-            "local_batch".to_string(),
-            json!({"statements": [{"sql": "INSERT INTO app_settings (key, value, updated_at) VALUES ('k', 'v', CURRENT_TIMESTAMP)"}]}),
-        ),
-        ("backup_database".to_string(), json!({})),
-        (
-            "restore_database".to_string(),
+            "counter_restore_backup".to_string(),
             json!({"sourcePath": "unused.db"}),
+        ),
+        (
+            "counter_set_backup_mirror".to_string(),
+            json!({"directory": null}),
         ),
     ];
     let responses = run_mock_app(move |_| Err(resolver_failure), requests);
 
-    let info = responses[0]
-        .as_ref()
-        .expect("unavailable database info should serialize");
-    assert_eq!(info["error"], failure);
-
+    // The start-up failure reaches the screen as the bootstrap error, so the owner is told why.
     for (index, command) in [
-        "local_select",
-        "local_read_batch",
-        "local_batch",
-        "backup_database",
-        "restore_database",
+        "counter_bootstrap",
+        "counter_backup_now",
+        "counter_restore_backup",
+        "counter_set_backup_mirror",
     ]
     .into_iter()
     .enumerate()
     {
-        let error = responses[index + 1]
+        let error = responses[index]
             .as_ref()
             .expect_err("unavailable database command should return an IPC error");
         assert_eq!(error, &Value::String(failure.clone()), "{command}");
@@ -384,7 +429,7 @@ fn the_running_app_keeps_backing_up_in_the_background() {
     let path = live.database_path();
     let responses = run_mock_app_with(
         move |_| Ok(path),
-        vec![("local_database_info".to_string(), json!({}))],
+        vec![("counter_bootstrap".to_string(), json!({}))],
         Some(Duration::from_millis(60)),
         Duration::from_millis(900),
     );
@@ -402,7 +447,7 @@ fn without_a_periodic_interval_only_the_startup_backup_is_taken() {
     let path = live.database_path();
     run_mock_app_with(
         move |_| Ok(path),
-        vec![("local_database_info".to_string(), json!({}))],
+        vec![("counter_bootstrap".to_string(), json!({}))],
         None,
         Duration::from_millis(300),
     );
@@ -426,7 +471,7 @@ fn a_reset_file_resets_the_admin_pin_at_startup_and_is_reported_then_deleted() {
     let resolver = path.clone();
     let responses = run_mock_app(
         move |_| Ok(resolver),
-        vec![("local_database_info".to_string(), json!({}))],
+        vec![("counter_bootstrap".to_string(), json!({}))],
     );
     let info = responses[0].as_ref().unwrap();
     assert!(
@@ -445,14 +490,14 @@ fn a_quick_restart_does_not_make_another_backup() {
     let first_path = path.clone();
     run_mock_app_with(
         move |_| Ok(first_path),
-        vec![("local_database_info".to_string(), json!({}))],
+        vec![("counter_bootstrap".to_string(), json!({}))],
         None,
         Duration::from_millis(400),
     );
     assert_eq!(backup_files(&live), 1, "the first start saves a backup");
     run_mock_app_with(
         move |_| Ok(path),
-        vec![("local_database_info".to_string(), json!({}))],
+        vec![("counter_bootstrap".to_string(), json!({}))],
         None,
         Duration::from_millis(400),
     );

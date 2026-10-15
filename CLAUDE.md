@@ -334,7 +334,13 @@ The application supports three service types defined in the database:
 
 ### Known Limitations
 - Vitest covers web business helpers and desktop business logic.
-- Desktop CI validates JavaScript, the web build, and Rust storage.
+- Desktop CI validates JavaScript, the web build, and the Rust code (`cargo fmt`, `test`, `clippy`).
+- The desktop app is one workspace (the counter) with role-checked native `counter_*` commands only. The old
+  second workspace and its raw SQL bridge are gone; `DatabaseState::local_*` SQL helpers exist only under
+  `#[cfg(test)]`. New native commands must check the session role inside the command (admin writes with
+  `require_admin_in_tx`), and the drift guard `src/lib/localFirst/commands.guard.test.ts` requires a TS wrapper.
+- The desktop app has never been run on Windows or printed on the shop's printers. See
+  `docs/DESKTOP_ACCEPTANCE.md`.
 - Service worker may need manual unregister during development
 - WhatsApp integration requires external API setup
 

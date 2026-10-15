@@ -36,3 +36,22 @@ export const SECTION_ROLES: Record<SectionId, ReadonlyArray<CounterAccount['role
 
 export const canOpen = (section: SectionId, role: CounterAccount['role']): boolean =>
   SECTION_ROLES[section].includes(role);
+
+export interface NavGroup {
+  label: string;
+  sections: ReadonlyArray<{ id: SectionId; label: string }>;
+}
+
+/** The navigation as the shell lays it out, in order. Roles that may not open a section never see it. */
+export const NAV_GROUPS: ReadonlyArray<NavGroup> = [
+  { label: 'Counter', sections: [{ id: 'order', label: 'New order' }, { id: 'orders', label: 'Orders / Pickup' }, { id: 'queue', label: 'Print queue' }] },
+  { label: 'Insights', sections: [{ id: 'dashboard', label: 'Dashboard' }, { id: 'sales', label: 'Sales' }] },
+  { label: 'Shop', sections: [{ id: 'customers', label: 'Customers' }, { id: 'expenses', label: 'Expenses' }, { id: 'inventory', label: 'Inventory' }, { id: 'machines', label: 'Machines' }] },
+  { label: 'Admin', sections: [{ id: 'admin', label: 'Admin' }, { id: 'settings', label: 'Shop settings' }] },
+];
+
+/** The groups (and the sections inside them) the given role may open; empty groups are dropped. */
+export const visibleNavGroups = (role: CounterAccount['role']): NavGroup[] =>
+  NAV_GROUPS
+    .map(group => ({ ...group, sections: group.sections.filter(section => canOpen(section.id, role)) }))
+    .filter(group => group.sections.length > 0);

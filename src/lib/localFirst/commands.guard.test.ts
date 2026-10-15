@@ -32,4 +32,9 @@ describe('native command drift guard', () => {
     const unused = [...registeredCommands()].filter(command => command.startsWith('counter_') && !called.has(command));
     expect(unused).toEqual([]);
   });
+
+  it('registers no command outside the role-checked counter_* set (no raw SQL or unguarded backup commands)', () => {
+    const outside = [...registeredCommands()].filter(command => !command.startsWith('counter_'));
+    expect(outside).toEqual([]);
+  });
 });

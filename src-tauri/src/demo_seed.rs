@@ -395,7 +395,7 @@ fn seed_demo_month() {
         // Lifecycle: mistakes get cancelled, work moves through the plant, customers collect.
         let end_of_data = ist(last_day, 21, 0);
         for (index, sim) in sims.iter_mut().enumerate() {
-            let session = &staff_sessions[(index % 2) as usize];
+            let session = &staff_sessions[index % 2];
             if rng.chance(2) {
                 let at = sim.received + Duration::hours(1);
                 cancel_order(&db, &admin, &sim.id, "Entered twice by mistake")

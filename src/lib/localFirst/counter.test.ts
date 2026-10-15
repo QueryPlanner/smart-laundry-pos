@@ -31,6 +31,7 @@ const table: Array<[string, () => Promise<unknown>, string, Record<string, unkno
   ['getCounterBackupSettings', () => counter.getCounterBackupSettings(), 'counter_backup_settings', undefined],
   ['setCounterBackupMirror', () => counter.setCounterBackupMirror('E:\\Backups'), 'counter_set_backup_mirror', { directory: 'E:\\Backups' }],
   ['runCounterBackup', () => counter.runCounterBackup(), 'counter_backup_now', undefined],
+  ['restoreCounterBackup', () => counter.restoreCounterBackup('E:\\Backups\\laundry-1.db'), 'counter_restore_backup', { sourcePath: 'E:\\Backups\\laundry-1.db' }],
   ['quoteCounterOrder', () => counter.quoteCounterOrder(order), 'counter_quote_order', { input: order }],
   ['saveCounterOrder', () => counter.saveCounterOrder({ ...order, reviewedQuote: quote, idempotencyKey: 'k' }), 'counter_save_order', { input: { ...order, reviewedQuote: quote, idempotencyKey: 'k' } }],
   ['getOrderPieces', () => counter.getOrderPieces('o'), 'counter_get_order_pieces', { orderId: 'o' }],

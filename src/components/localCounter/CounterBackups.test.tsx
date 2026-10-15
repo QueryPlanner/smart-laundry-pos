@@ -5,18 +5,23 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { CounterBackups } from './CounterBackups';
 import type { CounterBackupSettings } from '@/lib/localFirst/counter';
 
-const api = vi.hoisted(() => ({ getCounterBackupSettings: vi.fn(), setCounterBackupMirror: vi.fn(), runCounterBackup: vi.fn() }));
+const api = vi.hoisted(() => ({ getCounterBackupSettings: vi.fn(), setCounterBackupMirror: vi.fn(), runCounterBackup: vi.fn(), restoreCounterBackup: vi.fn() }));
+const dialog = vi.hoisted(() => ({ open: vi.fn(), confirm: vi.fn() }));
 vi.mock('@/lib/localFirst/counter', () => api);
+vi.mock('@tauri-apps/plugin-dialog', () => dialog);
 
 const recent = new Date(Date.now() - 60 * 60 * 1000).toISOString();
 const old = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString();
 const base: CounterBackupSettings = { folder: 'C:\\Data\\backups', mirrorDir: null, mirrorStatus: null, lastBackupAt: recent };
-const setup = () => { const onError = vi.fn(); const onNotice = vi.fn(); render(<CounterBackups onError={onError} onNotice={onNotice} />); return { onError, onNotice }; };
+const setup = () => { const onError = vi.fn(); const onNotice = vi.fn(); const onRestoreStaged = vi.fn(); render(<CounterBackups onError={onError} onNotice={onNotice} onRestoreStaged={onRestoreStaged} />); return { onError, onNotice, onRestoreStaged }; };
 beforeEach(() => {
   vi.clearAllMocks();
   api.getCounterBackupSettings.mockResolvedValue(base);
   api.runCounterBackup.mockResolvedValue({ ...base, lastBackupAt: new Date().toISOString() });
   api.setCounterBackupMirror.mockResolvedValue(undefined);
+  api.restoreCounterBackup.mockResolvedValue('Restore staged. Close and reopen the app to apply it.');
+  dialog.open.mockResolvedValue('E:\\Backups\\laundry-1.db');
+  dialog.confirm.mockResolvedValue(true);
 });
 afterEach(cleanup);
 
@@ -84,5 +89,60 @@ describe('CounterBackups', () => {
     fireEvent.change(screen.getByLabelText(/Second backup folder/), { target: { value: 'E:\\X' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save second backup folder' }));
     await waitFor(() => expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'not writable' })));
+  });
+
+  describe('restore from a backup', () => {
+    const restoreButton = () => screen.getByRole('button', { name: /Restore from backup/ });
+
+    it('picks a database file, asks for confirmation that warns about accounts and PINs, then stages it', async () => {
+      const { onNotice, onRestoreStaged, onError } = setup();
+      await screen.findByText('C:\\Data\\backups');
+      fireEvent.click(restoreButton());
+      await waitFor(() => expect(onRestoreStaged).toHaveBeenCalledTimes(1));
+      expect(dialog.open).toHaveBeenCalledWith(expect.objectContaining({ multiple: false, directory: false, filters: [{ name: 'SQLite database', extensions: ['db'] }] }));
+      const [message, options] = dialog.confirm.mock.calls[0];
+      expect(message).toMatch(/accounts and PINs/);
+      expect(message).toMatch(/deactivated/);
+      expect(message).toMatch(/safety copy/);
+      expect(options).toEqual(expect.objectContaining({ kind: 'warning', okLabel: 'Stage restore' }));
+      expect(api.restoreCounterBackup).toHaveBeenCalledExactlyOnceWith('E:\\Backups\\laundry-1.db');
+      expect(onNotice).toHaveBeenCalledWith('Restore staged. Close and reopen the app to apply it.');
+      expect(onError).not.toHaveBeenCalled();
+      expect((restoreButton() as HTMLButtonElement).disabled).toBe(false);
+    });
+
+    it('does nothing when the file chooser is cancelled', async () => {
+      dialog.open.mockResolvedValue(null);
+      const { onRestoreStaged, onError } = setup();
+      await screen.findByText('C:\\Data\\backups');
+      fireEvent.click(restoreButton());
+      await waitFor(() => expect(dialog.open).toHaveBeenCalled());
+      await waitFor(() => expect((restoreButton() as HTMLButtonElement).disabled).toBe(false));
+      expect(dialog.confirm).not.toHaveBeenCalled();
+      expect(api.restoreCounterBackup).not.toHaveBeenCalled();
+      expect(onRestoreStaged).not.toHaveBeenCalled();
+      expect(onError).not.toHaveBeenCalled();
+    });
+
+    it('does nothing when the confirmation is declined', async () => {
+      dialog.confirm.mockResolvedValue(false);
+      const { onRestoreStaged } = setup();
+      await screen.findByText('C:\\Data\\backups');
+      fireEvent.click(restoreButton());
+      await waitFor(() => expect(dialog.confirm).toHaveBeenCalled());
+      await waitFor(() => expect((restoreButton() as HTMLButtonElement).disabled).toBe(false));
+      expect(api.restoreCounterBackup).not.toHaveBeenCalled();
+      expect(onRestoreStaged).not.toHaveBeenCalled();
+    });
+
+    it('reports a refused or failed restore and does not mark one as staged', async () => {
+      api.restoreCounterBackup.mockRejectedValue(new Error('Administrator access is required to restore a backup.'));
+      const { onError, onRestoreStaged } = setup();
+      await screen.findByText('C:\\Data\\backups');
+      fireEvent.click(restoreButton());
+      await waitFor(() => expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining('Administrator access') })));
+      expect(onRestoreStaged).not.toHaveBeenCalled();
+      expect((restoreButton() as HTMLButtonElement).disabled).toBe(false);
+    });
   });
 });

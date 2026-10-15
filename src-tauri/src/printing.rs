@@ -8,6 +8,8 @@
 use crate::print_layout::format_money;
 #[cfg(any(target_os = "windows", target_os = "linux", test))]
 use crate::print_layout::safe_text;
+#[cfg(any(target_os = "linux", test))]
+use crate::print_layout::{bill_footer, bill_header_lines, bill_title};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 #[cfg(any(target_os = "windows", test))]
@@ -33,9 +35,32 @@ pub struct BillItem {
     pub line_total_minor: i64,
 }
 
+/// Shop identity printed on a bill, copied from the shop settings when the order is saved so that
+/// a reprint matches the original bill even after the settings change. Every field may be empty
+/// (and all are for bills saved before shop settings existed): an empty shop name falls back to
+/// the built-in title, and empty address, phone and footer lines are simply left out.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BillHeader {
+    #[serde(default)]
+    pub shop_name: String,
+    #[serde(default)]
+    pub address: String,
+    #[serde(default)]
+    pub phone: String,
+    #[serde(default)]
+    pub footer: String,
+}
+
+/// Longest header or footer text a bill document may carry; the settings screen allows less.
+pub(crate) const MAX_HEADER_FIELD_CHARS: usize = 200;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct BillDocument {
+    /// Absent in documents saved before shop settings were printed.
+    #[serde(default)]
+    pub header: BillHeader,
     pub order_number: String,
     pub created_at_ist: String,
     pub promised_at_ist: String,
@@ -70,6 +95,9 @@ pub struct TagDocument {
     pub pieces: Vec<TagPiece>,
 }
 
+// A bill is built once per order and consumed immediately, so the size gap between the two
+// variants costs nothing worth boxing for.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", content = "document", rename_all = "camelCase")]
 pub enum PrintDocument {
@@ -262,6 +290,18 @@ fn validate_document(document: &PrintDocument) -> Result<(), PrintError> {
             nonempty(&bill.customer_name, "customer name")?;
             nonempty(&bill.created_at_ist, "created time")?;
             nonempty(&bill.promised_at_ist, "promised time")?;
+            let header = &bill.header;
+            if [
+                &header.shop_name,
+                &header.address,
+                &header.phone,
+                &header.footer,
+            ]
+            .iter()
+            .any(|field| field.chars().count() > MAX_HEADER_FIELD_CHARS)
+            {
+                return Err(PrintError::Invalid("bill header text is too long".into()));
+            }
             if bill.physical_piece_count == 0 || bill.items.iter().any(|item| item.quantity == 0) {
                 return Err(PrintError::Invalid(
                     "bill quantities must be positive".into(),
@@ -351,14 +391,16 @@ fn validate_document(document: &PrintDocument) -> Result<(), PrintError> {
 fn render_lines(document: &PrintDocument) -> Vec<Vec<String>> {
     match document {
         PrintDocument::Bill(bill) => {
-            let mut lines = vec![vec![
-                "SMART LAUNDRY".into(),
+            let mut head: Vec<String> = vec![bill_title(&bill.header)];
+            head.extend(bill_header_lines(&bill.header));
+            let mut lines = vec![head];
+            lines[0].extend([
                 format!("Bill: {}", safe_text(&bill.order_number)),
                 format!("Date: {}", safe_text(&bill.created_at_ist)),
                 format!("Customer: {}", safe_text(&bill.customer_name)),
                 format!("Phone: {}", safe_text(&bill.customer_phone)),
                 "----------------------------------------".into(),
-            ]];
+            ]);
             for item in &bill.items {
                 lines[0].push(format!(
                     "{} / {}  x{}",
@@ -384,7 +426,7 @@ fn render_lines(document: &PrintDocument) -> Vec<Vec<String>> {
                 format!("Paid: {}", format_money(bill.paid_minor)),
                 format!("Balance: {}", format_money(bill.balance_minor)),
                 format!("Ready by: {}", safe_text(&bill.promised_at_ist)),
-                "Thank you".into(),
+                bill_footer(&bill.header),
             ]);
             lines
         }
@@ -1016,6 +1058,7 @@ mod tests {
     }
     fn bill() -> PrintDocument {
         PrintDocument::Bill(BillDocument {
+            header: BillHeader::default(),
             order_number: "SL-103".into(),
             created_at_ist: "15 Oct 2026 10:30 IST".into(),
             promised_at_ist: "17 Oct 2026 17:00 IST".into(),
@@ -1056,6 +1099,68 @@ mod tests {
         ] {
             assert!(text.contains(expected), "missing {expected}");
         }
+    }
+    fn bill_with_header(header: BillHeader) -> BillDocument {
+        let PrintDocument::Bill(mut value) = bill() else {
+            unreachable!()
+        };
+        value.header = header;
+        value
+    }
+    #[test]
+    fn bill_header_and_footer_come_from_the_saved_document() {
+        let document = PrintDocument::Bill(bill_with_header(BillHeader {
+            shop_name: "Sunrise  Cleaners".into(),
+            address: "12 MG Road".into(),
+            phone: "020 5550 1234".into(),
+            footer: "Visit again".into(),
+        }));
+        validate_document(&document).unwrap();
+        let lines = render_lines(&document).concat();
+        assert_eq!(lines[0], "Sunrise Cleaners");
+        assert_eq!(lines[1], "12 MG Road");
+        assert_eq!(lines[2], "Tel: 020 5550 1234");
+        assert_eq!(lines.last().unwrap(), "Visit again");
+        assert!(!lines.iter().any(|l| l == "Thank you"));
+    }
+    #[test]
+    fn bill_without_a_saved_header_keeps_the_original_text() {
+        let lines = render_lines(&bill()).concat();
+        assert_eq!(lines[0], "SMART LAUNDRY");
+        assert!(lines[1].starts_with("Bill: "));
+        assert_eq!(lines.last().unwrap(), "Thank you");
+    }
+    #[test]
+    fn bills_saved_before_shop_settings_still_load() {
+        let mut json = serde_json::to_value(bill()).unwrap();
+        json["document"].as_object_mut().unwrap().remove("header");
+        let parsed: PrintDocument = serde_json::from_value(json).unwrap();
+        let PrintDocument::Bill(parsed) = parsed else {
+            unreachable!()
+        };
+        assert_eq!(parsed.header, BillHeader::default());
+        let partial: BillHeader = serde_json::from_str(r#"{"shopName":"Only Name"}"#).unwrap();
+        assert_eq!(partial.shop_name, "Only Name");
+        assert!(partial.footer.is_empty());
+    }
+    #[test]
+    fn oversized_header_text_is_rejected() {
+        for field in 0..4 {
+            let mut header = BillHeader::default();
+            let long = "x".repeat(MAX_HEADER_FIELD_CHARS + 1);
+            match field {
+                0 => header.shop_name = long,
+                1 => header.address = long,
+                2 => header.phone = long,
+                _ => header.footer = long,
+            }
+            assert!(validate_document(&PrintDocument::Bill(bill_with_header(header))).is_err());
+        }
+        let at_limit = BillHeader {
+            shop_name: "x".repeat(MAX_HEADER_FIELD_CHARS),
+            ..BillHeader::default()
+        };
+        validate_document(&PrintDocument::Bill(bill_with_header(at_limit))).unwrap();
     }
     #[test]
     fn invalid_tag_position_rejected() {

@@ -40,18 +40,17 @@ const quoteFor = (input: CounterOrderInput, total?: number) => {
 };
 const unauthenticated = (extra: Record<string, unknown> = {}) => ({ setupRequired: false, authenticated: false, account: null, accounts: [staff, admin, retired], warning: null, ...extra });
 
-const mount = (onAdminWorkspace = vi.fn()) => { render(<CounterApp onAdminWorkspace={onAdminWorkspace} />); return onAdminWorkspace; };
+const mount = () => { render(<CounterApp />); };
 const signIn = async (account: CounterAccount = staff) => {
   api.getCounterBootstrap.mockResolvedValue(unauthenticated());
   api.loginCounter.mockResolvedValue(account);
-  const onAdmin = mount();
+  mount();
   await screen.findByText('Choose your name and enter your PIN.');
   if (account.role === 'admin') fireEvent.click(screen.getByRole('button', { name: 'Admin' }));
   fireEvent.change(screen.getByLabelText('Name'), { target: { value: account.id } });
   fireEvent.change(screen.getByLabelText('PIN'), { target: { value: '1234' } });
   fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
   await screen.findByText('Choose service');
-  return onAdmin;
 };
 const nav = (name: string) => fireEvent.click(screen.getByRole('button', { name }));
 const openOrdersAndFirstOrder = async (results = [summary(1)]) => {
@@ -599,8 +598,8 @@ describe('failures in small actions are always shown, never swallowed', () => {
 });
 
 describe('administrator entry points', () => {
-  it('opens the full admin workspace and reloads the printer list for the administrator only', async () => {
-    const onAdmin = await signIn(admin);
+  it('reloads the printer list for the administrator only', async () => {
+    await signIn(admin);
     api.enumeratePrinters.mockResolvedValue([{ id: 'Canon', name: 'Canon', isDefault: false, isAvailable: true }]);
     nav('Admin');
     await screen.findByText('Rates, staff & printers');
@@ -608,8 +607,6 @@ describe('administrator entry points', () => {
     await waitFor(() => expect(api.getPrinterProfiles).toHaveBeenCalled());
     fireEvent.click(screen.getByRole('button', { name: 'Refresh printer list' }));
     await waitFor(() => expect(api.enumeratePrinters.mock.calls.length).toBeGreaterThan(1));
-    fireEvent.click(screen.getByRole('button', { name: 'Open full admin workspace' }));
-    expect(onAdmin).toHaveBeenCalledWith(admin);
   });
 
   it('reports an admin-panel error in the counter banner', async () => {
@@ -644,19 +641,19 @@ describe('protecting an order that is being taken', () => {
     expect((screen.getByLabelText('Shirt quantity') as HTMLInputElement).value).toBe('1');
   });
 
-  it('asks before New order from another page throws the draft away, and can keep or discard it', async () => {
+  it('asks before leaving the order page throws the draft away, and can keep or discard it', async () => {
     await signIn();
     await startOrder();
     nav('Orders / Pickup');
-    nav('New order');
     expect(dialog()?.textContent).toContain('You have an unsaved order. Discard it?');
     fireEvent.click(screen.getByRole('button', { name: 'Keep editing' }));
     expect(dialog()).toBeNull();
     expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('Rita Joshi');
     nav('Print queue');
-    nav('New order');
     fireEvent.click(screen.getByRole('button', { name: 'Discard order' }));
     expect(dialog()).toBeNull();
+    expect(screen.queryByLabelText('Mobile number')).toBeNull();
+    nav('New order');
     expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('');
     expect(screen.getByText('Tap garment pictures to add items.')).toBeTruthy();
   });
@@ -665,12 +662,11 @@ describe('protecting an order that is being taken', () => {
     await signIn();
     fireEvent.change(screen.getByLabelText('Mobile number'), { target: { value: '9876543210' } });
     nav('Print queue');
-    nav('New order');
     expect(dialog()).not.toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Discard order' }));
+    nav('New order');
     fireEvent.click(screen.getByRole('button', { name: 'Add Shirt' }));
     nav('Print queue');
-    nav('New order');
     expect(dialog()).not.toBeNull();
   });
 
@@ -711,29 +707,6 @@ describe('protecting an order that is being taken', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Discard order' }));
     expect((await screen.findByRole('alert')).textContent).toContain('could not be locked');
     expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('Rita Joshi');
-  });
-
-  it('asks before the full admin workspace replaces the counter while an order is open', async () => {
-    const onAdmin = await signIn(admin);
-    await startOrder();
-    nav('Admin');
-    fireEvent.click(await screen.findByRole('button', { name: 'Open full admin workspace' }));
-    expect(onAdmin).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole('button', { name: 'Keep editing' }));
-    expect(onAdmin).not.toHaveBeenCalled();
-    expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('Rita Joshi');
-    nav('Admin');
-    fireEvent.click(await screen.findByRole('button', { name: 'Open full admin workspace' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Discard order' }));
-    expect(onAdmin).toHaveBeenCalledWith(admin);
-  });
-
-  it('opens the full admin workspace at once when no order is open', async () => {
-    const onAdmin = await signIn(admin);
-    nav('Admin');
-    fireEvent.click(await screen.findByRole('button', { name: 'Open full admin workspace' }));
-    expect(dialog()).toBeNull();
-    expect(onAdmin).toHaveBeenCalledWith(admin);
   });
 
   it('locks the whole order-entry area while a save is in flight, so nothing typed is silently lost', async () => {

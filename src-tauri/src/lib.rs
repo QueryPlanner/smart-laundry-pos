@@ -5,11 +5,16 @@ use counter::{AccountInput, CounterSession};
 use tauri::{AppHandle, Builder, Manager, Runtime, State};
 
 mod counter;
+mod insights;
+mod office;
 mod print_layout;
 mod printing;
+mod shop_settings;
 mod storage;
 
-pub use storage::{DatabaseState, LocalDatabaseInfo, SqlExecutionResult, SqlStatement};
+pub use storage::{DatabaseState, LocalDatabaseInfo};
+#[cfg(test)]
+pub use storage::{SqlExecutionResult, SqlStatement};
 
 fn database_path_from_config_dir<E: std::fmt::Display>(
     app_config_dir: Result<PathBuf, E>,
@@ -125,12 +130,31 @@ where
             counter_dispatch_print_job,
             counter_retry_print_job,
             counter_reprint_output,
-            local_select,
-            local_read_batch,
-            local_batch,
-            local_database_info,
-            backup_database,
-            restore_database
+            office::counter_list_customers,
+            office::counter_get_customer,
+            office::counter_create_customer,
+            office::counter_update_customer,
+            office::counter_delete_customer,
+            office::counter_list_expenses,
+            office::counter_create_expense,
+            office::counter_delete_expense,
+            office::counter_list_inventory,
+            office::counter_create_inventory_item,
+            office::counter_adjust_inventory,
+            office::counter_delete_inventory_item,
+            office::counter_list_machines,
+            office::counter_create_machine,
+            office::counter_update_machine,
+            office::counter_delete_machine,
+            shop_settings::counter_get_shop_settings,
+            shop_settings::counter_save_shop_settings,
+            insights::counter_dashboard_overview,
+            insights::counter_sales_summary,
+            insights::counter_sales_series,
+            insights::counter_sales_orders,
+            insights::counter_sales_transactions,
+            insights::counter_sales_staff_options,
+            counter_restore_backup
         ])
 }
 
@@ -444,62 +468,14 @@ async fn counter_reprint_output(
     counter::reprint_output(&state, &session, &order_id, &kind, piece_ids, &request_id).await
 }
 
+/// Admin only: stage a backup file to replace the database at the next start.
 #[tauri::command]
-async fn local_select(
-    state: State<'_, DatabaseState>,
-    session: State<'_, CounterSession>,
-    query: String,
-    values: Vec<serde_json::Value>,
-) -> Result<Vec<serde_json::Value>, String> {
-    counter::authorize_sql(&state, &session).await?;
-    state.local_select(query, values).await
-}
-
-#[tauri::command]
-async fn local_read_batch(
-    state: State<'_, DatabaseState>,
-    session: State<'_, CounterSession>,
-    statements: Vec<SqlStatement>,
-) -> Result<Vec<Vec<serde_json::Value>>, String> {
-    counter::authorize_sql(&state, &session).await?;
-    state.local_read_batch(statements).await
-}
-
-#[tauri::command]
-async fn local_batch(
-    state: State<'_, DatabaseState>,
-    session: State<'_, CounterSession>,
-    statements: Vec<SqlStatement>,
-) -> Result<Vec<SqlExecutionResult>, String> {
-    counter::authorize_sql(&state, &session).await?;
-    state.local_batch(statements).await
-}
-
-#[tauri::command]
-fn local_database_info(state: State<'_, DatabaseState>) -> LocalDatabaseInfo {
-    state.info()
-}
-
-#[tauri::command]
-async fn backup_database(
-    state: State<'_, DatabaseState>,
-    session: State<'_, CounterSession>,
-) -> Result<String, String> {
-    counter::authorize_sql(&state, &session).await?;
-    state.backup_database().await
-}
-
-#[tauri::command]
-async fn restore_database(
+async fn counter_restore_backup(
     state: State<'_, DatabaseState>,
     session: State<'_, CounterSession>,
     source_path: String,
 ) -> Result<String, String> {
-    counter::authorize_sql(&state, &session).await?;
-    let request = state.restore_database(source_path);
-    tauri::async_runtime::spawn_blocking(move || tauri::async_runtime::block_on(request.apply()))
-        .await
-        .map_err(|error| format!("The database restore task failed: {error}"))?
+    counter::restore_backup(&state, &session, source_path).await
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
