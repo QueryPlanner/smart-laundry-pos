@@ -34,6 +34,7 @@ import { localLaundryRepository } from '@/lib/localFirst/repository';
 import { calculateLineTotal, calculateOrderTotals, getPaymentStatus } from '@/lib/localFirst/domain';
 import { startLocalFirstApp } from '@/lib/localFirst/startup';
 import { CounterApp } from '@/components/localCounter/CounterApp';
+import { lockCounter, type CounterAccount } from '@/lib/localFirst/counter';
 import {
   ORDER_STATUSES,
   PAYMENT_METHODS,
@@ -249,7 +250,7 @@ const ErrorText = ({ children }: { children: React.ReactNode }) => <p role="aler
 const Notice = ({ children }: { children: React.ReactNode }) => <div className="rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-800">{children}</div>;
 const WarningNotice = ({ children }: { children: React.ReactNode }) => <div role="alert" className="mb-4 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">{children}</div>;
 
-export const LegacyLocalFirstApp = ({ onCounterReturn }: { onCounterReturn?: () => void } = {}) => {
+export const LegacyLocalFirstApp = ({ onCounterReturn, nativeAdminAccount }: { onCounterReturn?: () => void; nativeAdminAccount?: CounterAccount } = {}) => {
   const [loading, setLoading] = useState(true);
   const [setupRequired, setSetupRequired] = useState(false);
   const [user, setUser] = useState<LocalUser | null>(null);
@@ -261,6 +262,7 @@ export const LegacyLocalFirstApp = ({ onCounterReturn }: { onCounterReturn?: () 
     startLocalFirstApp()
       .then(result => {
         setSetupRequired(!result.hasLocalUser);
+        if (nativeAdminAccount) setUser({ id: nativeAdminAccount.id, full_name: nativeAdminAccount.fullName, role: 'admin', created_at: '', updated_at: '' });
         const startupWarnings = [
           result.initializationWarning,
           'backupError' in result
@@ -271,7 +273,7 @@ export const LegacyLocalFirstApp = ({ onCounterReturn }: { onCounterReturn?: () 
       })
       .catch(initializationError => setError(errorMessage(initializationError)))
       .finally(() => setLoading(false));
-  }, []);
+  }, [nativeAdminAccount]);
 
   if (loading) return <div className="flex min-h-screen items-center justify-center bg-slate-950 text-white">Opening local database...</div>;
   if (error) return <div className="flex min-h-screen items-center justify-center bg-slate-950 px-4 text-red-200">{error}</div>;
@@ -283,16 +285,26 @@ export const LegacyLocalFirstApp = ({ onCounterReturn }: { onCounterReturn?: () 
     startupWarning={backupWarning}
     restorePending={restorePending}
     onRestoreStaged={() => setRestorePending(true)}
-    onLock={() => setUser(null)}
+    onLock={() => {
+      if (nativeAdminAccount) {
+        onCounterReturn?.();
+        return;
+      }
+      setUser(null);
+    }}
     onCounterReturn={onCounterReturn}
   />;
 };
 
 export const LocalFirstApp = () => {
-  const [showAdminWorkspace, setShowAdminWorkspace] = useState(false);
-  return showAdminWorkspace
-    ? <><button type="button" className="counter-return" onClick={() => setShowAdminWorkspace(false)}>← Back to counter</button><LegacyLocalFirstApp onCounterReturn={() => setShowAdminWorkspace(false)} /></>
-    : <CounterApp onAdminWorkspace={() => setShowAdminWorkspace(true)} />;
+  const [nativeAdminAccount, setNativeAdminAccount] = useState<CounterAccount | null>(null);
+  const returnToCounter = async () => {
+    await lockCounter();
+    setNativeAdminAccount(null);
+  };
+  return nativeAdminAccount
+    ? <><button type="button" className="counter-return" onClick={() => void returnToCounter()}>← Back to counter</button><LegacyLocalFirstApp nativeAdminAccount={nativeAdminAccount} onCounterReturn={() => void returnToCounter()} /></>
+    : <CounterApp onAdminWorkspace={setNativeAdminAccount} />;
 };
 
 const LocalWorkspace = ({ user, startupWarning, restorePending, onRestoreStaged, onLock, onCounterReturn }: {

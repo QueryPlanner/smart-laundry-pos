@@ -10,10 +10,13 @@ export default defineConfig({
   resolve: { alias: { '@': path.resolve(projectRoot, 'src') } },
   test: {
     environment: 'node',
+    fileParallelism: false,
+    testTimeout: 30000,
     include: [
       'src/lib/localFirst/**/*.test.ts',
       'src/pages/LocalFirstApp.test.tsx',
       'src/desktop.test.tsx',
+      'src/components/localCounter/**/*.test.tsx',
     ],
     coverage: {
       provider: 'v8',
@@ -21,11 +24,13 @@ export default defineConfig({
         'src/lib/localFirst/**/*.ts',
         'src/pages/LocalFirstApp.tsx',
         'src/desktop.tsx',
+        'src/components/localCounter/**/*.tsx',
       ],
       exclude: [
         'src/lib/localFirst/**/*.test.ts',
         'src/pages/LocalFirstApp.test.tsx',
         'src/desktop.test.tsx',
+        'src/components/localCounter/**/*.test.tsx',
       ],
       reportsDirectory: 'coverage/desktop',
       reporter: ['text', 'html', 'json-summary'],

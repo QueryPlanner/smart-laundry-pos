@@ -11,6 +11,9 @@ CREATE TABLE counter_accounts (
   failed_attempts INTEGER NOT NULL DEFAULT 0,
   locked_until TEXT
 );
+-- Preserve the installed administrator and its legacy hash for native first-login migration.
+INSERT OR IGNORE INTO counter_accounts(id,full_name,pin_hash,pin_salt,role,active,created_at,updated_at)
+SELECT id,full_name,pin_hash,pin_salt,'admin',1,created_at,updated_at FROM local_users WHERE role='admin';
 CREATE TABLE garments (
   id TEXT PRIMARY KEY NOT NULL,
   garment_key TEXT NOT NULL UNIQUE,
@@ -47,6 +50,12 @@ ALTER TABLE order_items ADD COLUMN line_total_minor INTEGER;
 ALTER TABLE order_items ADD COLUMN rate_version INTEGER;
 ALTER TABLE orders ADD COLUMN idempotency_key TEXT;
 CREATE UNIQUE INDEX idx_orders_idempotency ON orders(idempotency_key) WHERE idempotency_key IS NOT NULL;
+CREATE TABLE counter_order_requests (
+  idempotency_key TEXT PRIMARY KEY NOT NULL,
+  order_id TEXT NOT NULL UNIQUE REFERENCES orders(id) ON DELETE CASCADE,
+  payload_hash TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
 CREATE TABLE order_pieces (
   id TEXT PRIMARY KEY NOT NULL,
   short_id TEXT NOT NULL UNIQUE,
@@ -64,9 +73,11 @@ CREATE TABLE order_pieces (
 CREATE TABLE piece_matches (
   id TEXT PRIMARY KEY NOT NULL,
   order_id TEXT NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
-  piece_id TEXT NOT NULL UNIQUE REFERENCES order_pieces(id) ON DELETE CASCADE,
+  piece_id TEXT NOT NULL REFERENCES order_pieces(id) ON DELETE CASCADE,
+  stage TEXT NOT NULL CHECK(stage IN ('packing','collection')),
   matched_by TEXT NOT NULL REFERENCES counter_accounts(id),
-  matched_at TEXT NOT NULL
+  matched_at TEXT NOT NULL,
+  UNIQUE(order_id,piece_id,stage)
 );
 CREATE TABLE printer_profiles (
   kind TEXT PRIMARY KEY NOT NULL CHECK(kind IN ('bill','tags')),
@@ -86,7 +97,8 @@ CREATE TABLE print_jobs (
   updated_at TEXT NOT NULL,
   last_error TEXT,
   source_job_id TEXT REFERENCES print_jobs(id),
-  reprint_request_id TEXT UNIQUE
+  reprint_request_id TEXT UNIQUE,
+  reprint_payload_hash TEXT
 );
 CREATE INDEX idx_print_jobs_pending ON print_jobs(state,created_at);
 CREATE TABLE print_job_attempts (
@@ -97,6 +109,18 @@ CREATE TABLE print_job_attempts (
   state TEXT NOT NULL CHECK(state IN ('submitting','submitted','failed','uncertain')),
   os_job_id TEXT,
   error TEXT
+);
+CREATE TABLE counter_payment_requests (
+  request_id TEXT PRIMARY KEY NOT NULL,
+  order_id TEXT NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+  payment_id TEXT NOT NULL UNIQUE REFERENCES payments(id) ON DELETE CASCADE,
+  payload_hash TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE counter_collection_requests (
+  request_id TEXT PRIMARY KEY NOT NULL,
+  order_id TEXT NOT NULL UNIQUE REFERENCES orders(id) ON DELETE CASCADE,
+  created_at TEXT NOT NULL
 );
 CREATE TABLE counter_audit (
   id TEXT PRIMARY KEY NOT NULL,

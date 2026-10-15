@@ -13,7 +13,7 @@ export type CounterJobState = 'pending' | 'submitting' | 'submitted' | 'failed' 
 export type CounterPaymentMethod = 'cash' | 'upi' | 'card' | 'bank_transfer' | 'other';
 
 export interface CounterAccount { id: string; fullName: string; role: CounterRole; active: boolean }
-export interface CounterBootstrap { setupRequired: boolean; authenticated: boolean; account: CounterAccount | null; accounts: CounterAccount[] }
+export interface CounterBootstrap { setupRequired: boolean; authenticated: boolean; account: CounterAccount | null; accounts: CounterAccount[]; warning: string | null }
 export interface CounterGarment {
   id: string; key: string; nameEn: string; nameMr: string; category: string;
   imageKey: string; billingUnit: 'piece' | 'pair'; active: boolean;
@@ -36,19 +36,24 @@ export interface CounterQuote {
   pieceCount: number; promisedAt: string; catalogueVersion: string;
 }
 export interface CounterSaveInput extends CounterOrderInput {
+  reviewedQuote: CounterQuote;
   idempotencyKey: string;
   payment?: { amountMinor: number; method: CounterPaymentMethod; reference?: string };
 }
 export interface CounterPiece {
   id: string; shortId: string; garmentId: string; garment: string; service: string;
-  position: number; total: number; matched: boolean;
+  position: number; total: number; matched: boolean; packingMatched: boolean; collectionMatched: boolean;
 }
-export interface CounterPrintJob { id: string; kind: CounterJobKind; state: CounterJobState; printerId: string | null; osJobId: string | null; lastError: string | null }
+export interface CounterPrintJob { id: string; kind: CounterJobKind; state: CounterJobState; printerId: string | null; osJobId: string | null; lastError: string | null; orderId: string; orderNumber: string }
 export interface CounterSavedOrder {
-  orderId: string; orderNumber: string; receivedAt: string; promisedAt: string;
+  orderId: string; orderNumber: string; receivedAt: string; promisedAt: string; status: string;
   totalMinor: number; paidMinor: number; balanceMinor: number;
   pieces: CounterPiece[]; printJobs: CounterPrintJob[];
 }
+export interface CounterOrderSummary { id: string; orderNumber: string; customerName: string; customerPhone: string; status: string; receivedAt: string; promisedAt: string | null; totalMinor: number; paidMinor: number; balanceMinor: number; pieceCount: number }
+export interface CounterRecordPaymentInput { amountMinor: number; method: CounterPaymentMethod; reference?: string; idempotencyKey: string }
+export type CounterMatchStage = 'packing' | 'collection';
+export type CounterProcessingStatus = 'washing' | 'drying' | 'ironing' | 'quality_check' | 'packing' | 'ready';
 export interface PieceMatchResult {
   matchedCount: number; expectedCount: number; missingIds: string[];
   duplicateIds: string[]; wrongOrderIds: string[]; complete: boolean;
@@ -76,14 +81,20 @@ export const setCounterRate = (garmentId: string, serviceId: string, priceMinor:
 export const quoteCounterOrder = (input: CounterOrderInput): Promise<CounterQuote> => call('counter_quote_order', { input });
 export const saveCounterOrder = (input: CounterSaveInput): Promise<CounterSavedOrder> => call('counter_save_order', { input });
 export const getOrderPieces = (orderId: string): Promise<CounterPiece[]> => call('counter_get_order_pieces', { orderId });
-export const matchOrderPieces = (orderId: string, pieceIds: string[]): Promise<PieceMatchResult> =>
-  call('counter_match_order_pieces', { orderId, pieceIds });
+export const matchOrderPieces = (orderId: string, stage: CounterMatchStage, pieceIds: string[]): Promise<PieceMatchResult> =>
+  call('counter_match_order_pieces', { orderId, stage, pieceIds });
+export const searchCounterOrders = (query: string, offset = 0, limit = 50): Promise<CounterOrderSummary[]> => call('counter_search_orders', { query, offset, limit });
+export const getCounterOrder = (orderId: string): Promise<CounterSavedOrder | null> => call('counter_get_order', { orderId });
+export const recordCounterPayment = (orderId: string, input: CounterRecordPaymentInput): Promise<CounterSavedOrder> => call('counter_record_payment', { orderId, input });
+export const updateCounterOrderStatus = (orderId: string, status: CounterProcessingStatus): Promise<CounterSavedOrder> => call('counter_update_order_status', { orderId, status });
+export const collectCounterOrder = (orderId: string, pieceIds: string[], requestId: string): Promise<CounterSavedOrder> => call('counter_collect_order', { orderId, pieceIds, requestId });
 export const enumeratePrinters = (): Promise<NativePrinter[]> => call('counter_enumerate_printers');
 export const setPrinterProfiles = (profiles: PrinterProfiles): Promise<void> => call('counter_set_printer_profiles', { profiles });
 export const getPrinterProfiles = (): Promise<PrinterProfiles | null> => call('counter_get_printer_profiles');
 export const listPrintJobs = (orderId?: string): Promise<CounterPrintJob[]> => call('counter_list_print_jobs', { orderId });
 export const dispatchPrintJobs = (orderId: string): Promise<CounterPrintJob[]> =>
   call('counter_dispatch_print_jobs', { orderId });
+export const dispatchPrintJob = (jobId: string): Promise<CounterPrintJob> => call('counter_dispatch_print_job', { jobId });
 export const retryPrintJob = (jobId: string, confirmUncertain: boolean): Promise<CounterPrintJob> =>
   call('counter_retry_print_job', { jobId, confirmUncertain });
 

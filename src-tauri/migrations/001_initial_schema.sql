@@ -219,6 +219,7 @@ INSERT OR IGNORE INTO app_settings (key, value, updated_at) VALUES
   ('shop_phone', '', CURRENT_TIMESTAMP),
   ('gst_number', '', CURRENT_TIMESTAMP),
   ('receipt_footer', 'Thank you for choosing us.', CURRENT_TIMESTAMP),
+  ('receipt_width_mm', '50', CURRENT_TIMESTAMP),
   ('order_prefix', 'LA', CURRENT_TIMESTAMP),
   ('default_completion_days', '2', CURRENT_TIMESTAMP),
   ('device_id', lower(hex(randomblob(16))), CURRENT_TIMESTAMP);

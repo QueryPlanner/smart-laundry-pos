@@ -6,6 +6,8 @@
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
+#[cfg(any(target_os = "windows", test))]
+use std::mem::{align_of, size_of};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -189,14 +191,26 @@ fn validate_document(document: &PrintDocument) -> Result<(), PrintError> {
                     "tag document must contain physical pieces".into(),
                 ));
             }
-            let total = tags.pieces.len() as u32;
-            for (index, piece) in tags.pieces.iter().enumerate() {
+            let total = tags.pieces[0].total;
+            if total == 0 {
+                return Err(PrintError::Invalid(
+                    "tag total must be a positive whole-order count".into(),
+                ));
+            }
+            let mut positions = std::collections::HashSet::new();
+            let mut piece_ids = std::collections::HashSet::new();
+            for piece in &tags.pieces {
                 nonempty(&piece.piece_id, "piece ID")?;
                 nonempty(&piece.garment, "garment")?;
                 nonempty(&piece.service, "service")?;
-                if piece.total != total || piece.position != index as u32 + 1 {
+                if piece.total != total
+                    || piece.position == 0
+                    || piece.position > total
+                    || !positions.insert(piece.position)
+                    || !piece_ids.insert(&piece.piece_id)
+                {
                     return Err(PrintError::Invalid(
-                        "piece positions must be sequential and match the document total".into(),
+                        "tag pieces must be a unique subset of positions within one whole-order total".into(),
                     ));
                 }
             }
@@ -443,62 +457,175 @@ fn now_rfc3339() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
 
+/// Return only the typed record prefix in a native variable-length Win32 buffer.
+///
+/// # Safety
+/// The caller must ensure the record bytes are initialized as valid `T` values.
+#[cfg(any(target_os = "windows", test))]
+unsafe fn native_record_prefix<T>(buffer: &[u8], returned: usize) -> Result<&[T], PrintError> {
+    let bytes_needed = returned
+        .checked_mul(size_of::<T>())
+        .ok_or_else(|| PrintError::Adapter("printer record count overflowed".into()))?;
+    if bytes_needed > buffer.len() {
+        return Err(PrintError::Adapter(
+            "printer API returned more records than fit in its buffer".into(),
+        ));
+    }
+    if !(buffer.as_ptr() as usize).is_multiple_of(align_of::<T>()) {
+        return Err(PrintError::Adapter(
+            "printer API buffer is not aligned for its record type".into(),
+        ));
+    }
+    Ok(std::slice::from_raw_parts(
+        buffer.as_ptr().cast::<T>(),
+        returned,
+    ))
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn native_utf16z(buffer: &[u8], offset: usize) -> Result<String, PrintError> {
+    if offset >= buffer.len() || !offset.is_multiple_of(size_of::<u16>()) {
+        return Err(PrintError::Adapter(
+            "printer API returned a string pointer outside its buffer".into(),
+        ));
+    }
+    let mut units = Vec::new();
+    let mut cursor = offset;
+    while cursor + size_of::<u16>() <= buffer.len() {
+        let unit = u16::from_ne_bytes([buffer[cursor], buffer[cursor + 1]]);
+        if unit == 0 {
+            return Ok(String::from_utf16_lossy(&units));
+        }
+        units.push(unit);
+        cursor += size_of::<u16>();
+    }
+    Err(PrintError::Adapter(
+        "printer API returned an unterminated string".into(),
+    ))
+}
+
 #[cfg(target_os = "windows")]
 mod windows_adapter {
     use super::*;
     use std::mem::size_of;
+    use std::slice;
     use windows::core::{PCWSTR, PWSTR};
     use windows::Win32::Foundation::RECT;
     use windows::Win32::Graphics::Gdi::{
-        AbortDoc, CreateDCW, CreateFontW, DeleteDC, DeleteObject, DrawTextW, EndDoc, EndPage,
-        GetDeviceCaps, SelectObject, StartDocW, StartPage, CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET,
-        DEFAULT_PITCH, DEFAULT_QUALITY, DOCINFOW, DT_NOPREFIX, DT_WORDBREAK, FF_DONTCARE, FW_BOLD,
-        HORZRES, LOGPIXELSX, LOGPIXELSY, OUT_DEFAULT_PRECIS, VERTRES,
+        CreateDCW, CreateFontW, DeleteDC, DeleteObject, DrawTextW, GetDeviceCaps, SelectObject,
+        CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, DEFAULT_PITCH, DEFAULT_QUALITY, DT_NOPREFIX,
+        DT_WORDBREAK, FF_DONTCARE, FW_BOLD, HORZRES, LOGPIXELSX, LOGPIXELSY, OUT_DEFAULT_PRECIS,
+        VERTRES,
     };
     use windows::Win32::Graphics::Printing::{
         EnumPrintersW, PRINTER_ENUM_CONNECTIONS, PRINTER_ENUM_LOCAL, PRINTER_INFO_2W,
     };
+    use windows::Win32::Storage::Xps::{AbortDoc, EndDoc, EndPage, StartDocW, StartPage, DOCINFOW};
 
-    fn printer_entries() -> Result<Vec<u8>, PrintError> {
+    struct PrinterEntries {
+        storage: Vec<usize>,
+        byte_len: usize,
+        returned: usize,
+    }
+
+    impl PrinterEntries {
+        fn empty() -> Self {
+            Self {
+                storage: Vec::new(),
+                byte_len: 0,
+                returned: 0,
+            }
+        }
+
+        fn bytes(&self) -> &[u8] {
+            // Vec<usize> keeps the backing allocation aligned for PRINTER_INFO_2W.
+            unsafe { slice::from_raw_parts(self.storage.as_ptr().cast::<u8>(), self.byte_len) }
+        }
+
+        fn records(&self) -> Result<&[PRINTER_INFO_2W], PrintError> {
+            // EnumPrintersW initializes exactly `returned` leading records. Strings
+            // and other pointed-to fields follow those records in the same buffer.
+            unsafe { native_record_prefix(self.bytes(), self.returned) }
+        }
+    }
+
+    fn printer_entries() -> Result<PrinterEntries, PrintError> {
         let flags = PRINTER_ENUM_LOCAL | PRINTER_ENUM_CONNECTIONS;
         let mut needed = 0u32;
         let mut returned = 0u32;
-        unsafe {
-            let _ = EnumPrintersW(flags, PCWSTR::null(), 2, None, &mut needed, &mut returned);
-        }
+        let query =
+            unsafe { EnumPrintersW(flags, PCWSTR::null(), 2, None, &mut needed, &mut returned) };
         if needed == 0 {
-            return Ok(Vec::new());
+            return match query {
+                Ok(()) if returned == 0 => Ok(PrinterEntries::empty()),
+                Ok(()) => Err(PrintError::Adapter(
+                    "EnumPrintersW returned records without a buffer size".into(),
+                )),
+                Err(error) => Err(PrintError::Adapter(format!(
+                    "EnumPrintersW query failed: {error}"
+                ))),
+            };
         }
-        let mut buffer = vec![0u8; needed as usize];
-        unsafe {
-            EnumPrintersW(
-                flags,
-                PCWSTR::null(),
-                2,
-                Some(&mut buffer),
-                &mut needed,
-                &mut returned,
-            )
+        let mut capacity = needed as usize;
+        for _ in 0..3 {
+            let word_count = capacity.div_ceil(size_of::<usize>());
+            let mut storage = vec![0usize; word_count];
+            let mut actual_bytes = capacity as u32;
+            returned = 0;
+            // `storage` provides native alignment; its byte slice only exposes the
+            // requested capacity, not padding at the end of the usize allocation.
+            let buffer =
+                unsafe { slice::from_raw_parts_mut(storage.as_mut_ptr().cast::<u8>(), capacity) };
+            match unsafe {
+                EnumPrintersW(
+                    flags,
+                    PCWSTR::null(),
+                    2,
+                    Some(buffer),
+                    &mut actual_bytes,
+                    &mut returned,
+                )
+            } {
+                Ok(()) if actual_bytes as usize <= capacity => {
+                    let entries = PrinterEntries {
+                        storage,
+                        byte_len: actual_bytes as usize,
+                        returned: returned as usize,
+                    };
+                    entries.records()?;
+                    return Ok(entries);
+                }
+                Ok(()) => {
+                    capacity = actual_bytes as usize;
+                }
+                Err(_error) if actual_bytes as usize > capacity => {
+                    capacity = actual_bytes as usize;
+                }
+                Err(error) => {
+                    return Err(PrintError::Adapter(format!(
+                        "EnumPrintersW failed: {error}"
+                    )))
+                }
+            }
+            if capacity == 0 {
+                return Ok(PrinterEntries::empty());
+            }
         }
-        .map_err(|error| PrintError::Adapter(format!("EnumPrintersW failed: {error}")))?;
-        Ok(buffer)
+        Err(PrintError::Adapter(
+            "printer list changed repeatedly while EnumPrintersW resized its buffer".into(),
+        ))
     }
 
     pub(super) fn list() -> Result<Vec<PrinterInfo>, PrintError> {
         let buffer = printer_entries()?;
-        let entries = unsafe {
-            std::slice::from_raw_parts(
-                buffer.as_ptr().cast::<PRINTER_INFO_2W>(),
-                buffer.len() / size_of::<PRINTER_INFO_2W>(),
-            )
-        };
+        let entries = buffer.records()?;
         let mut result = Vec::with_capacity(entries.len());
         for entry in entries {
-            let name = unsafe { wide_ptr_to_string(entry.pPrinterName) };
+            let name = wide_ptr_to_string(buffer.bytes(), entry.pPrinterName)?;
             if name.is_empty() {
                 continue;
             }
-            let status = entry.Status.0;
+            let status = entry.Status;
             let unavailable_bits = 0x0000_0002
                 | 0x0000_0008
                 | 0x0000_0010
@@ -510,65 +637,36 @@ mod windows_adapter {
             result.push(PrinterInfo {
                 id: name.clone(),
                 name,
-                is_default: entry.Attributes.0 & 0x0000_0004 != 0,
+                is_default: entry.Attributes & 0x0000_0004 != 0,
                 is_available: status & unavailable_bits == 0,
             });
         }
         Ok(result)
     }
 
-    unsafe fn wide_ptr_to_string(pointer: PWSTR) -> String {
+    fn wide_ptr_to_string(buffer: &[u8], pointer: PWSTR) -> Result<String, PrintError> {
         if pointer.is_null() {
-            return String::new();
+            return Ok(String::new());
         }
-        let mut length = 0usize;
-        while *pointer.0.add(length) != 0 {
-            length += 1;
+        let base = buffer.as_ptr() as usize;
+        let end = base
+            .checked_add(buffer.len())
+            .ok_or_else(|| PrintError::Adapter("printer buffer address overflowed".into()))?;
+        let address = pointer.0 as usize;
+        if address < base || address >= end || (address - base) % size_of::<u16>() != 0 {
+            return Err(PrintError::Adapter(
+                "EnumPrintersW returned a string pointer outside its buffer".into(),
+            ));
         }
-        String::from_utf16_lossy(std::slice::from_raw_parts(pointer.0, length))
-    }
-
-    fn driver_for(printer_name: &str) -> Result<String, PrintError> {
-        let buffer = printer_entries()?;
-        let entries = unsafe {
-            std::slice::from_raw_parts(
-                buffer.as_ptr().cast::<PRINTER_INFO_2W>(),
-                buffer.len() / size_of::<PRINTER_INFO_2W>(),
-            )
-        };
-        entries
-            .iter()
-            .find_map(|entry| {
-                let name = unsafe { wide_ptr_to_string(entry.pPrinterName) };
-                if name == printer_name {
-                    Some(unsafe { wide_ptr_to_string(entry.pDriverName) })
-                } else {
-                    None
-                }
-            })
-            .filter(|driver| !driver.is_empty())
-            .ok_or_else(|| {
-                PrintError::PrinterUnavailable(format!(
-                    "the Windows printer driver for {printer_name} was not found"
-                ))
-            })
+        native_utf16z(buffer, address - base)
     }
 
     pub(super) fn submit(
         printer_name: &str,
         document: &PrintDocument,
     ) -> Result<SubmissionReceipt, PrintError> {
-        let driver_name = driver_for(printer_name)?;
         let name: Vec<u16> = printer_name.encode_utf16().chain([0]).collect();
-        let driver: Vec<u16> = driver_name.encode_utf16().chain([0]).collect();
-        let hdc = unsafe {
-            CreateDCW(
-                PCWSTR(driver.as_ptr()),
-                PCWSTR(name.as_ptr()),
-                PCWSTR::null(),
-                None,
-            )
-        };
+        let hdc = unsafe { CreateDCW(PCWSTR::null(), PCWSTR(name.as_ptr()), PCWSTR::null(), None) };
         if hdc.0.is_null() {
             return Err(PrintError::PrinterUnavailable(format!(
                 "could not create a printer device context for {printer_name}"
@@ -578,8 +676,8 @@ mod windows_adapter {
         let is_tag = matches!(document, PrintDocument::Tags(_));
         let (x_dpi, y_dpi) = unsafe {
             (
-                GetDeviceCaps(hdc, LOGPIXELSX),
-                GetDeviceCaps(hdc, LOGPIXELSY),
+                GetDeviceCaps(Some(hdc), LOGPIXELSX),
+                GetDeviceCaps(Some(hdc), LOGPIXELSY),
             )
         };
         let left = ((x_dpi.max(1) * 3) / 10).max(1);
@@ -608,8 +706,8 @@ mod windows_adapter {
                 "Windows spooler rejected StartDoc".into(),
             ));
         }
-        let page_height = unsafe { GetDeviceCaps(hdc, VERTRES) };
-        let page_width = unsafe { GetDeviceCaps(hdc, HORZRES) };
+        let page_height = unsafe { GetDeviceCaps(Some(hdc), VERTRES) };
+        let page_width = unsafe { GetDeviceCaps(Some(hdc), HORZRES) };
         let right = (page_width - left).max(left + 1);
         let mut uncertain = None;
         for page in &lines {
@@ -631,19 +729,19 @@ mod windows_adapter {
                         0,
                         0,
                         0,
-                        if index == 0 { FW_BOLD.0 } else { 400 },
+                        if index == 0 { FW_BOLD.0 as i32 } else { 400 },
                         0,
                         0,
                         0,
-                        DEFAULT_CHARSET.0 as u32,
-                        OUT_DEFAULT_PRECIS.0 as u32,
-                        CLIP_DEFAULT_PRECIS.0 as u32,
-                        DEFAULT_QUALITY.0 as u32,
+                        DEFAULT_CHARSET,
+                        OUT_DEFAULT_PRECIS,
+                        CLIP_DEFAULT_PRECIS,
+                        DEFAULT_QUALITY,
                         DEFAULT_PITCH.0 as u32 | FF_DONTCARE.0 as u32,
                         PCWSTR(face.as_ptr()),
                     )
                 };
-                let old = unsafe { SelectObject(hdc, font) };
+                let old = unsafe { SelectObject(hdc, font.into()) };
                 let mut text: Vec<u16> = line.encode_utf16().collect();
                 let mut rect = RECT {
                     left,
@@ -655,7 +753,7 @@ mod windows_adapter {
                     unsafe { DrawTextW(hdc, &mut text, &mut rect, DT_WORDBREAK | DT_NOPREFIX) };
                 unsafe {
                     let _ = SelectObject(hdc, old);
-                    let _ = DeleteObject(font);
+                    let _ = DeleteObject(font.into());
                 }
                 if used_height <= 0 || y + used_height > page_height - top {
                     uncertain = Some(
@@ -765,6 +863,130 @@ mod tests {
         value.pieces[0].position = 2;
         assert!(validate_document(&PrintDocument::Tags(value)).is_err());
     }
+
+    #[test]
+    fn selected_tag_subset_preserves_original_order_positions_and_total() {
+        let document = PrintDocument::Tags(TagDocument {
+            order_number: "SL-104".into(),
+            pieces: vec![
+                TagPiece {
+                    piece_id: "piece-003".into(),
+                    garment: "Trousers".into(),
+                    service: "Wash".into(),
+                    position: 3,
+                    total: 4,
+                },
+                TagPiece {
+                    piece_id: "piece-001".into(),
+                    garment: "Shirt".into(),
+                    service: "Wash".into(),
+                    position: 1,
+                    total: 4,
+                },
+            ],
+        });
+        validate_document(&document).unwrap();
+        let rendered = render_lines(&document).concat().join(" ");
+        assert!(rendered.contains("piece-003 (3/4)"));
+        assert!(rendered.contains("piece-001 (1/4)"));
+
+        let single_piece = PrintDocument::Tags(TagDocument {
+            order_number: "SL-104".into(),
+            pieces: vec![TagPiece {
+                piece_id: "piece-003".into(),
+                garment: "Trousers".into(),
+                service: "Wash".into(),
+                position: 3,
+                total: 4,
+            }],
+        });
+        validate_document(&single_piece).unwrap();
+        assert!(render_lines(&single_piece)
+            .concat()
+            .join(" ")
+            .contains("piece-003 (3/4)"));
+
+        let first_and_fourth = PrintDocument::Tags(TagDocument {
+            order_number: "SL-104".into(),
+            pieces: vec![
+                TagPiece {
+                    piece_id: "piece-001".into(),
+                    garment: "Shirt".into(),
+                    service: "Wash".into(),
+                    position: 1,
+                    total: 4,
+                },
+                TagPiece {
+                    piece_id: "piece-004".into(),
+                    garment: "Trousers".into(),
+                    service: "Wash".into(),
+                    position: 4,
+                    total: 4,
+                },
+            ],
+        });
+        validate_document(&first_and_fourth).unwrap();
+        let rendered = render_lines(&first_and_fourth).concat().join(" ");
+        assert!(rendered.contains("piece-001 (1/4)"));
+        assert!(rendered.contains("piece-004 (4/4)"));
+    }
+
+    #[test]
+    fn selected_tag_subset_rejects_duplicate_or_out_of_range_positions() {
+        let duplicate_positions = PrintDocument::Tags(TagDocument {
+            order_number: "SL-104".into(),
+            pieces: vec![
+                TagPiece {
+                    piece_id: "piece-003".into(),
+                    garment: "Trousers".into(),
+                    service: "Wash".into(),
+                    position: 3,
+                    total: 4,
+                },
+                TagPiece {
+                    piece_id: "piece-003-other".into(),
+                    garment: "Shirt".into(),
+                    service: "Wash".into(),
+                    position: 3,
+                    total: 4,
+                },
+            ],
+        });
+        assert!(validate_document(&duplicate_positions).is_err());
+
+        let duplicate_ids = PrintDocument::Tags(TagDocument {
+            order_number: "SL-104".into(),
+            pieces: vec![
+                TagPiece {
+                    piece_id: "piece-003".into(),
+                    garment: "Trousers".into(),
+                    service: "Wash".into(),
+                    position: 3,
+                    total: 4,
+                },
+                TagPiece {
+                    piece_id: "piece-003".into(),
+                    garment: "Shirt".into(),
+                    service: "Wash".into(),
+                    position: 4,
+                    total: 4,
+                },
+            ],
+        });
+        assert!(validate_document(&duplicate_ids).is_err());
+
+        let out_of_range = PrintDocument::Tags(TagDocument {
+            order_number: "SL-104".into(),
+            pieces: vec![TagPiece {
+                piece_id: "piece-005".into(),
+                garment: "Trousers".into(),
+                service: "Wash".into(),
+                position: 5,
+                total: 4,
+            }],
+        });
+        assert!(validate_document(&out_of_range).is_err());
+    }
     #[cfg(target_os = "linux")]
     #[test]
     fn linux_destination_and_media_are_explicit_and_queue_text_is_one_argument() {
@@ -829,5 +1051,55 @@ mod tests {
             json["document"]["document"]["promisedAtIst"],
             "17 Oct 2026 17:00 IST"
         );
+    }
+}
+
+#[cfg(test)]
+mod native_buffer_tests {
+    use super::*;
+    use std::mem::size_of;
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct MockNativeRecord {
+        marker: usize,
+    }
+
+    #[test]
+    fn native_buffer_uses_returned_count_and_ignores_trailing_strings() {
+        let record_bytes = size_of::<MockNativeRecord>();
+        let buffer_bytes = record_bytes + 32;
+        let word_count = buffer_bytes.div_ceil(size_of::<usize>());
+        let mut storage = vec![0usize; word_count];
+        let bytes = unsafe {
+            std::slice::from_raw_parts_mut(storage.as_mut_ptr().cast::<u8>(), buffer_bytes)
+        };
+        unsafe {
+            bytes
+                .as_mut_ptr()
+                .cast::<MockNativeRecord>()
+                .write(MockNativeRecord { marker: 0xfeed });
+        }
+        bytes[record_bytes..].fill(0x41);
+
+        let records = unsafe { native_record_prefix::<MockNativeRecord>(bytes, 1) }.unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].marker, 0xfeed);
+        assert!(
+            unsafe { native_record_prefix::<MockNativeRecord>(bytes, 0) }
+                .unwrap()
+                .is_empty()
+        );
+        assert!(unsafe { native_record_prefix::<MockNativeRecord>(&bytes[1..], 1) }.is_err());
+        assert!(unsafe { native_record_prefix::<MockNativeRecord>(bytes, 6) }.is_err());
+    }
+
+    #[test]
+    fn native_utf16_strings_are_terminated_and_bounded_by_live_buffer() {
+        let utf16 = [b'A', 0, b'B', 0, 0, 0];
+        assert_eq!(native_utf16z(&utf16, 0).unwrap(), "AB");
+        assert!(native_utf16z(&utf16[..4], 0).is_err());
+        assert!(native_utf16z(&utf16, utf16.len()).is_err());
+        assert!(native_utf16z(&utf16, 1).is_err());
     }
 }

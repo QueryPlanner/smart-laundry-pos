@@ -441,6 +441,14 @@ impl DatabaseState {
         }
     }
 
+    pub fn set_startup_warning(&mut self, warning: impl Into<String>) {
+        let warning = warning.into();
+        self.startup_warning = Some(match self.startup_warning.take() {
+            Some(existing) if !existing.trim().is_empty() => format!("{existing} {warning}"),
+            _ => warning,
+        });
+    }
+
     pub async fn local_select(&self, query: String, values: Vec<Value>) -> Result<SqlRows, String> {
         validate_sql(&query, SqlOperation::Select)?;
         let pool = &self.pools()?.reader;
@@ -493,6 +501,28 @@ impl DatabaseState {
                 )),
             },
         }
+    }
+
+    /// Start a serialized native write transaction after checking the staged-restore boundary.
+    /// The writer pool is single-connection, so restore staging cannot race this transaction.
+    pub async fn begin_counter_write(&self) -> Result<sqlx::Transaction<'_, sqlx::Sqlite>, String> {
+        let pools = self.pools()?;
+        let transaction = pools
+            .writer
+            .begin()
+            .await
+            .map_err(|error| format!("Could not begin counter write transaction: {error}"))?;
+        if self.restore_pending.load(Ordering::Acquire)
+            || pending_restore_path(&self.database_path).exists()
+        {
+            transaction.rollback().await.map_err(|error| {
+                format!("A restore is staged and transaction rollback failed: {error}")
+            })?;
+            return Err(
+                "A restore is staged. Close and reopen the app before writing.".to_string(),
+            );
+        }
+        Ok(transaction)
     }
 
     pub async fn local_batch(

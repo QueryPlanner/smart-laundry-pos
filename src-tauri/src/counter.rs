@@ -71,6 +71,7 @@ pub struct Bootstrap {
     pub authenticated: bool,
     pub account: Option<Account>,
     pub accounts: Vec<Account>,
+    pub warning: Option<String>,
 }
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -144,6 +145,7 @@ pub async fn bootstrap(db: &DatabaseState, session: &CounterSession) -> Result<B
         authenticated: current.is_some(),
         account: current,
         accounts,
+        warning: db.info().warning,
     })
 }
 pub async fn setup_admin(
@@ -152,8 +154,7 @@ pub async fn setup_admin(
     input: AccountInput,
 ) -> Result<Account, String> {
     validate_account(&input)?;
-    let pool = db.writer_pool()?;
-    let mut tx = pool.begin().await.map_err(db_err)?;
+    let mut tx = db.begin_counter_write().await?;
     let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM counter_accounts")
         .fetch_one(&mut *tx)
         .await
@@ -212,27 +213,42 @@ pub async fn login(
     }
     let salt: String = row.try_get("pin_salt").map_err(db_err)?;
     let expected: String = row.try_get("pin_hash").map_err(db_err)?;
-    if hash_pin(&pin, &salt) != expected {
+    let current_hash = hash_pin(&pin, &salt);
+    let legacy_valid = legacy_hash(&pin, &salt) == expected;
+    if current_hash != expected && !legacy_valid {
         let failed: i64 = row.try_get::<i64, _>("failed_attempts").map_err(db_err)? + 1;
         let until = if failed >= 5 {
             Some((Utc::now() + Duration::minutes(5)).to_rfc3339())
         } else {
             None
         };
+        let mut tx = db.begin_counter_write().await?;
         sqlx::query("UPDATE counter_accounts SET failed_attempts=?,locked_until=? WHERE id=?")
             .bind(if until.is_some() { 0 } else { failed })
             .bind(until)
             .bind(&user_id)
-            .execute(pool)
+            .execute(&mut *tx)
             .await
             .map_err(db_err)?;
+        tx.commit().await.map_err(db_err)?;
         return Err("Incorrect name or PIN.".into());
     }
-    sqlx::query("UPDATE counter_accounts SET failed_attempts=0,locked_until=NULL WHERE id=?")
-        .bind(&user_id)
-        .execute(pool)
-        .await
-        .map_err(db_err)?;
+    if legacy_valid {
+        let upgraded_salt = Uuid::new_v4().to_string();
+        let upgraded_hash = hash_pin(&pin, &upgraded_salt);
+        let mut tx = db.begin_counter_write().await?;
+        sqlx::query("UPDATE counter_accounts SET pin_hash=?,pin_salt=?,failed_attempts=0,locked_until=NULL,updated_at=? WHERE id=?")
+            .bind(upgraded_hash).bind(upgraded_salt).bind(Utc::now().to_rfc3339()).bind(&user_id).execute(&mut *tx).await.map_err(db_err)?;
+        tx.commit().await.map_err(db_err)?;
+    } else {
+        let mut tx = db.begin_counter_write().await?;
+        sqlx::query("UPDATE counter_accounts SET failed_attempts=0,locked_until=NULL WHERE id=?")
+            .bind(&user_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(db_err)?;
+        tx.commit().await.map_err(db_err)?;
+    }
     let a = Account {
         id: row.try_get("id").map_err(db_err)?,
         full_name: row.try_get("full_name").map_err(db_err)?,
@@ -270,14 +286,13 @@ pub async fn create_staff(
         return Err("Administrator access is required.".into());
     }
     validate_account(&input)?;
-    let pool = db.writer_pool()?;
     let id = Uuid::new_v4().to_string();
     let salt = Uuid::new_v4().to_string();
     let hash = hash_pin(&input.pin, &salt);
     let old_salt = base64::engine::general_purpose::STANDARD.encode(Uuid::new_v4().as_bytes());
     let old_hash = legacy_hash(&input.pin, &old_salt);
     let now = Utc::now().to_rfc3339();
-    let mut tx = pool.begin().await.map_err(db_err)?;
+    let mut tx = db.begin_counter_write().await?;
     sqlx::query("INSERT INTO counter_accounts(id,full_name,pin_hash,pin_salt,role,active,created_at,updated_at) VALUES(?,?,?,?,'staff',1,?,?)").bind(&id).bind(input.full_name.trim()).bind(hash).bind(salt).bind(&now).bind(&now).execute(&mut *tx).await.map_err(db_err)?;
     sqlx::query("INSERT INTO local_users(id,full_name,pin_hash,pin_salt,role,created_at,updated_at) VALUES(?,?,?,?,'admin',?,?)").bind(&id).bind(input.full_name.trim()).bind(old_hash).bind(old_salt).bind(&now).bind(&now).execute(&mut *tx).await.map_err(db_err)?;
     audit(&mut tx, &actor.id, "staff_created", "account", &id, &now).await?;
@@ -315,7 +330,7 @@ pub async fn update_staff(
         return Err("Staff account not found.".into());
     }
     let now = Utc::now().to_rfc3339();
-    let mut tx = pool.begin().await.map_err(db_err)?;
+    let mut tx = db.begin_counter_write().await?;
     if let Some(active) = active {
         sqlx::query("UPDATE counter_accounts SET active=?,updated_at=? WHERE id=?")
             .bind(active as i64)
@@ -374,42 +389,43 @@ async fn audit(
     Ok(())
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct CustomerInput {
     pub name: String,
     pub phone: String,
     pub customer_id: Option<String>,
 }
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct LineInput {
     pub garment_id: String,
     pub service_id: String,
     pub quantity: u32,
 }
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct OrderInput {
     pub customer: CustomerInput,
     pub items: Vec<LineInput>,
 }
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PaymentInput {
     pub amount_minor: i64,
     pub method: String,
     pub reference: Option<String>,
 }
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SaveInput {
     #[serde(flatten)]
     pub order: OrderInput,
     pub idempotency_key: String,
     pub payment: Option<PaymentInput>,
+    pub reviewed_quote: Quote,
 }
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct QuoteLine {
     pub garment_id: String,
@@ -421,7 +437,7 @@ pub struct QuoteLine {
     pub line_total_minor: i64,
     pub rate_version: i64,
 }
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Quote {
     pub lines: Vec<QuoteLine>,
@@ -442,6 +458,8 @@ pub struct Piece {
     pub position: u32,
     pub total: u32,
     pub matched: bool,
+    pub packing_matched: bool,
+    pub collection_matched: bool,
 }
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -452,6 +470,8 @@ pub struct PrintJob {
     pub printer_id: Option<String>,
     pub os_job_id: Option<String>,
     pub last_error: Option<String>,
+    pub order_id: String,
+    pub order_number: String,
 }
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -460,6 +480,7 @@ pub struct SavedOrder {
     pub order_number: String,
     pub received_at: String,
     pub promised_at: String,
+    pub status: String,
     pub total_minor: i64,
     pub paid_minor: i64,
     pub balance_minor: i64,
@@ -496,8 +517,8 @@ pub async fn catalogue(db: &DatabaseState, session: &CounterSession) -> Result<C
     let r=sqlx::query("SELECT garment_id AS garmentId,service_id AS serviceId,price_minor AS priceMinor,configured,available,version FROM garment_service_rates ORDER BY garment_id,service_id").fetch_all(p).await.map_err(db_err)?;
     Ok(Catalogue {
         garments: g.iter().map(row_value).collect(),
-        services: sv.iter().map(|x| row_value(x)).collect(),
-        rates: r.iter().map(|x| row_value(x)).collect(),
+        services: sv.iter().map(row_value).collect(),
+        rates: r.iter().map(row_value).collect(),
     })
 }
 fn row_value(row: &sqlx::sqlite::SqliteRow) -> serde_json::Value {
@@ -618,29 +639,94 @@ pub async fn set_rate(
             return Err("Ironing services are unavailable for shoes.".into());
         }
     }
+    let mut tx = db.begin_counter_write().await?;
     let result=sqlx::query("UPDATE garment_service_rates SET price_minor=?,configured=?,available=?,version=version+1,updated_at=?,updated_by=? WHERE garment_id=? AND service_id=?")
- .bind(price).bind(price.is_some() as i64).bind(available as i64).bind(Utc::now().to_rfc3339()).bind(&actor.id).bind(garment).bind(service).execute(p).await.map_err(db_err)?;
+ .bind(price).bind(price.is_some() as i64).bind(available as i64).bind(Utc::now().to_rfc3339()).bind(&actor.id).bind(garment).bind(service).execute(&mut *tx).await.map_err(db_err)?;
     if result.rows_affected() != 1 {
         return Err("Garment or service not found.".into());
     }
+    tx.commit().await.map_err(db_err)?;
     Ok(())
 }
+fn submission_hash(input: &SaveInput) -> Result<String, String> {
+    let bytes = serde_json::to_vec(input)
+        .map_err(|error| format!("Could not fingerprint order submission: {error}"))?;
+    Ok(hex(&Sha256::digest(bytes)))
+}
+
 pub async fn save_order(
     db: &DatabaseState,
     session: &CounterSession,
     input: SaveInput,
 ) -> Result<SavedOrder, String> {
     let actor = actor(session)?;
-    let pool = db.writer_pool()?;
-    let now = Utc::now();
-    let quote = quote_at(pool, &input.order, now).await?;
-    let mut tx = pool.begin().await.map_err(db_err)?;
     if input.idempotency_key.trim().is_empty() || input.idempotency_key.len() > 100 {
         return Err("A valid order submission key is required.".into());
     }
+    let pool = db.writer_pool()?;
+    let payload_hash = submission_hash(&input)?;
+    if let Some(row) = sqlx::query(
+        "SELECT order_id,payload_hash FROM counter_order_requests WHERE idempotency_key=?",
+    )
+    .bind(&input.idempotency_key)
+    .fetch_optional(pool)
+    .await
+    .map_err(db_err)?
+    {
+        let id: String = row.try_get("order_id").map_err(db_err)?;
+        let saved_hash: String = row.try_get("payload_hash").map_err(db_err)?;
+        if saved_hash != payload_hash {
+            return Err("This submission key was already used for a different order draft.".into());
+        }
+        return get_saved(db, &id)
+            .await?
+            .ok_or("Saved order could not be loaded.".into());
+    }
+    let legacy_existing: Option<String> =
+        sqlx::query_scalar("SELECT id FROM orders WHERE idempotency_key=?")
+            .bind(&input.idempotency_key)
+            .fetch_optional(pool)
+            .await
+            .map_err(db_err)?;
+    if legacy_existing.is_some() {
+        return Err("This older submission key cannot be verified. Start a new submission.".into());
+    }
+    let now = Utc::now();
+    let quote = quote_at(pool, &input.order, now).await?;
+    if input.reviewed_quote != quote {
+        return Err(
+            "Rates or the promised time changed. Review the refreshed quote before saving.".into(),
+        );
+    }
+    if input
+        .payment
+        .as_ref()
+        .is_some_and(|x| x.amount_minor <= 0 || x.amount_minor > quote.total_minor)
+    {
+        return Err("Initial payment must be a positive whole-paise amount no greater than the order total.".into());
+    }
+    let mut tx = db.begin_counter_write().await?;
+    if let Some(row) = sqlx::query(
+        "SELECT order_id,payload_hash FROM counter_order_requests WHERE idempotency_key=?",
+    )
+    .bind(&input.idempotency_key)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(db_err)?
+    {
+        let id: String = row.try_get("order_id").map_err(db_err)?;
+        let saved_hash: String = row.try_get("payload_hash").map_err(db_err)?;
+        if saved_hash != payload_hash {
+            return Err("This submission key was already used for a different order draft.".into());
+        }
+        tx.rollback().await.map_err(db_err)?;
+        return get_saved(db, &id)
+            .await?
+            .ok_or("Saved order could not be loaded.".into());
+    }
     for line in &quote.lines {
         let current=sqlx::query("SELECT price_minor,configured,available,version FROM garment_service_rates WHERE garment_id=? AND service_id=?")
-     .bind(&line.garment_id).bind(&line.service_id).fetch_optional(&mut *tx).await.map_err(db_err)?.ok_or("The rate changed; quote the order again.")?;
+            .bind(&line.garment_id).bind(&line.service_id).fetch_optional(&mut *tx).await.map_err(db_err)?.ok_or("The rate changed; quote the order again.")?;
         let price = current
             .try_get::<Option<i64>, _>("price_minor")
             .map_err(db_err)?;
@@ -657,18 +743,6 @@ pub async fn save_order(
                     .into(),
             );
         }
-    }
-    if let Some(existing) = sqlx::query("SELECT id FROM orders WHERE idempotency_key=?")
-        .bind(&input.idempotency_key)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(db_err)?
-    {
-        let id: String = existing.try_get("id").map_err(db_err)?;
-        tx.rollback().await.map_err(db_err)?;
-        return get_saved(db, &id)
-            .await?
-            .ok_or("Saved order could not be loaded.".into());
     }
     let received = now.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
     let due = quote.promised_at.clone();
@@ -732,6 +806,8 @@ pub async fn save_order(
         .unwrap_or_default();
     sqlx::query("INSERT INTO orders(id,order_number,customer_id,customer_name,customer_phone,order_type,received_at,expected_ready_at,status,subtotal,discount_type,discount_value,discount_amount,total_amount,payment_status,created_by,created_at,updated_at,origin_device_id,idempotency_key) VALUES(?,?,?,?,?,'piece',?,?,'received',?,'fixed',0,0,?,'unpaid',?,?,?,?,?)")
  .bind(&oid).bind(&order_no).bind(customer_id).bind(input.order.customer.name.trim()).bind(input.order.customer.phone.trim()).bind(&received).bind(&due).bind(quote.total_minor as f64/100.0).bind(quote.total_minor as f64/100.0).bind(&actor.id).bind(&received).bind(&received).bind(device).bind(&input.idempotency_key).execute(&mut *tx).await.map_err(db_err)?;
+    sqlx::query("INSERT INTO counter_order_requests(idempotency_key,order_id,payload_hash,created_at) VALUES(?,?,?,?)")
+        .bind(&input.idempotency_key).bind(&oid).bind(&payload_hash).bind(&received).execute(&mut *tx).await.map_err(db_err)?;
     let mut all_pieces = Vec::new();
     for line in &quote.lines {
         let src = input
@@ -768,6 +844,8 @@ pub async fn save_order(
                 position: all_pieces.len() as u32 + 1,
                 total: quote.piece_count,
                 matched: false,
+                packing_matched: false,
+                collection_matched: false,
             });
             sqlx::query("INSERT INTO order_pieces(id,short_id,order_id,order_item_id,garment_id,service_id,garment_snapshot,service_snapshot,position,total,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)")
        .bind(pid).bind(short).bind(&oid).bind(&item_id).bind(&src.garment_id).bind(&src.service_id).bind(&line.garment).bind(&line.service).bind(all_pieces.len() as u32).bind(quote.piece_count).bind(&received).execute(&mut *tx).await.map_err(db_err)?;
@@ -856,7 +934,7 @@ pub async fn save_order(
 pub async fn get_saved(db: &DatabaseState, id: &str) -> Result<Option<SavedOrder>, String> {
     let p = db.writer_pool()?;
     let o = sqlx::query(
-        "SELECT id,order_number,received_at,expected_ready_at,total_amount FROM orders WHERE id=?",
+        "SELECT id,order_number,received_at,expected_ready_at,total_amount,status FROM orders WHERE id=?",
     )
     .bind(id)
     .fetch_optional(p)
@@ -868,8 +946,9 @@ pub async fn get_saved(db: &DatabaseState, id: &str) -> Result<Option<SavedOrder
     let received: String = o.try_get("received_at").map_err(db_err)?;
     let due: String = o.try_get("expected_ready_at").map_err(db_err)?;
     let total: f64 = o.try_get("total_amount").map_err(db_err)?;
+    let status: String = o.try_get("status").map_err(db_err)?;
     let paid: f64 = sqlx::query_scalar(
-        "SELECT COALESCE(SUM(amount),0) FROM payments WHERE order_id=? AND voided_at IS NULL",
+        "SELECT COALESCE(SUM(amount),0.0) FROM payments WHERE order_id=? AND voided_at IS NULL",
     )
     .bind(&id)
     .fetch_one(p)
@@ -882,6 +961,7 @@ pub async fn get_saved(db: &DatabaseState, id: &str) -> Result<Option<SavedOrder
         order_number: no,
         received_at: received,
         promised_at: due,
+        status,
         total_minor: (total * 100.0).round() as i64,
         paid_minor: (paid * 100.0).round() as i64,
         balance_minor: (total * 100.0).round() as i64 - (paid * 100.0).round() as i64,
@@ -889,10 +969,323 @@ pub async fn get_saved(db: &DatabaseState, id: &str) -> Result<Option<SavedOrder
         print_jobs: jobs,
     }))
 }
-async fn pieces_for(p: &SqlitePool, order: &str) -> Result<Vec<Piece>, String> {
-    let rows=sqlx::query("SELECT p.id,p.short_id,p.garment_id,p.garment_snapshot,p.service_snapshot,p.position,p.total,EXISTS(SELECT 1 FROM piece_matches m WHERE m.piece_id=p.id) AS matched FROM order_pieces p WHERE p.order_id=? ORDER BY p.position").bind(order).fetch_all(p).await.map_err(db_err)?;
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OrderSummary {
+    pub id: String,
+    pub order_number: String,
+    pub customer_name: String,
+    pub customer_phone: String,
+    pub status: String,
+    pub received_at: String,
+    pub promised_at: Option<String>,
+    pub total_minor: i64,
+    pub paid_minor: i64,
+    pub balance_minor: i64,
+    pub piece_count: u32,
+}
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordPaymentInput {
+    pub amount_minor: i64,
+    pub method: String,
+    pub reference: Option<String>,
+    pub idempotency_key: String,
+}
+
+pub async fn search_orders(
+    db: &DatabaseState,
+    session: &CounterSession,
+    query: &str,
+    offset: u32,
+    limit: u32,
+) -> Result<Vec<OrderSummary>, String> {
+    let _ = actor(session)?;
+    if offset > 100_000 || !(1..=100).contains(&limit) {
+        return Err("Order search page is out of range.".into());
+    }
+    let q = query.trim();
+    if q.len() < 2 {
+        return Ok(Vec::new());
+    }
+    let rows = sqlx::query("SELECT o.id,o.order_number,o.customer_name,o.customer_phone,o.status,o.received_at,o.expected_ready_at,o.total_amount,COALESCE((SELECT SUM(p.amount) FROM payments p WHERE p.order_id=o.id AND p.voided_at IS NULL),0.0) AS paid,COALESCE((SELECT COUNT(*) FROM order_pieces p WHERE p.order_id=o.id),0) AS pieces FROM orders o WHERE o.order_number LIKE ? OR o.customer_phone LIKE ? ORDER BY o.created_at DESC LIMIT ? OFFSET ?")
+        .bind(format!("%{q}%")).bind(format!("%{q}%")).bind(limit as i64).bind(offset as i64).fetch_all(db.writer_pool()?).await.map_err(db_err)?;
     rows.iter()
         .map(|r| {
+            let total: f64 = r.try_get("total_amount").map_err(db_err)?;
+            let paid: f64 = r.try_get("paid").map_err(db_err)?;
+            Ok(OrderSummary {
+                id: r.try_get("id").map_err(db_err)?,
+                order_number: r.try_get("order_number").map_err(db_err)?,
+                customer_name: r.try_get("customer_name").map_err(db_err)?,
+                customer_phone: r.try_get("customer_phone").map_err(db_err)?,
+                status: r.try_get("status").map_err(db_err)?,
+                received_at: r.try_get("received_at").map_err(db_err)?,
+                promised_at: r.try_get("expected_ready_at").map_err(db_err)?,
+                total_minor: (total * 100.0).round() as i64,
+                paid_minor: (paid * 100.0).round() as i64,
+                balance_minor: (total * 100.0).round() as i64 - (paid * 100.0).round() as i64,
+                piece_count: r.try_get("pieces").map_err(db_err)?,
+            })
+        })
+        .collect()
+}
+pub async fn get_order(
+    db: &DatabaseState,
+    session: &CounterSession,
+    id: &str,
+) -> Result<Option<SavedOrder>, String> {
+    let _ = actor(session)?;
+    get_saved(db, id).await
+}
+pub async fn record_payment(
+    db: &DatabaseState,
+    session: &CounterSession,
+    order_id: &str,
+    input: RecordPaymentInput,
+) -> Result<SavedOrder, String> {
+    let a = actor(session)?;
+    if input.idempotency_key.trim().is_empty() || input.idempotency_key.len() > 100 {
+        return Err("A payment submission key is required.".into());
+    }
+    if input.amount_minor <= 0
+        || !matches!(
+            input.method.as_str(),
+            "cash" | "upi" | "card" | "bank_transfer" | "other"
+        )
+    {
+        return Err("Enter a positive whole-paise payment and a valid method.".into());
+    }
+    let hash = hex(&Sha256::digest(
+        serde_json::to_vec(&(&input.amount_minor, &input.method, &input.reference))
+            .map_err(|e| e.to_string())?,
+    ));
+    let p = db.writer_pool()?;
+    if let Some(row) =
+        sqlx::query("SELECT order_id,payload_hash FROM counter_payment_requests WHERE request_id=?")
+            .bind(&input.idempotency_key)
+            .fetch_optional(p)
+            .await
+            .map_err(db_err)?
+    {
+        let prior_order: String = row.try_get("order_id").map_err(db_err)?;
+        let prior_hash: String = row.try_get("payload_hash").map_err(db_err)?;
+        if prior_order != order_id || prior_hash != hash {
+            return Err("Payment request key was already used for a different payment.".into());
+        }
+        return get_saved(db, order_id)
+            .await?
+            .ok_or("Order not found.".into());
+    }
+    let mut tx = db.begin_counter_write().await?;
+    if let Some(row) =
+        sqlx::query("SELECT order_id,payload_hash FROM counter_payment_requests WHERE request_id=?")
+            .bind(&input.idempotency_key)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(db_err)?
+    {
+        let prior_order: String = row.try_get("order_id").map_err(db_err)?;
+        let prior_hash: String = row.try_get("payload_hash").map_err(db_err)?;
+        if prior_order != order_id || prior_hash != hash {
+            return Err("Payment request key was already used for a different payment.".into());
+        }
+        tx.rollback().await.map_err(db_err)?;
+        return get_saved(db, order_id)
+            .await?
+            .ok_or("Order not found.".into());
+    }
+    let row = sqlx::query("SELECT total_amount,status FROM orders WHERE id=?")
+        .bind(order_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(db_err)?
+        .ok_or("Order not found.".to_string())?;
+    let total: f64 = row.try_get("total_amount").map_err(db_err)?;
+    let status: String = row.try_get("status").map_err(db_err)?;
+    if status == "cancelled" {
+        return Err("Payments cannot be added to a cancelled order.".into());
+    }
+    let paid: f64 = sqlx::query_scalar(
+        "SELECT COALESCE(SUM(amount),0.0) FROM payments WHERE order_id=? AND voided_at IS NULL",
+    )
+    .bind(order_id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(db_err)?;
+    let total_minor = (total * 100.0).round() as i64;
+    let paid_minor = (paid * 100.0).round() as i64;
+    if input.amount_minor > total_minor - paid_minor {
+        return Err("Payment cannot exceed the outstanding balance.".into());
+    }
+    let now = Utc::now().to_rfc3339();
+    let payment_id = Uuid::new_v4().to_string();
+    sqlx::query("INSERT INTO payments(id,order_id,amount,method,reference_number,recorded_at,recorded_by,created_at,updated_at,origin_device_id) VALUES(?,?,?,?,?,?,?,?,?,?)")
+        .bind(&payment_id).bind(order_id).bind(input.amount_minor as f64/100.0).bind(&input.method).bind(&input.reference).bind(&now).bind(&a.id).bind(&now).bind(&now).bind("counter").execute(&mut *tx).await.map_err(db_err)?;
+    sqlx::query("INSERT INTO counter_payment_requests(request_id,order_id,payment_id,payload_hash,created_at) VALUES(?,?,?,?,?)").bind(&input.idempotency_key).bind(order_id).bind(&payment_id).bind(hash).bind(&now).execute(&mut *tx).await.map_err(db_err)?;
+    let new_paid = paid_minor + input.amount_minor;
+    let payment_status = if new_paid == total_minor {
+        "paid"
+    } else {
+        "partially_paid"
+    };
+    sqlx::query("UPDATE orders SET payment_status=?,updated_at=? WHERE id=?")
+        .bind(payment_status)
+        .bind(&now)
+        .bind(order_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(db_err)?;
+    audit(&mut tx, &a.id, "payment_recorded", "order", order_id, &now).await?;
+    tx.commit().await.map_err(db_err)?;
+    get_saved(db, order_id)
+        .await?
+        .ok_or("Order not found.".into())
+}
+pub async fn update_order_status(
+    db: &DatabaseState,
+    session: &CounterSession,
+    order_id: &str,
+    next: &str,
+) -> Result<SavedOrder, String> {
+    let a = actor(session)?;
+    if !matches!(
+        next,
+        "washing" | "drying" | "ironing" | "quality_check" | "packing" | "ready"
+    ) {
+        return Err("Choose a valid processing status.".into());
+    }
+    let mut tx = db.begin_counter_write().await?;
+    let current: String = sqlx::query_scalar("SELECT status FROM orders WHERE id=?")
+        .bind(order_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(db_err)?
+        .ok_or("Order not found.".to_string())?;
+    let allowed = match current.as_str() {
+        "received" => matches!(
+            next,
+            "washing" | "drying" | "ironing" | "quality_check" | "packing" | "ready"
+        ),
+        "washing" => matches!(
+            next,
+            "drying" | "ironing" | "quality_check" | "packing" | "ready"
+        ),
+        "drying" => matches!(next, "ironing" | "quality_check" | "packing" | "ready"),
+        "ironing" => matches!(next, "quality_check" | "packing" | "ready"),
+        "quality_check" => matches!(next, "packing" | "ready"),
+        "packing" => next == "ready",
+        _ => false,
+    };
+    if !allowed {
+        return Err(format!("Order cannot move from {current} to {next}."));
+    }
+    let now = Utc::now().to_rfc3339();
+    sqlx::query("UPDATE orders SET status=?,updated_at=? WHERE id=?")
+        .bind(next)
+        .bind(&now)
+        .bind(order_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(db_err)?;
+    audit(
+        &mut tx,
+        &a.id,
+        "order_status_changed",
+        "order",
+        order_id,
+        &now,
+    )
+    .await?;
+    tx.commit().await.map_err(db_err)?;
+    get_saved(db, order_id)
+        .await?
+        .ok_or("Order not found.".into())
+}
+pub async fn collect_order(
+    db: &DatabaseState,
+    session: &CounterSession,
+    order_id: &str,
+    piece_ids: Vec<String>,
+    request_id: &str,
+) -> Result<SavedOrder, String> {
+    let a = actor(session)?;
+    if request_id.trim().is_empty() || request_id.len() > 100 {
+        return Err("A collection submission key is required.".into());
+    }
+    if let Some(row) =
+        sqlx::query("SELECT order_id FROM counter_collection_requests WHERE request_id=?")
+            .bind(request_id)
+            .fetch_optional(db.writer_pool()?)
+            .await
+            .map_err(db_err)?
+    {
+        let existing: String = row.try_get("order_id").map_err(db_err)?;
+        if existing != order_id {
+            return Err("Collection request key belongs to another order.".into());
+        }
+        return get_saved(db, order_id)
+            .await?
+            .ok_or("Order not found.".into());
+    }
+    let status: Option<String> = sqlx::query_scalar("SELECT status FROM orders WHERE id=?")
+        .bind(order_id)
+        .fetch_optional(db.writer_pool()?)
+        .await
+        .map_err(db_err)?;
+    if status.as_deref() != Some("ready") {
+        return Err("Only ready orders can be collected.".into());
+    }
+    let result = match_pieces(db, session, order_id, "collection", piece_ids).await?;
+    if !result.complete {
+        return Err("Every order piece must be confirmed for collection first.".into());
+    }
+    let mut tx = db.begin_counter_write().await?;
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM order_pieces WHERE order_id=?")
+        .bind(order_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(db_err)?;
+    let matched: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM piece_matches WHERE order_id=? AND stage='collection'",
+    )
+    .bind(order_id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(db_err)?;
+    if count == 0 || count != matched {
+        return Err("Collection requires all individually tracked pieces.".into());
+    }
+    let now = Utc::now().to_rfc3339();
+    sqlx::query("UPDATE orders SET status='collected',updated_at=? WHERE id=? AND status='ready'")
+        .bind(&now)
+        .bind(order_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(db_err)?;
+    sqlx::query(
+        "INSERT INTO counter_collection_requests(request_id,order_id,created_at) VALUES(?,?,?)",
+    )
+    .bind(request_id)
+    .bind(order_id)
+    .bind(&now)
+    .execute(&mut *tx)
+    .await
+    .map_err(db_err)?;
+    audit(&mut tx, &a.id, "order_collected", "order", order_id, &now).await?;
+    tx.commit().await.map_err(db_err)?;
+    get_saved(db, order_id)
+        .await?
+        .ok_or("Order not found.".into())
+}
+
+async fn pieces_for(p: &SqlitePool, order: &str) -> Result<Vec<Piece>, String> {
+    let rows=sqlx::query("SELECT p.id,p.short_id,p.garment_id,p.garment_snapshot,p.service_snapshot,p.position,p.total,EXISTS(SELECT 1 FROM piece_matches m WHERE m.piece_id=p.id AND m.stage='packing') AS packing_matched,EXISTS(SELECT 1 FROM piece_matches m WHERE m.piece_id=p.id AND m.stage='collection') AS collection_matched FROM order_pieces p WHERE p.order_id=? ORDER BY p.position")
+        .bind(order).fetch_all(p).await.map_err(db_err)?;
+    rows.iter()
+        .map(|r| {
+            let packing = r.try_get::<i64, _>("packing_matched").map_err(db_err)? == 1;
+            let collection = r.try_get::<i64, _>("collection_matched").map_err(db_err)? == 1;
             Ok(Piece {
                 id: r.try_get("id").map_err(db_err)?,
                 short_id: r.try_get("short_id").map_err(db_err)?,
@@ -901,16 +1294,21 @@ async fn pieces_for(p: &SqlitePool, order: &str) -> Result<Vec<Piece>, String> {
                 service: r.try_get("service_snapshot").map_err(db_err)?,
                 position: r.try_get("position").map_err(db_err)?,
                 total: r.try_get("total").map_err(db_err)?,
-                matched: r.try_get::<i64, _>("matched").map_err(db_err)? == 1,
+                matched: packing || collection,
+                packing_matched: packing,
+                collection_matched: collection,
             })
         })
         .collect()
 }
+
 async fn jobs_for(p: &SqlitePool, order: Option<&str>) -> Result<Vec<PrintJob>, String> {
-    let rows = if let Some(id) = order {
-        sqlx::query("SELECT id,kind,state,printer_id,os_job_id,last_error FROM print_jobs WHERE order_id=? ORDER BY created_at").bind(id).fetch_all(p).await.map_err(db_err)?
+    let rows = if let Some(order) = order {
+        sqlx::query("SELECT j.id,j.kind,j.state,j.printer_id,j.os_job_id,j.last_error,j.order_id,o.order_number FROM print_jobs j JOIN orders o ON o.id=j.order_id WHERE j.order_id=? ORDER BY j.created_at")
+            .bind(order).fetch_all(p).await.map_err(db_err)?
     } else {
-        sqlx::query("SELECT id,kind,state,printer_id,os_job_id,last_error FROM print_jobs ORDER BY created_at DESC LIMIT 200").fetch_all(p).await.map_err(db_err)?
+        sqlx::query("SELECT j.id,j.kind,j.state,j.printer_id,j.os_job_id,j.last_error,j.order_id,o.order_number FROM print_jobs j JOIN orders o ON o.id=j.order_id ORDER BY j.created_at DESC LIMIT 200")
+            .fetch_all(p).await.map_err(db_err)?
     };
     rows.iter()
         .map(|r| {
@@ -921,10 +1319,13 @@ async fn jobs_for(p: &SqlitePool, order: Option<&str>) -> Result<Vec<PrintJob>, 
                 printer_id: r.try_get("printer_id").map_err(db_err)?,
                 os_job_id: r.try_get("os_job_id").map_err(db_err)?,
                 last_error: r.try_get("last_error").map_err(db_err)?,
+                order_id: r.try_get("order_id").map_err(db_err)?,
+                order_number: r.try_get("order_number").map_err(db_err)?,
             })
         })
         .collect()
 }
+
 pub async fn pieces(
     db: &DatabaseState,
     session: &CounterSession,
@@ -947,52 +1348,64 @@ pub async fn match_pieces(
     db: &DatabaseState,
     session: &CounterSession,
     order: &str,
+    stage: &str,
     ids: Vec<String>,
 ) -> Result<MatchResult, String> {
     let a = actor(session)?;
+    if !matches!(stage, "packing" | "collection") {
+        return Err("Choose packing or collection checklist.".into());
+    }
     let p = db.writer_pool()?;
     let expected = pieces_for(p, order).await?;
     if expected.is_empty() {
         return Err("Order has no individually tracked pieces.".into());
     }
-    let mut duplicates = Vec::new();
+    let mut by_input = std::collections::HashMap::new();
+    let mut valid = std::collections::HashSet::new();
+    for piece in &expected {
+        valid.insert(piece.id.clone());
+        valid.insert(piece.short_id.clone());
+        by_input.insert(piece.id.clone(), piece.id.clone());
+        by_input.insert(piece.short_id.clone(), piece.id.clone());
+    }
     let mut seen = std::collections::HashSet::new();
+    let mut resolved = std::collections::HashSet::new();
+    let mut duplicates = Vec::new();
+    let mut wrong = Vec::new();
     for id in &ids {
-        if !seen.insert(id.clone()) {
-            duplicates.push(id.clone())
+        if let Some(canonical) = by_input.get(id) {
+            if !seen.insert(canonical.clone()) {
+                duplicates.push(id.clone());
+            } else {
+                resolved.insert(canonical.clone());
+            }
+        } else {
+            wrong.push(id.clone());
         }
     }
-    let valid: std::collections::HashSet<String> = expected.iter().map(|x| x.id.clone()).collect();
-    let wrong: Vec<String> = ids
-        .iter()
-        .filter(|x| !valid.contains(*x))
-        .cloned()
-        .collect();
-    let mut tx = p.begin().await.map_err(db_err)?;
+    let mut tx = db.begin_counter_write().await?;
+    sqlx::query("DELETE FROM piece_matches WHERE order_id=? AND stage=?")
+        .bind(order)
+        .bind(stage)
+        .execute(&mut *tx)
+        .await
+        .map_err(db_err)?;
     let now = Utc::now().to_rfc3339();
-    for id in ids
-        .iter()
-        .filter(|x| valid.contains(*x))
-        .collect::<std::collections::HashSet<_>>()
-    {
-        sqlx::query("INSERT OR IGNORE INTO piece_matches(id,order_id,piece_id,matched_by,matched_at) VALUES(?,?,?,?,?)").bind(Uuid::new_v4().to_string()).bind(order).bind(id.clone()).bind(&a.id).bind(&now).execute(&mut *tx).await.map_err(db_err)?;
+    for id in &resolved {
+        sqlx::query("INSERT INTO piece_matches(id,order_id,piece_id,stage,matched_by,matched_at) VALUES(?,?,?,?,?,?)")
+            .bind(Uuid::new_v4().to_string()).bind(order).bind(id).bind(stage).bind(&a.id).bind(&now)
+            .execute(&mut *tx).await.map_err(db_err)?;
     }
-    let matched: Vec<String> =
-        sqlx::query_scalar("SELECT piece_id FROM piece_matches WHERE order_id=?")
-            .bind(order)
-            .fetch_all(&mut *tx)
-            .await
-            .map_err(db_err)?;
     let missing = expected
         .iter()
-        .filter(|p| !matched.contains(&p.id))
-        .map(|p| p.id.clone())
+        .filter(|piece| !resolved.contains(&piece.id))
+        .map(|piece| piece.short_id.clone())
         .collect::<Vec<_>>();
     let complete = missing.is_empty() && wrong.is_empty() && duplicates.is_empty();
-    audit(&mut tx, &a.id, "pieces_matched", "order", order, &now).await?;
+    audit(&mut tx, &a.id, "pieces_matched", stage, order, &now).await?;
     tx.commit().await.map_err(db_err)?;
     Ok(MatchResult {
-        matched_count: matched.len(),
+        matched_count: resolved.len(),
         expected_count: expected.len(),
         missing_ids: missing,
         duplicate_ids: duplicates,
@@ -1055,9 +1468,8 @@ pub async fn set_profiles(
             return Err(format!("Selected printer is not available: {id}"));
         }
     }
-    let p = db.writer_pool()?;
     let now = Utc::now().to_rfc3339();
-    let mut tx = p.begin().await.map_err(db_err)?;
+    let mut tx = db.begin_counter_write().await?;
     for (kind, id) in [
         ("bill", input.bill_printer_id),
         ("tags", input.tag_printer_id),
@@ -1097,21 +1509,40 @@ pub async fn dispatch_jobs(
     session: &CounterSession,
     order: &str,
 ) -> Result<Vec<PrintJob>, String> {
+    dispatch_jobs_filter(db, session, order, None).await
+}
+async fn dispatch_jobs_filter(
+    db: &DatabaseState,
+    session: &CounterSession,
+    order: &str,
+    only_job: Option<&str>,
+) -> Result<Vec<PrintJob>, String> {
     let a = actor(session)?;
     let p = db.writer_pool()?;
     let profiles = get_profiles(db, session)
         .await?
         .ok_or("Configure both bill and tag printers in Admin settings.")?;
-    let ids: Vec<String> = sqlx::query_scalar(
-        "SELECT id FROM print_jobs WHERE order_id=? AND state='pending' ORDER BY kind",
-    )
-    .bind(order)
-    .fetch_all(p)
-    .await
-    .map_err(db_err)?;
+    let ids: Vec<String> = if let Some(job_id) = only_job {
+        sqlx::query_scalar(
+            "SELECT id FROM print_jobs WHERE order_id=? AND id=? AND state='pending'",
+        )
+        .bind(order)
+        .bind(job_id)
+        .fetch_all(p)
+        .await
+        .map_err(db_err)?
+    } else {
+        sqlx::query_scalar(
+            "SELECT id FROM print_jobs WHERE order_id=? AND state='pending' ORDER BY kind",
+        )
+        .bind(order)
+        .fetch_all(p)
+        .await
+        .map_err(db_err)?
+    };
     for id in ids {
         let now = Utc::now().to_rfc3339();
-        let mut tx = p.begin().await.map_err(db_err)?;
+        let mut tx = db.begin_counter_write().await?;
         let row =
             sqlx::query("SELECT kind,payload_json FROM print_jobs WHERE id=? AND state='pending'")
                 .bind(&id)
@@ -1181,7 +1612,7 @@ pub async fn dispatch_jobs(
             }
         };
         let finished = Utc::now().to_rfc3339();
-        let mut tx = p.begin().await.map_err(db_err)?;
+        let mut tx = db.begin_counter_write().await?;
         sqlx::query("UPDATE print_jobs SET state=?,os_job_id=?,last_error=?,updated_at=? WHERE id=? AND state='submitting'").bind(state).bind(os.clone()).bind(error.clone()).bind(&finished).bind(&id).execute(&mut *tx).await.map_err(db_err)?;
         sqlx::query(
             "UPDATE print_job_attempts SET state=?,os_job_id=?,error=?,finished_at=? WHERE id=?",
@@ -1207,6 +1638,26 @@ pub async fn dispatch_jobs(
     }
     jobs_for(p, Some(order)).await
 }
+pub async fn dispatch_job(
+    db: &DatabaseState,
+    session: &CounterSession,
+    job_id: &str,
+) -> Result<PrintJob, String> {
+    let _ = actor(session)?;
+    let p = db.writer_pool()?;
+    let order: String = sqlx::query_scalar("SELECT order_id FROM print_jobs WHERE id=?")
+        .bind(job_id)
+        .fetch_optional(p)
+        .await
+        .map_err(db_err)?
+        .ok_or("Print job not found.".to_string())?;
+    dispatch_jobs_filter(db, session, &order, Some(job_id)).await?;
+    jobs_for(p, Some(&order))
+        .await?
+        .into_iter()
+        .find(|job| job.id == job_id)
+        .ok_or("Print job not found.".into())
+}
 pub async fn retry_job(
     db: &DatabaseState,
     session: &CounterSession,
@@ -1215,13 +1666,14 @@ pub async fn retry_job(
 ) -> Result<PrintJob, String> {
     let a = actor(session)?;
     let p = db.writer_pool()?;
-    let row = sqlx::query("SELECT state FROM print_jobs WHERE id=?")
+    let row = sqlx::query("SELECT state,order_id FROM print_jobs WHERE id=?")
         .bind(job_id)
         .fetch_optional(p)
         .await
         .map_err(db_err)?
         .ok_or("Print job not found.")?;
     let state: String = row.try_get("state").map_err(db_err)?;
+    let order_id: String = row.try_get("order_id").map_err(db_err)?;
     if state == "uncertain" && !confirm_uncertain {
         return Err(
             "Inspect the printer output, then explicitly confirm before retrying an uncertain job."
@@ -1232,7 +1684,7 @@ pub async fn retry_job(
         return Err("Only failed or explicitly confirmed uncertain jobs can be retried.".into());
     }
     let now = Utc::now().to_rfc3339();
-    let mut tx = p.begin().await.map_err(db_err)?;
+    let mut tx = db.begin_counter_write().await?;
     sqlx::query("UPDATE print_jobs SET state='pending',last_error=NULL,os_job_id=NULL,updated_at=? WHERE id=?").bind(&now).bind(job_id).execute(&mut *tx).await.map_err(db_err)?;
     audit(
         &mut tx,
@@ -1244,21 +1696,12 @@ pub async fn retry_job(
     )
     .await?;
     tx.commit().await.map_err(db_err)?;
-    let row = sqlx::query(
-        "SELECT id,kind,state,printer_id,os_job_id,last_error FROM print_jobs WHERE id=?",
-    )
-    .bind(job_id)
-    .fetch_one(p)
-    .await
-    .map_err(db_err)?;
-    Ok(PrintJob {
-        id: row.try_get("id").map_err(db_err)?,
-        kind: row.try_get("kind").map_err(db_err)?,
-        state: row.try_get("state").map_err(db_err)?,
-        printer_id: row.try_get("printer_id").map_err(db_err)?,
-        os_job_id: row.try_get("os_job_id").map_err(db_err)?,
-        last_error: row.try_get("last_error").map_err(db_err)?,
-    })
+    dispatch_jobs_filter(db, session, &order_id, Some(job_id)).await?;
+    jobs_for(p, Some(&order_id))
+        .await?
+        .into_iter()
+        .find(|job| job.id == job_id)
+        .ok_or("Print job not found.".into())
 }
 pub async fn reprint_output(
     db: &DatabaseState,
@@ -1276,14 +1719,34 @@ pub async fn reprint_output(
         return Err("A valid reprint request key is required.".into());
     }
     let p = db.writer_pool()?;
-    if let Some(row) = sqlx::query("SELECT id,order_id,kind,state,printer_id,os_job_id,last_error FROM print_jobs WHERE reprint_request_id=?")
-        .bind(request_id).fetch_optional(p).await.map_err(db_err)? {
+    let mut canonical_piece_ids = piece_ids.clone();
+    canonical_piece_ids.sort();
+    let request_hash = hex(&Sha256::digest(
+        serde_json::to_vec(&(order_id, kind, canonical_piece_ids)).map_err(|e| e.to_string())?,
+    ));
+    if let Some(row) = sqlx::query(
+        "SELECT id,order_id,kind,reprint_payload_hash FROM print_jobs WHERE reprint_request_id=?",
+    )
+    .bind(request_id)
+    .fetch_optional(p)
+    .await
+    .map_err(db_err)?
+    {
         let existing_order: String = row.try_get("order_id").map_err(db_err)?;
         let existing_kind: String = row.try_get("kind").map_err(db_err)?;
-        if existing_order != order_id || existing_kind != kind {
+        let existing_hash: Option<String> = row.try_get("reprint_payload_hash").map_err(db_err)?;
+        if existing_order != order_id
+            || existing_kind != kind
+            || existing_hash.as_deref() != Some(request_hash.as_str())
+        {
             return Err("Reprint request key is already used for another output.".into());
         }
-        return Ok(PrintJob { id: row.try_get("id").map_err(db_err)?, kind: row.try_get("kind").map_err(db_err)?, state: row.try_get("state").map_err(db_err)?, printer_id: row.try_get("printer_id").map_err(db_err)?, os_job_id: row.try_get("os_job_id").map_err(db_err)?, last_error: row.try_get("last_error").map_err(db_err)? });
+        let existing_id: String = row.try_get("id").map_err(db_err)?;
+        return jobs_for(p, Some(order_id))
+            .await?
+            .into_iter()
+            .find(|job| job.id == existing_id)
+            .ok_or("Print job not found.".into());
     }
     let source = sqlx::query("SELECT id,payload_json FROM print_jobs WHERE order_id=? AND kind=? AND source_job_id IS NULL ORDER BY created_at DESC LIMIT 1")
         .bind(order_id).bind(kind).fetch_optional(p).await.map_err(db_err)?.ok_or("Saved print document not found.")?;
@@ -1305,11 +1768,10 @@ pub async fn reprint_output(
         let requested: std::collections::HashSet<&str> =
             piece_ids.iter().map(String::as_str).collect();
         if requested.len() != piece_ids.len()
-            || tags
+            || !tags
                 .pieces
                 .iter()
                 .any(|p| requested.contains(p.piece_id.as_str()))
-                == false
             || requested
                 .iter()
                 .any(|id| !tags.pieces.iter().any(|p| p.piece_id == **id))
@@ -1318,17 +1780,12 @@ pub async fn reprint_output(
         }
         tags.pieces
             .retain(|p| requested.contains(p.piece_id.as_str()));
-        let total = tags.pieces.len() as u32;
-        for (index, piece) in tags.pieces.iter_mut().enumerate() {
-            piece.position = index as u32 + 1;
-            piece.total = total;
-        }
     }
     let now = Utc::now().to_rfc3339();
     let id = Uuid::new_v4().to_string();
-    let mut tx = p.begin().await.map_err(db_err)?;
-    sqlx::query("INSERT INTO print_jobs(id,order_id,kind,state,payload_json,created_at,updated_at,source_job_id,reprint_request_id) VALUES(?,?,?,'pending',?,?,?,?,?)")
-        .bind(&id).bind(order_id).bind(kind).bind(serde_json::to_string(&document).map_err(|e| e.to_string())?).bind(&now).bind(&now).bind(&source_id).bind(request_id).execute(&mut *tx).await.map_err(db_err)?;
+    let mut tx = db.begin_counter_write().await?;
+    sqlx::query("INSERT INTO print_jobs(id,order_id,kind,state,payload_json,created_at,updated_at,source_job_id,reprint_request_id,reprint_payload_hash) VALUES(?,?,?,'pending',?,?,?,?,?,?)")
+        .bind(&id).bind(order_id).bind(kind).bind(serde_json::to_string(&document).map_err(|e| e.to_string())?).bind(&now).bind(&now).bind(&source_id).bind(request_id).bind(request_hash).execute(&mut *tx).await.map_err(db_err)?;
     audit(
         &mut tx,
         &a.id,
@@ -1339,21 +1796,19 @@ pub async fn reprint_output(
     )
     .await?;
     tx.commit().await.map_err(db_err)?;
-    Ok(PrintJob {
-        id,
-        kind: kind.into(),
-        state: "pending".into(),
-        printer_id: None,
-        os_job_id: None,
-        last_error: None,
-    })
+    jobs_for(p, Some(order_id))
+        .await?
+        .into_iter()
+        .find(|job| job.id == id)
+        .ok_or("Print job not found.".into())
 }
 
 pub async fn recover_submitting(db: &DatabaseState) -> Result<(), String> {
-    let p = db.writer_pool()?;
     let now = Utc::now().to_rfc3339();
-    sqlx::query("UPDATE print_job_attempts SET state='uncertain',error='Application ended during submission; inspect output before retrying.',finished_at=? WHERE state='submitting'").bind(&now).execute(p).await.map_err(db_err)?;
-    sqlx::query("UPDATE print_jobs SET state='uncertain',last_error='Application ended during submission; inspect output before retrying.',updated_at=? WHERE state='submitting'").bind(now).execute(p).await.map_err(db_err)?;
+    let mut tx = db.begin_counter_write().await?;
+    sqlx::query("UPDATE print_job_attempts SET state='uncertain',error='Application ended during submission; inspect output before retrying.',finished_at=? WHERE state='submitting'").bind(&now).execute(&mut *tx).await.map_err(db_err)?;
+    sqlx::query("UPDATE print_jobs SET state='uncertain',last_error='Application ended during submission; inspect output before retrying.',updated_at=? WHERE state='submitting'").bind(now).execute(&mut *tx).await.map_err(db_err)?;
+    tx.commit().await.map_err(db_err)?;
     Ok(())
 }
 
@@ -1427,6 +1882,84 @@ mod counter_tests {
         }
     }
     #[test]
+    fn v1_upgrade_preserves_existing_admin_and_migrates_pin_on_first_login() {
+        tauri::async_runtime::block_on(async {
+            let path = fixture_path();
+            let pool = sqlx::sqlite::SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(
+                    sqlx::sqlite::SqliteConnectOptions::new()
+                        .filename(&path)
+                        .create_if_missing(true)
+                        .foreign_keys(true),
+                )
+                .await
+                .unwrap();
+            sqlx::raw_sql(include_str!("../migrations/001_initial_schema.sql"))
+                .execute(&pool)
+                .await
+                .unwrap();
+            let old_hash = legacy_hash("2468", "legacy-salt");
+            sqlx::query("INSERT INTO local_users(id,full_name,pin_hash,pin_salt,role,created_at,updated_at) VALUES('legacy-admin','Laundry Owner',?,'legacy-salt','admin','2024-01-01','2024-01-01')").bind(&old_hash).execute(&pool).await.unwrap();
+            sqlx::query("INSERT INTO app_settings(key,value,updated_at) VALUES('legacy-record','preserve-me','2024-01-01')").execute(&pool).await.unwrap();
+            sqlx::query("PRAGMA user_version=1")
+                .execute(&pool)
+                .await
+                .unwrap();
+            pool.close().await;
+            let db = DatabaseState::open(path.clone()).await;
+            let session = CounterSession::default();
+            let state = bootstrap(&db, &session).await.unwrap();
+            assert!(!state.setup_required);
+            assert_eq!(state.accounts.len(), 1);
+            assert_eq!(state.accounts[0].id, "legacy-admin");
+            assert!(login(&db, &session, "legacy-admin".into(), "0000".into())
+                .await
+                .is_err());
+            let account = login(&db, &session, "legacy-admin".into(), "2468".into())
+                .await
+                .unwrap();
+            assert_eq!(account.full_name, "Laundry Owner");
+            assert!(setup_admin(
+                &db,
+                &session,
+                AccountInput {
+                    full_name: "Attacker".into(),
+                    pin: "9876".into()
+                }
+            )
+            .await
+            .is_err());
+            let saved_hash: String =
+                sqlx::query_scalar("SELECT pin_hash FROM local_users WHERE id='legacy-admin'")
+                    .fetch_one(db.writer_pool().unwrap())
+                    .await
+                    .unwrap();
+            assert_eq!(
+                saved_hash, old_hash,
+                "legacy web credential remains compatible"
+            );
+            let native_hash: String =
+                sqlx::query_scalar("SELECT pin_hash FROM counter_accounts WHERE id='legacy-admin'")
+                    .fetch_one(db.writer_pool().unwrap())
+                    .await
+                    .unwrap();
+            assert_ne!(
+                native_hash, old_hash,
+                "native hash upgrades after successful PIN verification"
+            );
+            let marker: String =
+                sqlx::query_scalar("SELECT value FROM app_settings WHERE key='legacy-record'")
+                    .fetch_one(db.writer_pool().unwrap())
+                    .await
+                    .unwrap();
+            assert_eq!(marker, "preserve-me");
+            drop(db);
+            let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        });
+    }
+
+    #[test]
     fn promised_time_uses_ist_calendar_days_and_fixed_1700_cutoff() {
         let at = |s| {
             chrono::DateTime::parse_from_rfc3339(s)
@@ -1497,8 +2030,10 @@ mod counter_tests {
                 .unwrap_err()
                 .contains("unavailable"));
 
+            let reviewed_quote = quote(&db, &admin, &order_input(2)).await.unwrap();
             let save = |key: &str| SaveInput {
                 order: order_input(2),
+                reviewed_quote: reviewed_quote.clone(),
                 idempotency_key: key.into(),
                 payment: Some(PaymentInput {
                     amount_minor: 100,
@@ -1533,6 +2068,7 @@ mod counter_tests {
                 &db,
                 &admin,
                 &first.order_id,
+                "packing",
                 vec![ids[0].clone(), ids[0].clone(), "wrong-order-piece".into()],
             )
             .await
@@ -1540,7 +2076,7 @@ mod counter_tests {
             assert!(!bad.complete);
             assert_eq!(bad.duplicate_ids.len(), 1);
             assert_eq!(bad.wrong_order_ids.len(), 1);
-            let complete = match_pieces(&db, &admin, &first.order_id, ids)
+            let complete = match_pieces(&db, &admin, &first.order_id, "packing", ids)
                 .await
                 .unwrap();
             assert!(complete.complete);
@@ -1561,12 +2097,25 @@ mod counter_tests {
                 &admin,
                 &first.order_id,
                 "tags",
-                vec![first.pieces[1].short_id.clone()],
+                vec![first.pieces[0].short_id.clone()],
                 "reprint-1",
             )
             .await
             .unwrap();
             assert_eq!(reprint.id, same.id);
+            assert!(
+                reprint_output(
+                    &db,
+                    &admin,
+                    &first.order_id,
+                    "tags",
+                    vec![first.pieces[1].short_id.clone()],
+                    "reprint-1",
+                )
+                .await
+                .is_err(),
+                "a reprint key cannot silently select a different subset"
+            );
             let payload: String =
                 sqlx::query_scalar("SELECT payload_json FROM print_jobs WHERE id=?")
                     .bind(&reprint.id)
@@ -1611,6 +2160,234 @@ mod counter_tests {
             assert_eq!(recovered, "uncertain");
             assert_eq!(attempt_state, "uncertain");
             drop(db);
+            let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        });
+    }
+
+    #[test]
+    fn reviewed_quotes_payments_collection_and_partial_tag_positions_are_durable() {
+        tauri::async_runtime::block_on(async {
+            let path = fixture_path();
+            let db = DatabaseState::open(path.clone()).await;
+            assert_eq!(db.info().error, None);
+            let admin = admin_fixture(&db).await;
+            set_rate(&db, &admin, "g-shirt", "svc-wash", Some(275), true)
+                .await
+                .unwrap();
+
+            let input = order_input(4);
+            let reviewed = quote(&db, &admin, &input).await.unwrap();
+            let save = |key: &str| SaveInput {
+                order: input.clone(),
+                idempotency_key: key.into(),
+                payment: None,
+                reviewed_quote: reviewed.clone(),
+            };
+            let order = save_order(&db, &admin, save("reviewed-4-piece"))
+                .await
+                .unwrap();
+            assert_eq!(order.pieces.len(), 4);
+            assert_eq!(
+                order.pieces.iter().map(|p| p.position).collect::<Vec<_>>(),
+                vec![1, 2, 3, 4]
+            );
+            set_rate(&db, &admin, "g-shirt", "svc-wash", Some(300), true)
+                .await
+                .unwrap();
+            let retry = save_order(&db, &admin, save("reviewed-4-piece"))
+                .await
+                .unwrap();
+            assert_eq!(
+                retry.order_id, order.order_id,
+                "same-key exact retries survive later rate changes"
+            );
+            let mut changed = save("reviewed-4-piece");
+            changed.order.items[0].quantity = 3;
+            assert!(save_order(&db, &admin, changed).await.is_err());
+            assert!(save_order(&db, &admin, save("new-key-stale-quote"))
+                .await
+                .is_err());
+
+            let payment = RecordPaymentInput {
+                amount_minor: 400,
+                method: "upi".into(),
+                reference: Some("fixture-ref".into()),
+                idempotency_key: "payment-once".into(),
+            };
+            assert!(
+                record_payment(
+                    &db,
+                    &admin,
+                    &order.order_id,
+                    RecordPaymentInput {
+                        amount_minor: 1101,
+                        ..payment.clone()
+                    }
+                )
+                .await
+                .is_err(),
+                "overpayment is rejected"
+            );
+            let paid = record_payment(&db, &admin, &order.order_id, payment.clone())
+                .await
+                .unwrap();
+            assert_eq!(paid.paid_minor, 400);
+            let paid_retry = record_payment(&db, &admin, &order.order_id, payment.clone())
+                .await
+                .unwrap();
+            assert_eq!(
+                paid_retry.paid_minor, 400,
+                "same payment key cannot double count"
+            );
+            assert!(
+                record_payment(
+                    &db,
+                    &admin,
+                    &order.order_id,
+                    RecordPaymentInput {
+                        amount_minor: 500,
+                        ..payment
+                    }
+                )
+                .await
+                .is_err(),
+                "payment keys are payload-bound"
+            );
+
+            let all_ids = order
+                .pieces
+                .iter()
+                .map(|p| p.id.clone())
+                .collect::<Vec<_>>();
+            let packing = match_pieces(&db, &admin, &order.order_id, "packing", all_ids.clone())
+                .await
+                .unwrap();
+            assert!(packing.complete);
+            update_order_status(&db, &admin, &order.order_id, "ready")
+                .await
+                .unwrap();
+            assert!(collect_order(
+                &db,
+                &admin,
+                &order.order_id,
+                all_ids[..3].to_vec(),
+                "collect-incomplete"
+            )
+            .await
+            .is_err());
+            let collected = collect_order(
+                &db,
+                &admin,
+                &order.order_id,
+                all_ids.clone(),
+                "collect-once",
+            )
+            .await
+            .unwrap();
+            assert_eq!(collected.status, "collected");
+            assert!(collected
+                .pieces
+                .iter()
+                .all(|piece| piece.packing_matched && piece.collection_matched));
+
+            let selected = reprint_output(
+                &db,
+                &admin,
+                &order.order_id,
+                "tags",
+                vec![order.pieces[2].short_id.clone()],
+                "tag-3-of-4",
+            )
+            .await
+            .unwrap();
+            let selected_payload: String =
+                sqlx::query_scalar("SELECT payload_json FROM print_jobs WHERE id=?")
+                    .bind(&selected.id)
+                    .fetch_one(db.writer_pool().unwrap())
+                    .await
+                    .unwrap();
+            let crate::printing::PrintDocument::Tags(doc) =
+                serde_json::from_str(&selected_payload).unwrap()
+            else {
+                panic!("tags expected")
+            };
+            assert_eq!(
+                doc.pieces
+                    .iter()
+                    .map(|p| (p.position, p.total))
+                    .collect::<Vec<_>>(),
+                vec![(3, 4)]
+            );
+
+            let pair = reprint_output(
+                &db,
+                &admin,
+                &order.order_id,
+                "tags",
+                vec![
+                    order.pieces[0].short_id.clone(),
+                    order.pieces[3].short_id.clone(),
+                ],
+                "tag-1-and-4-of-4",
+            )
+            .await
+            .unwrap();
+            let pair_payload: String =
+                sqlx::query_scalar("SELECT payload_json FROM print_jobs WHERE id=?")
+                    .bind(&pair.id)
+                    .fetch_one(db.writer_pool().unwrap())
+                    .await
+                    .unwrap();
+            let crate::printing::PrintDocument::Tags(doc) =
+                serde_json::from_str(&pair_payload).unwrap()
+            else {
+                panic!("tags expected")
+            };
+            assert_eq!(
+                doc.pieces
+                    .iter()
+                    .map(|p| (p.position, p.total))
+                    .collect::<Vec<_>>(),
+                vec![(1, 4), (4, 4)]
+            );
+            sqlx::query("UPDATE counter_accounts SET pin_hash=?,pin_salt='restart-test-salt' WHERE id='fixture-admin'")
+                .bind(hash_pin("4321", "restart-test-salt"))
+                .execute(db.writer_pool().unwrap())
+                .await
+                .unwrap();
+            drop(db);
+            let reopened = DatabaseState::open(path.clone()).await;
+            let reopened_session = CounterSession::default();
+            login(
+                &reopened,
+                &reopened_session,
+                "fixture-admin".into(),
+                "4321".into(),
+            )
+            .await
+            .unwrap();
+            let persisted = get_order(&reopened, &reopened_session, &order.order_id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(persisted.status, "collected");
+            assert_eq!(persisted.paid_minor, 400);
+            assert!(persisted
+                .pieces
+                .iter()
+                .all(|piece| piece.collection_matched));
+            let queue = list_jobs(&reopened, &reopened_session, None).await.unwrap();
+            assert!(queue.iter().any(|job| {
+                job.order_id == order.order_id && job.order_number == order.order_number
+            }));
+            assert!(
+                search_orders(&reopened, &reopened_session, &order.order_number, 0, 10)
+                    .await
+                    .unwrap()
+                    .iter()
+                    .any(|summary| summary.id == order.order_id)
+            );
+            drop(reopened);
             let _ = std::fs::remove_dir_all(path.parent().unwrap());
         });
     }

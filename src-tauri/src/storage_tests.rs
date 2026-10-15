@@ -1151,6 +1151,17 @@ fn backup_is_consistent_and_restore_stages_before_apply() {
             .await
             .unwrap_err();
         assert!(blocked.contains("restore is staged"));
+        assert!(live_state
+            .begin_counter_write()
+            .await
+            .err()
+            .unwrap()
+            .contains("restore is staged"));
+        assert_eq!(
+            marker_value(&live_state, "restore-marker").await.as_deref(),
+            Some("original"),
+            "native counter transactions must share the staged-restore write boundary"
+        );
         drop(live_state);
 
         let restored = open(&live.path).await;

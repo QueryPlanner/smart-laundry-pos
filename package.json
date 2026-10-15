@@ -8,7 +8,7 @@
     "build": "vite build && node scripts/prerender-public-routes.mjs",
     "build:dev": "vite build --mode development",
     "lint": "eslint .",
-    "lint:desktop": "eslint src/desktop.tsx src/pages/LocalFirstApp.tsx src/lib/localFirst",
+    "lint:desktop": "eslint src/desktop.tsx src/pages/LocalFirstApp.tsx src/lib/localFirst src/components/localCounter",
     "preview": "vite preview",
     "test": "vitest run",
     "typecheck:desktop": "tsc --project tsconfig.desktop.json --noEmit",

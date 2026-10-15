@@ -14,7 +14,7 @@ Before opening Admin printer settings:
 4. Open Admin → Printers, refresh, select the Canon queue for bills and the TE244 queue for tags, and save. Selecting these destinations does not alter the Windows default printer.
 5. Print the synthetic acceptance documents below, inspect alignment and text, and then confirm that both saved profiles survive app restart.
 
-The Windows adapter enumerates installed local and connected queues with [EnumPrintersW](https://learn.microsoft.com/en-us/windows/win32/printdocs/enumprinters). It draws text through a GDI printer device context and starts jobs with [StartDocW](https://learn.microsoft.com/en-us/windows/win32/api/wingdi/nf-wingdi-startdocw), whose successful return provides the Windows spooler job ID. Unicode text is sent as text to GDI; customer-provided content is never inserted into a shell command or printer control language.
+The Windows adapter enumerates installed local and connected queues with [EnumPrintersW](https://learn.microsoft.com/en-us/windows/win32/printdocs/enumprinters). It keeps the API's returned record count separate from the variable-length buffer size, whose trailing bytes hold pointed-to strings, and checks each string pointer remains within that live aligned buffer. For printer device contexts it passes a null driver parameter as [Microsoft recommends for printing](https://learn.microsoft.com/en-us/windows/win32/api/wingdi/nf-wingdi-createdcw). It starts jobs with [StartDocW](https://learn.microsoft.com/en-us/windows/win32/api/wingdi/nf-wingdi-startdocw), whose successful return provides the Windows spooler job ID. Unicode text is sent as text to GDI; customer-provided content is never inserted into a shell command or printer control language.
 
 ## Linux development setup
 
@@ -44,4 +44,6 @@ A Windows installation is not release-accepted until a person has completed thes
 - [ ] Restore connectivity, inspect the operating-system queue, and confirm that an uncertain item requires operator inspection/confirmation before retry.
 - [ ] Restart the app and verify both printer profiles and each document's independent state persist.
 
-No Windows machine or physical target printers were available during implementation; Windows build validation is delegated to CI, and this hardware checklist remains an explicit release gate.
+No Windows machine was available during implementation. The bounded Linux fixture submissions reached the connected Canon and TSC printers, and the user confirmed paper output; that does not validate Windows behavior or print alignment. The Windows CI/package build and this hardware checklist remain explicit release gates.
+
+The production adapter and its tests compile for x86_64-pc-windows-gnu in an isolated cross-target harness on Linux. This is compile-only evidence: no Win32 calls were executed, no Windows installer was built here, and no Windows printer hardware was exercised. The Windows CI/package build and the physical acceptance gate above remain required.

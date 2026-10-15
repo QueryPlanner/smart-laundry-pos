@@ -37,10 +37,43 @@ describe('native print document contracts', () => {
     expect(() => createBillDocument({ ...bill, customerName: '  \n ' })).toThrow('Customer name cannot be empty');
   });
 
-  it('rejects non-whole quantities, mismatched physical count and non-sequential tags', () => {
+  it('rejects non-whole quantities, mismatched physical count and out-of-range tag positions', () => {
     expect(() => createBillDocument({ ...bill, items: [{ ...bill.items[0], quantity: 1.5 }] })).toThrow('Quantity must be a positive whole number');
     expect(() => createBillDocument({ ...bill, physicalPieceCount: 2 })).toThrow('Bill quantities must equal the physical piece count');
-    expect(() => createTagDocument('SL-103', [{ pieceId: 'p1', garment: 'Shirt', service: 'Wash', position: 2, total: 1 }])).toThrow('Piece positions must be sequential');
+    expect(() => createTagDocument('SL-103', [{ pieceId: 'p1', garment: 'Shirt', service: 'Wash', position: 2, total: 1 }])).toThrow('valid within one whole-order total');
+  });
+
+  it('preserves whole-order positions and total when creating a selected reprint subset', () => {
+    const tags = createTagDocument('SL-104', [
+      { pieceId: 'piece-003', garment: 'Trousers', service: 'Wash', position: 3, total: 4 },
+      { pieceId: 'piece-001', garment: 'Shirt', service: 'Wash', position: 1, total: 4 },
+    ]);
+    expect(documentLines({ kind: 'tags', document: tags })).toEqual([
+      ['Bill SL-104', 'Trousers / Wash', 'Piece piece-003 (3/4)'],
+      ['Bill SL-104', 'Shirt / Wash', 'Piece piece-001 (1/4)'],
+    ]);
+    const singlePiece = createTagDocument('SL-104', [
+      { pieceId: 'piece-003', garment: 'Trousers', service: 'Wash', position: 3, total: 4 },
+    ]);
+    expect(documentLines({ kind: 'tags', document: singlePiece })).toEqual([
+      ['Bill SL-104', 'Trousers / Wash', 'Piece piece-003 (3/4)'],
+    ]);
+    const firstAndFourth = createTagDocument('SL-104', [
+      { pieceId: 'piece-001', garment: 'Shirt', service: 'Wash', position: 1, total: 4 },
+      { pieceId: 'piece-004', garment: 'Trousers', service: 'Wash', position: 4, total: 4 },
+    ]);
+    expect(documentLines({ kind: 'tags', document: firstAndFourth })).toEqual([
+      ['Bill SL-104', 'Shirt / Wash', 'Piece piece-001 (1/4)'],
+      ['Bill SL-104', 'Trousers / Wash', 'Piece piece-004 (4/4)'],
+    ]);
+  });
+
+  it('rejects tag subsets with duplicate IDs or positions and mixed totals', () => {
+    const base = { pieceId: 'piece-003', garment: 'Trousers', service: 'Wash', position: 3, total: 4 };
+    expect(() => createTagDocument('SL-104', [base, { ...base, garment: 'Shirt' }])).toThrow('duplicate positions or piece IDs');
+    expect(() => createTagDocument('SL-104', [base, { ...base, position: 4 }])).toThrow('duplicate positions or piece IDs');
+    expect(() => createTagDocument('SL-104', [base, { ...base, pieceId: 'piece-004', position: 4, total: 5 }])).toThrow('valid within one whole-order total');
+    expect(() => createTagDocument('SL-104', [{ ...base, position: 5 }])).toThrow('valid within one whole-order total');
   });
 
   it('rejects unsafe or negative minor-unit money values', () => {

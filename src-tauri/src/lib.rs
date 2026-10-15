@@ -28,11 +28,17 @@ where
 {
     builder
         .setup(move |app| {
-            let state = match database_path(app.handle()) {
+            let mut state = match database_path(app.handle()) {
                 Ok(path) => tauri::async_runtime::block_on(DatabaseState::open(path)),
                 Err(error) => DatabaseState::unavailable(error),
             };
             let _ = tauri::async_runtime::block_on(counter::recover_submitting(&state));
+            let info = state.info();
+            if info.error.is_none() && !info.restore_pending {
+                if let Err(error) = tauri::async_runtime::block_on(state.backup_database()) {
+                    state.set_startup_warning(format!("Automatic startup backup failed: {error}"));
+                }
+            }
             app.manage(state);
             app.manage(CounterSession::default());
             Ok(())
@@ -49,6 +55,11 @@ where
             counter_reset_staff_pin,
             counter_get_catalogue,
             counter_search_customers,
+            counter_search_orders,
+            counter_get_order,
+            counter_record_payment,
+            counter_update_order_status,
+            counter_collect_order,
             counter_set_rate,
             counter_quote_order,
             counter_save_order,
@@ -59,6 +70,7 @@ where
             counter_get_printer_profiles,
             counter_list_print_jobs,
             counter_dispatch_print_jobs,
+            counter_dispatch_print_job,
             counter_retry_print_job,
             counter_reprint_output,
             local_select,
@@ -148,6 +160,53 @@ async fn counter_search_customers(
     counter::search_customers(&state, &session, &phone).await
 }
 #[tauri::command]
+async fn counter_search_orders(
+    state: State<'_, DatabaseState>,
+    session: State<'_, CounterSession>,
+    query: String,
+    offset: u32,
+    limit: u32,
+) -> Result<Vec<counter::OrderSummary>, String> {
+    counter::search_orders(&state, &session, &query, offset, limit).await
+}
+#[tauri::command]
+async fn counter_get_order(
+    state: State<'_, DatabaseState>,
+    session: State<'_, CounterSession>,
+    order_id: String,
+) -> Result<Option<counter::SavedOrder>, String> {
+    counter::get_order(&state, &session, &order_id).await
+}
+#[tauri::command]
+async fn counter_record_payment(
+    state: State<'_, DatabaseState>,
+    session: State<'_, CounterSession>,
+    order_id: String,
+    input: counter::RecordPaymentInput,
+) -> Result<counter::SavedOrder, String> {
+    counter::record_payment(&state, &session, &order_id, input).await
+}
+#[tauri::command]
+async fn counter_update_order_status(
+    state: State<'_, DatabaseState>,
+    session: State<'_, CounterSession>,
+    order_id: String,
+    status: String,
+) -> Result<counter::SavedOrder, String> {
+    counter::update_order_status(&state, &session, &order_id, &status).await
+}
+#[tauri::command]
+async fn counter_collect_order(
+    state: State<'_, DatabaseState>,
+    session: State<'_, CounterSession>,
+    order_id: String,
+    piece_ids: Vec<String>,
+    request_id: String,
+) -> Result<counter::SavedOrder, String> {
+    counter::collect_order(&state, &session, &order_id, piece_ids, &request_id).await
+}
+
+#[tauri::command]
 async fn counter_set_rate(
     state: State<'_, DatabaseState>,
     session: State<'_, CounterSession>,
@@ -195,9 +254,10 @@ async fn counter_match_order_pieces(
     state: State<'_, DatabaseState>,
     session: State<'_, CounterSession>,
     order_id: String,
+    stage: String,
     piece_ids: Vec<String>,
 ) -> Result<counter::MatchResult, String> {
-    counter::match_pieces(&state, &session, &order_id, piece_ids).await
+    counter::match_pieces(&state, &session, &order_id, &stage, piece_ids).await
 }
 #[tauri::command]
 async fn counter_enumerate_printers(
@@ -238,6 +298,15 @@ async fn counter_dispatch_print_jobs(
 ) -> Result<Vec<counter::PrintJob>, String> {
     counter::dispatch_jobs(&state, &session, &order_id).await
 }
+#[tauri::command]
+async fn counter_dispatch_print_job(
+    state: State<'_, DatabaseState>,
+    session: State<'_, CounterSession>,
+    job_id: String,
+) -> Result<counter::PrintJob, String> {
+    counter::dispatch_job(&state, &session, &job_id).await
+}
+
 #[tauri::command]
 async fn counter_retry_print_job(
     state: State<'_, DatabaseState>,

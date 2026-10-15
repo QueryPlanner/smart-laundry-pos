@@ -88,18 +88,27 @@ export function createBillDocument(input: BillDocument): BillDocument {
   };
 }
 
-/** Build one tag for each persisted physical piece, in stable order. */
+/** Build tags for a unique subset of saved physical pieces, preserving whole-order positions. */
 export function createTagDocument(orderNumber: string, pieces: readonly TagPieceDocument[]): TagDocument {
   if (pieces.length === 0) throw new Error('At least one physical piece is required');
-  const total = pieces.length;
+  const total = pieces[0].total;
+  if (!Number.isSafeInteger(total) || total < 1) throw new Error('Whole-order tag total must be a positive whole number');
+  const positions = new Set<number>();
+  const pieceIds = new Set<string>();
   return {
     orderNumber: requireText(orderNumber, 'Order number'),
-    pieces: pieces.map((piece, index) => {
-      if (piece.position !== index + 1 || piece.total !== total) {
-        throw new Error('Piece positions must be sequential and match the tag total');
+    pieces: pieces.map((piece) => {
+      const pieceId = requireText(piece.pieceId, 'Piece ID');
+      if (!Number.isSafeInteger(piece.position) || piece.position < 1 || piece.position > total || piece.total !== total) {
+        throw new Error('Piece positions must be valid within one whole-order total');
       }
+      if (positions.has(piece.position) || pieceIds.has(pieceId)) {
+        throw new Error('Tag subsets cannot contain duplicate positions or piece IDs');
+      }
+      positions.add(piece.position);
+      pieceIds.add(pieceId);
       return {
-        pieceId: requireText(piece.pieceId, 'Piece ID'),
+        pieceId,
         garment: requireText(piece.garment, 'Garment'),
         service: requireText(piece.service, 'Service'),
         position: piece.position,
