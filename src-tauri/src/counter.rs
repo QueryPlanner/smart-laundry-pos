@@ -116,7 +116,7 @@ fn account(row: &sqlx::sqlite::SqliteRow) -> Result<Account, String> {
         active: row.try_get::<i64, _>("active").map_err(db_err)? == 1,
     })
 }
-fn db_err(e: sqlx::Error) -> String {
+pub(crate) fn db_err(e: sqlx::Error) -> String {
     format!("Local counter database error: {e}")
 }
 
@@ -397,7 +397,7 @@ async fn audit(
 
 /// Audit row that also records the values involved (old and new price, reason, amounts), so a
 /// dispute can be reconstructed later without guessing.
-async fn audit_details(
+pub(crate) async fn audit_details(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     actor: &str,
     action: &str,
@@ -522,6 +522,42 @@ pub struct Catalogue {
     pub rates: Vec<serde_json::Value>,
 }
 
+/// `%text%` for a LIKE ... ESCAPE '\\' query, with the operator's own wildcards matched literally.
+pub(crate) fn like_contains(text: &str) -> String {
+    let escaped = text
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_");
+    format!("%{escaped}%")
+}
+
+/// Any logged-in account. The caller still validates its own input.
+pub(crate) fn require_actor(session: &CounterSession) -> Result<SessionActor, String> {
+    session.actor()
+}
+
+/// Admin check for writes: the session says admin AND the database still says an active admin,
+/// read inside the write transaction (one writer connection), so a role change or deactivation
+/// cannot slip in between the check and the write.
+pub(crate) async fn require_admin_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    session: &CounterSession,
+    what: &str,
+) -> Result<SessionActor, String> {
+    let actor = require_admin(session, what)?;
+    let admin: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM counter_accounts WHERE id=? AND role='admin' AND active=1",
+    )
+    .bind(&actor.id)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(db_err)?;
+    if admin != 1 {
+        return Err("The administrator session is no longer valid.".into());
+    }
+    Ok(actor)
+}
+
 fn actor(session: &CounterSession) -> Result<SessionActor, String> {
     session.actor()
 }
@@ -548,7 +584,7 @@ pub async fn catalogue(db: &DatabaseState, session: &CounterSession) -> Result<C
         rates: r.iter().map(row_value).collect(),
     })
 }
-fn row_value(row: &sqlx::sqlite::SqliteRow) -> serde_json::Value {
+pub(crate) fn row_value(row: &sqlx::sqlite::SqliteRow) -> serde_json::Value {
     let mut m = serde_json::Map::new();
     for c in row.columns() {
         let k = c.name();
@@ -587,7 +623,7 @@ fn digit_value(c: char) -> Option<u32> {
 /// Canonical 10-digit mobile number: digits from any script, spaces, dashes, dots, brackets and a
 /// leading +91, 91 or 0 are accepted and removed. Anything else is refused, so the same customer
 /// is always found whatever way the number was typed.
-fn normalize_phone(raw: &str) -> Result<String, String> {
+pub(crate) fn normalize_phone(raw: &str) -> Result<String, String> {
     let mut digits = String::new();
     for c in raw.trim().chars() {
         if let Some(value) = digit_value(c) {
@@ -860,7 +896,8 @@ pub struct DiscountRule {
     pub active: bool,
 }
 
-fn require_admin(session: &CounterSession, what: &str) -> Result<SessionActor, String> {
+/// Admin check against the session alone; fine for reads. Writes must use [`require_admin_in_tx`].
+pub(crate) fn require_admin(session: &CounterSession, what: &str) -> Result<SessionActor, String> {
     let a = actor(session)?;
     if a.role != "admin" {
         return Err(format!("Administrator access is required to {what}."));
@@ -1577,11 +1614,7 @@ pub async fn search_orders(
         return Ok(Vec::new());
     }
     // LIKE wildcards typed by the operator are matched literally.
-    let escaped = q
-        .replace('\\', "\\\\")
-        .replace('%', "\\%")
-        .replace('_', "\\_");
-    let pattern = format!("%{escaped}%");
+    let pattern = like_contains(q);
     // A typed phone number ("98765 43210", "+91 98765 43210") also matches the stored digits.
     let phone_digits = strip_country_prefix(
         q.chars()
@@ -4219,6 +4252,63 @@ mod counter_tests {
             "2026-10-18T11:30:00.000Z"
         );
     }
+    #[test]
+    fn admin_in_tx_checks_session_role_and_database_state() {
+        tauri::async_runtime::block_on(async {
+            let db = DatabaseState::open(fixture_path()).await;
+            let admin = admin_fixture(&db).await;
+            let forged = CounterSession::default();
+            forged
+                .set(SessionActor {
+                    id: "fixture-staff".into(),
+                    role: "admin".into(),
+                })
+                .unwrap();
+            let staff = CounterSession::default();
+            staff
+                .set(SessionActor {
+                    id: "fixture-staff".into(),
+                    role: "staff".into(),
+                })
+                .unwrap();
+            let signed_out = CounterSession::default();
+
+            let mut tx = db.begin_counter_write().await.unwrap();
+            assert_eq!(
+                require_admin_in_tx(&mut tx, &admin, "test")
+                    .await
+                    .unwrap()
+                    .id,
+                "fixture-admin"
+            );
+            assert!(require_admin_in_tx(&mut tx, &staff, "test").await.is_err());
+            assert!(require_admin_in_tx(&mut tx, &signed_out, "test")
+                .await
+                .is_err());
+            assert!(
+                require_admin_in_tx(&mut tx, &forged, "test")
+                    .await
+                    .unwrap_err()
+                    .contains("no longer valid"),
+                "database role, not session text, authorizes admin writes"
+            );
+            sqlx::query("UPDATE counter_accounts SET active=0 WHERE id='fixture-admin'")
+                .execute(&mut *tx)
+                .await
+                .unwrap();
+            assert!(require_admin_in_tx(&mut tx, &admin, "test").await.is_err());
+            tx.rollback().await.unwrap();
+            assert_eq!(require_actor(&staff).unwrap().role, "staff");
+            assert!(require_admin(&staff, "test").is_err());
+            assert!(require_admin(&admin, "test").is_ok());
+        });
+    }
+
+    #[test]
+    fn like_contains_matches_operator_wildcards_literally() {
+        assert_eq!(like_contains("50%_off\\"), "%50\\%\\_off\\\\%");
+    }
+
     #[test]
     fn native_rates_orders_pieces_reprints_and_role_gate_are_consistent() {
         tauri::async_runtime::block_on(async {

@@ -515,3 +515,5 @@ pub fn run() {
 
 #[cfg(test)]
 mod app_tests;
+#[cfg(test)]
+mod demo_seed;
