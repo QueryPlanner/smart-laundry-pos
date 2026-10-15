@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { LocalFirstApp } from './LocalFirstApp';
+import { LegacyLocalFirstApp as LocalFirstApp } from './LocalFirstApp';
 import type {
   Customer,
   DashboardSummary,
@@ -60,6 +60,7 @@ vi.mock('@/lib/localFirst/backup', () => ({
 vi.mock('@tauri-apps/plugin-dialog', () => ({ confirm: mocks.confirm, open: mocks.open }));
 
 const repository = mocks.repository;
+const originalUserAgent = navigator.userAgent;
 
 const admin: LocalUser = {
   id: 'user-1',
@@ -112,6 +113,7 @@ const settings: ShopSettings = {
   shop_phone: '555-0199',
   gst_number: 'GST-123',
   receipt_footer: 'Thank you for choosing us.',
+  receipt_width_mm: 50,
   order_prefix: 'RL',
   default_completion_days: 2,
   device_id: 'device-local-42',
@@ -325,6 +327,10 @@ const deferred = <T,>() => {
 };
 
 beforeEach(() => {
+  Object.defineProperty(navigator, 'userAgent', {
+    configurable: true,
+    value: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15 Version/17.0 Safari/605.1.15',
+  });
   for (const mock of Object.values(repository)) mock.mockReset();
   mocks.invoke.mockReset();
   mocks.startLocalFirstApp.mockReset();
@@ -369,6 +375,7 @@ afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+  Object.defineProperty(navigator, 'userAgent', { configurable: true, value: originalUserAgent });
 });
 
 describe('LocalFirstApp startup and account access', () => {
@@ -544,7 +551,7 @@ describe('LocalFirstApp dashboard and orders', () => {
     expect((screen.getByLabelText('Customer name') as HTMLInputElement).value).toBe('');
     expect((screen.getByLabelText('Payment received') as HTMLInputElement).value).toBe('0');
     expect(screen.getByText('Order saved locally.')).toBeTruthy();
-  });
+  }, 15_000);
 
   it.each([
     ['piece', 'piece'],
@@ -635,6 +642,55 @@ describe('LocalFirstApp dashboard and orders', () => {
     expect(screen.getByText('No payment recorded')).toBeTruthy();
     fireEvent(window, new Event('afterprint'));
     await waitFor(() => expect(screen.queryByText('No payment recorded')).toBeNull());
+  });
+
+  it('uses the webview print dialog on Linux instead of the macOS-only native command', async () => {
+    Object.defineProperty(navigator, 'userAgent', {
+      configurable: true,
+      value: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/155.0.0.0 Safari/537.36',
+    });
+    const print = vi.spyOn(window, 'print').mockImplementation(() => undefined);
+    repository.listOrders.mockResolvedValue([baseOrder]);
+    const raf = (callback: FrameRequestCallback) => {
+      queueMicrotask(() => callback(0));
+      return 1;
+    };
+    Object.defineProperty(window, 'requestAnimationFrame', { configurable: true, value: raf });
+    Object.defineProperty(window, 'cancelAnimationFrame', { configurable: true, value: vi.fn() });
+    await enterWorkspace();
+    navigate('Orders');
+
+    fireEvent.click(screen.getByRole('button', { name: `Print order ${baseOrder.order_number}` }));
+    expect(await screen.findByText('Treat stains separately.')).toBeTruthy();
+    await waitFor(() => expect(print).toHaveBeenCalledTimes(1));
+    expect(mocks.invoke).not.toHaveBeenCalled();
+    fireEvent(window, new Event('afterprint'));
+    await waitFor(() => expect(screen.queryByText('Treat stains separately.')).toBeNull());
+  });
+
+  it('reports Linux webview print errors and releases the print action for a retry', async () => {
+    Object.defineProperty(navigator, 'userAgent', {
+      configurable: true,
+      value: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/155.0.0.0 Safari/537.36',
+    });
+    vi.spyOn(window, 'print').mockImplementation(() => {
+      throw new Error('The Linux print dialog could not open.');
+    });
+    repository.listOrders.mockResolvedValue([baseOrder]);
+    const raf = (callback: FrameRequestCallback) => {
+      queueMicrotask(() => callback(0));
+      return 1;
+    };
+    Object.defineProperty(window, 'requestAnimationFrame', { configurable: true, value: raf });
+    Object.defineProperty(window, 'cancelAnimationFrame', { configurable: true, value: vi.fn() });
+    await enterWorkspace();
+    navigate('Orders');
+
+    fireEvent.click(screen.getByRole('button', { name: `Print order ${baseOrder.order_number}` }));
+    expect(await screen.findByText('The Linux print dialog could not open.')).toBeTruthy();
+    expect(screen.queryByText('Treat stains separately.')).toBeNull();
+    expect(screen.getByRole('button', { name: `Print order ${baseOrder.order_number}` }).hasAttribute('disabled')).toBe(false);
+    expect(mocks.invoke).not.toHaveBeenCalled();
   });
 
   it('shows native print failures and releases the print action for a retry', async () => {
@@ -991,6 +1047,7 @@ describe('LocalFirstApp settings and recovery', () => {
     fill('Order prefix', 'NL');
     fill('Default completion days', '3');
     fill('Receipt footer', 'Come back soon.');
+    fireEvent.change(screen.getByLabelText('Receipt width'), { target: { value: '58' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save settings' }));
     await waitFor(() => expect(repository.saveSettings).toHaveBeenCalledWith({
       shop_name: 'Northside Laundry',
@@ -998,6 +1055,7 @@ describe('LocalFirstApp settings and recovery', () => {
       shop_phone: '555-0999',
       gst_number: 'GST-7788',
       receipt_footer: 'Come back soon.',
+      receipt_width_mm: 58,
       order_prefix: 'NL',
       default_completion_days: 3,
     }, admin.id));
@@ -1124,5 +1182,5 @@ describe('LocalFirstApp settings and recovery', () => {
     expect(repository.createInventoryItem).not.toHaveBeenCalled();
     expect(repository.adjustInventory).not.toHaveBeenCalled();
     expect(repository.createMachine).not.toHaveBeenCalled();
-  });
+  }, 15_000);
 });

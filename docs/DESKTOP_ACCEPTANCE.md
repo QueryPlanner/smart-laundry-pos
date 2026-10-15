@@ -127,3 +127,50 @@ the active database passed validation and ask the operator to check records.
 They do not claim which snapshot is active. Existing error-path tests retain
 data-preservation assertions and pass with the corrected wording. The rare
 post-journal directory-sync failure was not induced in the installed app.
+
+## Ubuntu support follow-up
+
+Date: 2026-10-14. The desktop print flow now uses the webview print dialog on
+Linux and Windows while retaining Tauri's native print command on macOS. The
+Linux review build has its own `.deb` overlay and an Ubuntu 24.04 CI package
+job.
+
+JavaScript verification passed on Ubuntu 24.04: `npm test` (72 tests),
+`npm run test:desktop:coverage` (87 tests, 100% statements, branches, functions,
+and lines), `npm run lint:desktop`, `npm run typecheck:desktop`,
+`npm run build:desktop`, and `npm run build`.
+
+The Ubuntu 24.04 review `.deb` built successfully with Rust 1.99.0 and is
+installed as `smart-laundry-pos-review` version `0.1.0`. I launched the app on
+the local X display and observed the first-run administrator setup screen; I did
+not submit account creation or open the production app. This confirms package
+startup, not a full interactive acceptance run.
+The updated review package with the 50 mm receipt adjustment is available at
+`src-tauri/target/release/bundle/deb/Smart Laundry POS Review_0.1.0_amd64.deb`.
+
+CUPS detects `TSC_TE244_Test` over USB and reports it idle and accepting
+requests. The official TSC Linux x86_64 driver archive contains both
+`TE244.ppd` and its `rastertobarcodetspl` CUPS filter. Both are installed, the
+PPD passes `cupstestppd`, and the queue reports model `TSC TE244`. The user has
+a 50 mm continuous roll; the per-user CUPS defaults are now
+`PageSize=Custom.50x101.6mm` and `PaperType=Continue`. The app receipt setting
+supports 50, 58, and 80 mm, with 50 mm as the default. A plain-text 50 x 50 mm
+test physically printed with the left edge clipped. Since CUPS converts plain
+text with its own page margins, that job does not validate the app receipt
+layout. The later 50 x 50 mm vector test completed as CUPS job
+`TSC_TE244_Test-12`; the user reported clipping at both side edges. The 50 mm
+app receipt now has a 3 mm left and 2 mm right inset to move the content right
+while preserving clearance at both edges. The updated app receipt still needs
+a physical print check.
+
+## Native laundry printer smoke test
+
+Date: 2026-10-15. The native Linux adapter submitted one clearly labelled
+synthetic bill to the Canon `LBP2900` queue (CUPS job `LBP2900-39`) and a
+two-piece synthetic tag batch to `TSC_TE244_Test` (CUPS job
+`TSC_TE244_Test-40`). The user confirmed that both jobs produced paper output.
+This records output only; alignment, media width, and tag sizing are not
+accepted by this check. The user asked to defer those layout adjustments while
+the software work is completed. The queues used explicit destinations, the
+system default was left unchanged, and no installed application database was
+used. Windows compilation and printer output remain unverified here.

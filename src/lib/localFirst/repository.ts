@@ -42,6 +42,7 @@ const DEFAULT_SETTINGS: ShopSettings = {
   shop_phone: '',
   gst_number: '',
   receipt_footer: 'Thank you for choosing us.',
+  receipt_width_mm: 50,
   order_prefix: 'LA',
   default_completion_days: 2,
   device_id: '',
@@ -53,6 +54,7 @@ const EDITABLE_SETTING_KEYS = [
   'shop_phone',
   'gst_number',
   'receipt_footer',
+  'receipt_width_mm',
   'order_prefix',
   'default_completion_days',
 ] as const;
@@ -65,6 +67,7 @@ const mapSettings = (rows: SettingRow[]): ShopSettings => {
     return result;
   }, {});
   const completionDays = Number(values.default_completion_days ?? DEFAULT_SETTINGS.default_completion_days);
+  const receiptWidth = Number(values.receipt_width_mm ?? DEFAULT_SETTINGS.receipt_width_mm);
 
   return {
     shop_name: values.shop_name || DEFAULT_SETTINGS.shop_name,
@@ -72,6 +75,9 @@ const mapSettings = (rows: SettingRow[]): ShopSettings => {
     shop_phone: values.shop_phone ?? DEFAULT_SETTINGS.shop_phone,
     gst_number: values.gst_number ?? DEFAULT_SETTINGS.gst_number,
     receipt_footer: values.receipt_footer ?? DEFAULT_SETTINGS.receipt_footer,
+    receipt_width_mm: [50, 58, 80].includes(receiptWidth)
+      ? receiptWidth as ShopSettings['receipt_width_mm']
+      : DEFAULT_SETTINGS.receipt_width_mm,
     order_prefix: values.order_prefix || DEFAULT_SETTINGS.order_prefix,
     default_completion_days: Number.isSafeInteger(completionDays) && completionDays >= 0
       ? completionDays
@@ -174,6 +180,10 @@ const assertSettingPatch = (settings: Partial<ShopSettings>): void => {
     if (key === 'default_completion_days') {
       if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
         throw new RangeError('Default completion days must be a non-negative integer.');
+      }
+    } else if (key === 'receipt_width_mm') {
+      if (typeof value !== 'number' || ![50, 58, 80].includes(value)) {
+        throw new RangeError('Receipt width must be 50, 58, or 80 mm.');
       }
     } else if (typeof value !== 'string') {
       throw new TypeError(`${key} must be a string.`);

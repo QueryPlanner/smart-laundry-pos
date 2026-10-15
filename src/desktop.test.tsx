@@ -4,11 +4,11 @@ import type { Root } from 'react-dom/client';
 import { act, cleanup, screen } from '@testing-library/react';
 
 const mocks = vi.hoisted(() => ({
-  startLocalFirstApp: vi.fn(),
+  getCounterBootstrap: vi.fn(),
   root: undefined as unknown,
 }));
 
-vi.mock('@/lib/localFirst/startup', () => ({ startLocalFirstApp: mocks.startLocalFirstApp }));
+vi.mock('@/lib/localFirst/counter', () => ({ getCounterBootstrap: mocks.getCounterBootstrap }));
 vi.mock('react-dom/client', async importOriginal => {
   const actual = await importOriginal<typeof import('react-dom/client')>();
   return {
@@ -23,8 +23,8 @@ vi.mock('react-dom/client', async importOriginal => {
 
 beforeEach(() => {
   vi.resetModules();
-  mocks.startLocalFirstApp.mockReset();
-  mocks.startLocalFirstApp.mockResolvedValue({ hasLocalUser: false });
+  mocks.getCounterBootstrap.mockReset();
+  mocks.getCounterBootstrap.mockResolvedValue({ setupRequired: true, authenticated: false, account: null, accounts: [] });
   mocks.root = undefined;
   document.body.innerHTML = '<div id="root"></div>';
 });
@@ -42,13 +42,13 @@ describe('desktop entry point', () => {
     document.body.innerHTML = '';
 
     await expect(import('./desktop')).rejects.toThrow('The desktop app root element is missing.');
-    expect(mocks.startLocalFirstApp).not.toHaveBeenCalled();
+    expect(mocks.getCounterBootstrap).not.toHaveBeenCalled();
   });
 
-  it('mounts the local setup screen into the desktop document root', async () => {
+  it('mounts the local counter setup screen into the desktop document root', async () => {
     await import('./desktop');
 
     expect(await screen.findByRole('heading', { name: 'Set up Smart Laundry' })).toBeTruthy();
-    expect(mocks.startLocalFirstApp).toHaveBeenCalled();
+    expect(mocks.getCounterBootstrap).toHaveBeenCalled();
   });
 });

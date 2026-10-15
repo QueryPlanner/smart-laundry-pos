@@ -86,3 +86,6 @@ export const dispatchPrintJobs = (orderId: string): Promise<CounterPrintJob[]> =
   call('counter_dispatch_print_jobs', { orderId });
 export const retryPrintJob = (jobId: string, confirmUncertain: boolean): Promise<CounterPrintJob> =>
   call('counter_retry_print_job', { jobId, confirmUncertain });
+
+export const reprintCounterOutput = (orderId: string, kind: CounterJobKind, pieceIds: string[], requestId: string): Promise<CounterPrintJob> =>
+  call('counter_reprint_output', { orderId, kind, pieceIds, requestId });

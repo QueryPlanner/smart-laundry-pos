@@ -756,7 +756,8 @@ async fn initialize_schema(pool: &SqlitePool, existed: bool) -> Result<(), Strin
         ));
     }
 
-    let has_v2 = version == 0 && existed && table_exists(&mut connection, "counter_accounts").await?;
+    let has_v2 =
+        version == 0 && existed && table_exists(&mut connection, "counter_accounts").await?;
     if version == SCHEMA_VERSION || has_v2 {
         validate_schema(&mut connection).await?;
         validate_integrity_and_foreign_keys(&mut connection).await?;
@@ -767,31 +768,47 @@ async fn initialize_schema(pool: &SqlitePool, existed: bool) -> Result<(), Strin
         validate_integrity_and_foreign_keys(&mut connection).await?;
     }
     if version < SCHEMA_VERSION && !has_v2 {
-        let mut transaction = connection.begin_with("BEGIN IMMEDIATE").await
+        let mut transaction = connection
+            .begin_with("BEGIN IMMEDIATE")
+            .await
             .map_err(|error| format!("Could not begin the schema migration: {error}"))?;
         let migration_result = async {
             if version == 0 && !existed {
-                sqlx::raw_sql(MIGRATION_SQL).execute(&mut *transaction).await
+                sqlx::raw_sql(MIGRATION_SQL)
+                    .execute(&mut *transaction)
+                    .await
                     .map_err(|error| format!("The v1 local database migration failed: {error}"))?;
             }
-            sqlx::raw_sql(MIGRATION_V2_SQL).execute(&mut *transaction).await
+            sqlx::raw_sql(MIGRATION_V2_SQL)
+                .execute(&mut *transaction)
+                .await
                 .map_err(|error| format!("The v2 counter migration failed: {error}"))?;
-            sqlx::query("PRAGMA user_version = 2").execute(&mut *transaction).await
+            sqlx::query("PRAGMA user_version = 2")
+                .execute(&mut *transaction)
+                .await
                 .map_err(|error| format!("Could not record the schema version: {error}"))?;
             Ok::<_, String>(())
-        }.await;
+        }
+        .await;
         if let Err(error) = migration_result {
             return match transaction.rollback().await {
                 Ok(()) => Err(error),
-                Err(rollback_error) => Err(format!("{error} The schema migration rollback also failed: {rollback_error}")),
+                Err(rollback_error) => Err(format!(
+                    "{error} The schema migration rollback also failed: {rollback_error}"
+                )),
             };
         }
-        transaction.commit().await.map_err(|error| format!("Could not commit the schema migration: {error}"))?;
+        transaction
+            .commit()
+            .await
+            .map_err(|error| format!("Could not commit the schema migration: {error}"))?;
     }
     if version < SCHEMA_VERSION {
         validate_schema(&mut connection).await?;
         validate_integrity_and_foreign_keys(&mut connection).await?;
-        sqlx::query("PRAGMA user_version = 2").execute(&mut *connection).await
+        sqlx::query("PRAGMA user_version = 2")
+            .execute(&mut *connection)
+            .await
             .map_err(|error| format!("Could not record the upgraded schema version: {error}"))?;
     }
 
@@ -810,10 +827,16 @@ async fn initialize_schema(pool: &SqlitePool, existed: bool) -> Result<(), Strin
     Ok(())
 }
 
-async fn table_exists(connection:&mut sqlx::pool::PoolConnection<sqlx::Sqlite>,table:&str)->Result<bool,String>{
-    sqlx::query_scalar::<_,i64>("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?")
-      .bind(table).fetch_one(&mut **connection).await.map(|count|count>0)
-      .map_err(|error|format!("Could not inspect table {table}: {error}"))
+async fn table_exists(
+    connection: &mut sqlx::pool::PoolConnection<sqlx::Sqlite>,
+    table: &str,
+) -> Result<bool, String> {
+    sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?")
+        .bind(table)
+        .fetch_one(&mut **connection)
+        .await
+        .map(|count| count > 0)
+        .map_err(|error| format!("Could not inspect table {table}: {error}"))
 }
 
 async fn count_app_tables(
@@ -827,21 +850,36 @@ async fn count_app_tables(
     .map_err(|error| format!("Could not inspect the local schema: {error}"))
 }
 
-async fn validate_v1_schema(connection: &mut sqlx::pool::PoolConnection<sqlx::Sqlite>) -> Result<(), String> {
+async fn validate_v1_schema(
+    connection: &mut sqlx::pool::PoolConnection<sqlx::Sqlite>,
+) -> Result<(), String> {
     for (table, required_columns) in REQUIRED_TABLES {
-        let exists: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?")
-            .bind(table).fetch_one(&mut **connection).await
-            .map_err(|error| format!("Could not inspect v1 table {table}: {error}"))?;
-        if exists == 0 { return Err(format!("The v1 database is missing table {table}.")); }
+        let exists: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?")
+                .bind(table)
+                .fetch_one(&mut **connection)
+                .await
+                .map_err(|error| format!("Could not inspect v1 table {table}: {error}"))?;
+        if exists == 0 {
+            return Err(format!("The v1 database is missing table {table}."));
+        }
         let rows = sqlx::query(&format!("PRAGMA table_info(\"{table}\")"))
-            .fetch_all(&mut **connection).await
+            .fetch_all(&mut **connection)
+            .await
             .map_err(|error| format!("Could not inspect v1 table {table}: {error}"))?;
-        let columns = rows.iter().map(|row| row.try_get::<String,_>("name"))
-            .collect::<Result<Vec<_>,_>>()
+        let columns = rows
+            .iter()
+            .map(|row| row.try_get::<String, _>("name"))
+            .collect::<Result<Vec<_>, _>>()
             .map_err(|error| format!("Could not read v1 table {table}: {error}"))?;
         for required in *required_columns {
-            if !columns.iter().any(|column| column.eq_ignore_ascii_case(required)) {
-                return Err(format!("The v1 database table {table} is missing required column {required}."));
+            if !columns
+                .iter()
+                .any(|column| column.eq_ignore_ascii_case(required))
+            {
+                return Err(format!(
+                    "The v1 database table {table} is missing required column {required}."
+                ));
             }
         }
     }
@@ -1119,7 +1157,9 @@ async fn validate_database_pool(pool: &SqlitePool) -> Result<(), String> {
         ));
     }
     match version {
-        0 if table_exists(&mut connection, "counter_accounts").await? => validate_schema(&mut connection).await?,
+        0 if table_exists(&mut connection, "counter_accounts").await? => {
+            validate_schema(&mut connection).await?
+        }
         0 | 1 => validate_v1_schema(&mut connection).await?,
         2 => validate_schema(&mut connection).await?,
         _ => unreachable!("schema version was range checked"),

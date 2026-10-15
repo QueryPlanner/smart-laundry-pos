@@ -85,7 +85,8 @@ CREATE TABLE print_jobs (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   last_error TEXT,
-  source_job_id TEXT REFERENCES print_jobs(id)
+  source_job_id TEXT REFERENCES print_jobs(id),
+  reprint_request_id TEXT UNIQUE
 );
 CREATE INDEX idx_print_jobs_pending ON print_jobs(state,created_at);
 CREATE TABLE print_job_attempts (
@@ -109,6 +110,12 @@ CREATE TABLE counter_audit (
 INSERT INTO service_methods(id,service_key,name) VALUES
  ('svc-wash','wash','Wash'),('svc-iron','iron','Iron'),
  ('svc-wash-iron','wash_iron','Wash + Iron'),('svc-dry-clean','dry_clean','Dry Clean');
+-- Keep legacy order_items.service_id foreign keys valid for new counter orders.
+INSERT OR IGNORE INTO services(id,name,category,price_per_piece,price_per_kg,created_at,updated_at,origin_device_id) VALUES
+ ('svc-wash','Wash','laundry',NULL,NULL,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,'counter'),
+ ('svc-iron','Iron','laundry',NULL,NULL,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,'counter'),
+ ('svc-wash-iron','Wash + Iron','laundry',NULL,NULL,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,'counter'),
+ ('svc-dry-clean','Dry Clean','laundry',NULL,NULL,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,'counter');
 INSERT INTO garments(id,garment_key,name_en,name_mr,category,image_key,billing_unit,sort_order) VALUES
  ('g-shirt','shirt','Shirt','शर्ट','tops','shirt','piece',10),
  ('g-tshirt','tshirt','T-shirt','टी-शर्ट','tops','tshirt','piece',20),

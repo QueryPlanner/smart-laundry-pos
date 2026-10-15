@@ -33,6 +33,7 @@ import { backupDatabase, restoreDatabase } from '@/lib/localFirst/backup';
 import { localLaundryRepository } from '@/lib/localFirst/repository';
 import { calculateLineTotal, calculateOrderTotals, getPaymentStatus } from '@/lib/localFirst/domain';
 import { startLocalFirstApp } from '@/lib/localFirst/startup';
+import { CounterApp } from '@/components/localCounter/CounterApp';
 import {
   ORDER_STATUSES,
   PAYMENT_METHODS,
@@ -134,6 +135,7 @@ const emptySettings: ShopSettings = {
   shop_phone: '',
   gst_number: '',
   receipt_footer: 'Thank you for choosing us.',
+  receipt_width_mm: 50,
   order_prefix: 'LA',
   default_completion_days: 2,
   device_id: '',
@@ -176,7 +178,7 @@ const SetupScreen = ({ onComplete, warning }: { onComplete: (user: LocalUser) =>
   return (
     <AuthCard
       title="Set up Smart Laundry"
-      description="Create the local administrator for this Mac. This database starts empty."
+      description="Create the local administrator for this computer. This database starts empty."
       icon={<ShieldCheck className="h-6 w-6" />}
     >
       {warning && <WarningNotice>{warning}</WarningNotice>}
@@ -247,7 +249,7 @@ const ErrorText = ({ children }: { children: React.ReactNode }) => <p role="aler
 const Notice = ({ children }: { children: React.ReactNode }) => <div className="rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-800">{children}</div>;
 const WarningNotice = ({ children }: { children: React.ReactNode }) => <div role="alert" className="mb-4 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">{children}</div>;
 
-export const LocalFirstApp = () => {
+export const LegacyLocalFirstApp = ({ onCounterReturn }: { onCounterReturn?: () => void } = {}) => {
   const [loading, setLoading] = useState(true);
   const [setupRequired, setSetupRequired] = useState(false);
   const [user, setUser] = useState<LocalUser | null>(null);
@@ -282,15 +284,24 @@ export const LocalFirstApp = () => {
     restorePending={restorePending}
     onRestoreStaged={() => setRestorePending(true)}
     onLock={() => setUser(null)}
+    onCounterReturn={onCounterReturn}
   />;
 };
 
-const LocalWorkspace = ({ user, startupWarning, restorePending, onRestoreStaged, onLock }: {
+export const LocalFirstApp = () => {
+  const [showAdminWorkspace, setShowAdminWorkspace] = useState(false);
+  return showAdminWorkspace
+    ? <><button type="button" className="counter-return" onClick={() => setShowAdminWorkspace(false)}>← Back to counter</button><LegacyLocalFirstApp onCounterReturn={() => setShowAdminWorkspace(false)} /></>
+    : <CounterApp onAdminWorkspace={() => setShowAdminWorkspace(true)} />;
+};
+
+const LocalWorkspace = ({ user, startupWarning, restorePending, onRestoreStaged, onLock, onCounterReturn }: {
   user: LocalUser;
   startupWarning: string;
   restorePending: boolean;
   onRestoreStaged: () => void;
   onLock: () => void;
+  onCounterReturn?: () => void;
 }) => {
   const [section, setSection] = useState<Section>('dashboard');
   const [dashboard, setDashboard] = useState(defaultDashboard);
@@ -341,17 +352,28 @@ const LocalWorkspace = ({ user, startupWarning, restorePending, onRestoreStaged,
     if (!printOrder) return undefined;
     let invokeStarted = false;
     const finishPrinting = () => setPrintOrder(null);
+    const finishDispatch = () => {
+      printInFlight.current = false;
+      setPrintPending(false);
+    };
+    const handlePrintError = (printError: unknown) => {
+      finishDispatch();
+      setPrintOrder(null);
+      setNotice(errorMessage(printError));
+    };
     const printFrame = window.requestAnimationFrame(() => {
       invokeStarted = true;
-      void invoke('plugin:webview|print').then(() => {
-        printInFlight.current = false;
-        setPrintPending(false);
-      }).catch(printError => {
-        printInFlight.current = false;
-        setPrintPending(false);
-        setPrintOrder(null);
-        setNotice(errorMessage(printError));
-      });
+      if (/Macintosh|Mac OS X/i.test(navigator.userAgent)) {
+        void invoke('plugin:webview|print').then(finishDispatch).catch(handlePrintError);
+        return;
+      }
+
+      try {
+        window.print();
+        finishDispatch();
+      } catch (printError) {
+        handlePrintError(printError);
+      }
     });
     window.addEventListener('afterprint', finishPrinting, { once: true });
     return () => {
@@ -444,7 +466,7 @@ const LocalWorkspace = ({ user, startupWarning, restorePending, onRestoreStaged,
         <main className="min-w-0 flex-1">
           <header className="sticky top-0 z-10 flex items-center justify-between border-b bg-white px-4 py-3 shadow-sm sm:px-6">
             <div><p className="text-xs uppercase tracking-wide text-slate-500">Local mode</p><h1 className="text-xl font-semibold">{nav.find(item => item.id === section)?.label}</h1></div>
-            <div className="flex items-center gap-2"><Badge variant="outline" className="border-green-300 text-green-700"><CheckCircle2 className="mr-1 h-3 w-3" />Saved locally</Badge><Button variant="outline" size="sm" onClick={() => void refresh()} disabled={refreshing}>{refreshing ? 'Refreshing...' : 'Refresh'}</Button></div>
+            <div className="flex items-center gap-2">{onCounterReturn && <Button variant="outline" size="sm" onClick={onCounterReturn}>Back to counter</Button>}<Badge variant="outline" className="border-green-300 text-green-700"><CheckCircle2 className="mr-1 h-3 w-3" />Saved locally</Badge><Button variant="outline" size="sm" onClick={() => void refresh()} disabled={refreshing}>{refreshing ? 'Refreshing...' : 'Refresh'}</Button></div>
           </header>
           <div className="p-4 sm:p-6">
             {startupWarning && <WarningNotice>{startupWarning}</WarningNotice>}
@@ -494,7 +516,7 @@ const PrintableReceipt = ({ order, settings }: { order: LocalOrder; settings: Sh
   const balance = Math.max(0, order.total_amount - paidAmount);
   const payments = (order.payments || []).filter(payment => !payment.voided_at);
 
-  return <div className="receipt-print hidden print:block mx-auto max-w-md p-4 text-xs text-black">
+  return <div className="receipt-print hidden print:block mx-auto max-w-md p-4 text-xs text-black" data-receipt-width-mm={settings.receipt_width_mm}>
     <div className="receipt-section text-center"><h1 className="text-lg font-bold">{settings.shop_name}</h1><p>{settings.shop_address || ' '}</p><p>{settings.shop_phone || ' '}</p></div>
     <div className="receipt-section mt-4 border-b border-t py-2"><div className="flex justify-between font-bold"><span>Order</span><span>{order.order_number}</span></div><div className="flex justify-between"><span>Customer</span><span>{order.customer_name}</span></div><div className="flex justify-between"><span>Phone</span><span>{order.customer_phone}</span></div><div className="flex justify-between"><span>Received</span><span>{new Date(order.received_at).toLocaleString()}</span></div><div className="flex justify-between"><span>Ready by</span><span>{order.expected_ready_at ? new Date(order.expected_ready_at).toLocaleDateString() : '—'}</span></div><div className="flex justify-between"><span>Status</span><span>{statusLabel(order.status)}</span></div></div>
     <div className="receipt-section mt-4"><h2 className="mb-2 font-bold">Items</h2><table className="w-full"><thead><tr className="border-b"><th className="py-1 text-left">Item</th><th className="py-1 text-right">Qty</th><th className="py-1 text-right">Rate</th><th className="py-1 text-right">Total</th></tr></thead><tbody>{(order.items || []).map(item => <tr key={item.id} className="border-b"><td className="py-1">{item.item_name}<div className="text-[10px]">{item.service_name}</div></td><td className="py-1 text-right">{item.service_type === 'weight' ? `${item.weight_kg} kg` : item.quantity}</td><td className="py-1 text-right">{money(item.rate)}</td><td className="py-1 text-right">{money(item.line_total)}</td></tr>)}</tbody></table></div>
@@ -709,6 +731,7 @@ const SettingsSection = ({ settings, userId, onAction, onRestoreStaged }: {
       shop_phone: form.shop_phone,
       gst_number: form.gst_number,
       receipt_footer: form.receipt_footer,
+      receipt_width_mm: form.receipt_width_mm,
       order_prefix: form.order_prefix,
       default_completion_days: form.default_completion_days,
     };
@@ -738,7 +761,7 @@ const SettingsSection = ({ settings, userId, onAction, onRestoreStaged }: {
       window.alert(errorMessage(restoreError));
     }
   };
-  return <div className="space-y-6"><Card><CardHeader><CardTitle>Shop settings</CardTitle></CardHeader><CardContent><form onSubmit={save} className="grid gap-4 md:grid-cols-2"><Field label="Shop name" value={form.shop_name} onChange={value => update('shop_name', value)} required /><Field label="Phone" value={form.shop_phone} onChange={value => update('shop_phone', value)} /><Field label="Address" value={form.shop_address} onChange={value => update('shop_address', value)} /><Field label="GST number" value={form.gst_number} onChange={value => update('gst_number', value)} /><Field label="Order prefix" value={form.order_prefix} onChange={value => update('order_prefix', value)} /><Field label="Default completion days" value={form.default_completion_days} onChange={value => update('default_completion_days', Number(value))} inputMode="numeric" /><Field label="Receipt footer" value={form.receipt_footer} onChange={value => update('receipt_footer', value)} /><div className="flex items-end"><Button type="submit" disabled={submitting}>{submitting ? 'Saving...' : 'Save settings'}</Button></div></form></CardContent></Card><Card><CardHeader><CardTitle>Backup</CardTitle></CardHeader><CardContent className="space-y-3"><p className="text-sm text-slate-500">Backups stay on this Mac. A backup is also created when the app opens, and the newest 30 database copies are kept.</p><div className="flex flex-wrap gap-2"><Button variant="outline" onClick={() => void backup()}><DatabaseBackup className="mr-2 h-4 w-4" />Backup now</Button><Button variant="outline" onClick={() => void restore()}>Restore backup</Button></div><p className="text-xs text-slate-500">Restore stages the selected file and applies it after you close and reopen the app.</p></CardContent></Card></div>;
+  return <div className="space-y-6"><Card><CardHeader><CardTitle>Shop settings</CardTitle></CardHeader><CardContent><form onSubmit={save} className="grid gap-4 md:grid-cols-2"><Field label="Shop name" value={form.shop_name} onChange={value => update('shop_name', value)} required /><Field label="Phone" value={form.shop_phone} onChange={value => update('shop_phone', value)} /><Field label="Address" value={form.shop_address} onChange={value => update('shop_address', value)} /><Field label="GST number" value={form.gst_number} onChange={value => update('gst_number', value)} /><Field label="Order prefix" value={form.order_prefix} onChange={value => update('order_prefix', value)} /><Field label="Default completion days" value={form.default_completion_days} onChange={value => update('default_completion_days', Number(value))} inputMode="numeric" /><Field label="Receipt footer" value={form.receipt_footer} onChange={value => update('receipt_footer', value)} /><div className="space-y-1.5"><Label htmlFor="receipt-width-mm">Receipt width</Label><select id="receipt-width-mm" className="h-10 w-full rounded-md border bg-white px-3 text-sm" value={form.receipt_width_mm} onChange={event => update('receipt_width_mm', Number(event.target.value))}><option value={50}>50 mm</option><option value={58}>58 mm</option><option value={80}>80 mm</option></select><p className="text-xs text-slate-500">Set this to match the paper loaded in your printer.</p></div><div className="flex items-end"><Button type="submit" disabled={submitting}>{submitting ? 'Saving...' : 'Save settings'}</Button></div></form></CardContent></Card><Card><CardHeader><CardTitle>Backup</CardTitle></CardHeader><CardContent className="space-y-3"><p className="text-sm text-slate-500">Backups stay on this computer. A backup is also created when the app opens, and the newest 30 database copies are kept.</p><div className="flex flex-wrap gap-2"><Button variant="outline" onClick={() => void backup()}><DatabaseBackup className="mr-2 h-4 w-4" />Backup now</Button><Button variant="outline" onClick={() => void restore()}>Restore backup</Button></div><p className="text-xs text-slate-500">Restore stages the selected file and applies it after you close and reopen the app.</p></CardContent></Card></div>;
 };
 
 const Empty = ({ text }: { text: string }) => <p className="py-8 text-center text-sm text-slate-500">{text}</p>;

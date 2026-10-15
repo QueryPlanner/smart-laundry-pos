@@ -41,6 +41,7 @@ export interface ShopSettings {
   shop_phone: string;
   gst_number: string;
   receipt_footer: string;
+  receipt_width_mm: 50 | 58 | 80;
   order_prefix: string;
   default_completion_days: number;
   device_id: string;

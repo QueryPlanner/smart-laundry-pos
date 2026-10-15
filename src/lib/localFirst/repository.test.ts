@@ -185,9 +185,10 @@ describe('local laundry repository', () => {
     const intactSettings = await repository.getSettings();
     expect(intactSettings.shop_name).toBe('Smart Laundry');
     expect(intactSettings.order_prefix).toBe('LA');
+    expect(intactSettings.receipt_width_mm).toBe(50);
     database.prepare("UPDATE app_settings SET value = '' WHERE key IN ('shop_name', 'order_prefix')").run();
     database.prepare("UPDATE app_settings SET value = 'NaN' WHERE key = 'default_completion_days'").run();
-    database.prepare("DELETE FROM app_settings WHERE key IN ('shop_address', 'shop_phone', 'gst_number', 'receipt_footer', 'device_id', 'default_completion_days')").run();
+    database.prepare("DELETE FROM app_settings WHERE key IN ('shop_address', 'shop_phone', 'gst_number', 'receipt_footer', 'receipt_width_mm', 'device_id', 'default_completion_days')").run();
     expect((await repository.getSettings()).default_completion_days).toBe(2);
     database.prepare("INSERT INTO app_settings (key, value, updated_at) VALUES ('default_completion_days', '-1', 'bad-value')").run();
 
@@ -195,7 +196,10 @@ describe('local laundry repository', () => {
     expect(defaults.shop_name).toBe('Smart Laundry');
     expect(defaults.order_prefix).toBe('LA');
     expect(defaults.default_completion_days).toBe(2);
+    expect(defaults.receipt_width_mm).toBe(50);
     expect(defaults.device_id).toBeTruthy();
+    database.prepare("INSERT INTO app_settings (key, value, updated_at) VALUES ('receipt_width_mm', '55', 'bad-value')").run();
+    expect((await repository.getSettings()).receipt_width_mm).toBe(50);
     database.prepare("UPDATE app_settings SET value = '1.5' WHERE key = 'default_completion_days'").run();
     expect((await repository.getSettings()).default_completion_days).toBe(2);
 
@@ -205,12 +209,17 @@ describe('local laundry repository', () => {
     expect(database.prepare("SELECT value FROM app_settings WHERE key = 'shop_phone'").get()).toEqual({ value: '555-0100' });
     expect(database.prepare("SELECT COUNT(*) AS count FROM audit_log WHERE entity_type = 'settings'").get()).toEqual({ count: 1 });
 
+    const savedReceiptWidth = await repository.saveSettings({ receipt_width_mm: 50 }, user.id);
+    expect(savedReceiptWidth.receipt_width_mm).toBe(50);
+    expect(database.prepare("SELECT value FROM app_settings WHERE key = 'receipt_width_mm'").get()).toEqual({ value: '50' });
+
     const batchesBeforeEmptyPatch = calls.filter(call => call.command === 'local_batch').length;
     await expect(repository.saveSettings({}, user.id)).resolves.toMatchObject({ shop_phone: '555-0100' });
     expect(calls.filter(call => call.command === 'local_batch')).toHaveLength(batchesBeforeEmptyPatch);
     await expect(repository.saveSettings({ default_completion_days: 1.5 }, user.id)).rejects.toThrow('non-negative integer');
     await expect(repository.saveSettings({ default_completion_days: -1 }, user.id)).rejects.toThrow('non-negative integer');
     await expect(repository.saveSettings({ default_completion_days: '2' } as never, user.id)).rejects.toThrow('non-negative integer');
+    await expect(repository.saveSettings({ receipt_width_mm: 55 } as never, user.id)).rejects.toThrow('Receipt width must be 50, 58, or 80 mm');
     await expect(repository.saveSettings({ device_id: 'replacement' } as never, user.id)).rejects.toThrow('Unsupported shop setting');
     await expect(repository.saveSettings({ shop_name: 7 } as never, user.id)).rejects.toThrow('must be a string');
 
