@@ -30,6 +30,10 @@ pub(crate) const TAG_FINAL_TAIL_TENTHS_MM: u16 = 100;
 const MIN_BILL_WIDTH_PT: f32 = 300.0;
 const MIN_TAG_WIDTH_PT: f32 = 60.0;
 const MAX_BILL_PAGES: usize = 50;
+/// Font sizes tried for the item rows, largest first. A bill takes the biggest size at which every
+/// row, the totals and the footer fit on one page; only if even the smallest does not fit does the
+/// bill continue on another page.
+const BILL_ROW_SIZE_STEPS: [f32; 5] = [10.0, 9.0, 8.0, 7.5, 7.0];
 /// (bill number, garment/service/position, piece id) point sizes, tried largest first.
 /// Starting type is smaller than the previous layout; piece IDs remain at least 8 pt.
 const TAG_SIZE_STEPS: [(f32, f32, f32); 4] = [
@@ -508,61 +512,6 @@ fn layout_bill(
     let (service_x, qty_edge, rate_edge, amount_edge) = table_columns(left, right);
     let garment_width = service_x - left - 10.0;
     let service_width = qty_edge - service_x - 10.0;
-    let last_page_before_totals = || bottom - 122.0;
-    for item in &bill.items {
-        let garment = wrap_text(&safe_text(&item.garment), garment_width, 10.0, true, meter);
-        let service = wrap_text(&safe_text(&item.service), service_width, 10.0, false, meter);
-        let row_lines = garment.len().max(service.len());
-        let row_height = row_lines as f32 * 14.0;
-        if y + row_height > last_page_before_totals() {
-            if pages.len() >= MAX_BILL_PAGES {
-                return Err(PrintError::Invalid(
-                    "the bill is too long to print on one document".into(),
-                ));
-            }
-            pages.push(bill_page());
-            y = add_continuation_header(pages.last_mut().unwrap(), bill, left, right, meter);
-        }
-        let row_page = pages.last_mut().unwrap();
-        for index in 0..row_lines {
-            if let Some(text) = garment.get(index) {
-                add_line(
-                    row_page,
-                    text.clone(),
-                    10.0,
-                    true,
-                    left,
-                    y + index as f32 * 14.0,
-                );
-            }
-            if let Some(text) = service.get(index) {
-                add_line(
-                    row_page,
-                    text.clone(),
-                    10.0,
-                    false,
-                    service_x,
-                    y + index as f32 * 14.0,
-                );
-            }
-        }
-        for (text, edge) in [
-            (item.quantity.to_string(), qty_edge),
-            (format_money(item.unit_price_minor), rate_edge),
-            (format_money(item.line_total_minor), amount_edge),
-        ] {
-            add_line(
-                row_page,
-                text.clone(),
-                10.0,
-                false,
-                right_x(&text, edge, 10.0, false, meter),
-                y,
-            );
-        }
-        y += row_height + 5.0;
-    }
-
     let mut totals = vec![(
         "Subtotal".to_string(),
         format_money(bill.subtotal_minor),
@@ -585,6 +534,88 @@ fn layout_bill(
         .flat_map(|line| wrap_text(&line, width, 9.0, false, meter))
         .collect();
     let needed = totals.len() as f32 * 15.0 + footer.len() as f32 * 12.0 + 32.0;
+
+    // Every item row wrapped at one size; row height and the gap after it scale with the size.
+    let wrap_rows = |size: f32| -> Vec<(Vec<String>, Vec<String>)> {
+        bill.items
+            .iter()
+            .map(|item| {
+                (
+                    wrap_text(&safe_text(&item.garment), garment_width, size, true, meter),
+                    wrap_text(&safe_text(&item.service), service_width, size, false, meter),
+                )
+            })
+            .collect()
+    };
+    let row_height = |size: f32, lines: usize| lines as f32 * size * 1.4;
+    let row_gap = |size: f32| size * 0.5;
+    // The largest size at which the whole bill fits on this page; the smallest if none does.
+    let mut row_size = BILL_ROW_SIZE_STEPS[BILL_ROW_SIZE_STEPS.len() - 1];
+    for size in BILL_ROW_SIZE_STEPS {
+        let rows_height: f32 = wrap_rows(size)
+            .iter()
+            .map(|(garment, service)| {
+                row_height(size, garment.len().max(service.len())) + row_gap(size)
+            })
+            .sum();
+        if y + rows_height + needed <= bottom {
+            row_size = size;
+            break;
+        }
+    }
+    let line_pitch = row_size * 1.4;
+    for (item, (garment, service)) in bill.items.iter().zip(wrap_rows(row_size)) {
+        let row_lines = garment.len().max(service.len());
+        let height = row_height(row_size, row_lines);
+        if y + height > bottom - needed {
+            if pages.len() >= MAX_BILL_PAGES {
+                return Err(PrintError::Invalid(
+                    "the bill is too long to print on one document".into(),
+                ));
+            }
+            pages.push(bill_page());
+            y = add_continuation_header(pages.last_mut().unwrap(), bill, left, right, meter);
+        }
+        let row_page = pages.last_mut().unwrap();
+        for index in 0..row_lines {
+            if let Some(text) = garment.get(index) {
+                add_line(
+                    row_page,
+                    text.clone(),
+                    row_size,
+                    true,
+                    left,
+                    y + index as f32 * line_pitch,
+                );
+            }
+            if let Some(text) = service.get(index) {
+                add_line(
+                    row_page,
+                    text.clone(),
+                    row_size,
+                    false,
+                    service_x,
+                    y + index as f32 * line_pitch,
+                );
+            }
+        }
+        for (text, edge) in [
+            (item.quantity.to_string(), qty_edge),
+            (format_money(item.unit_price_minor), rate_edge),
+            (format_money(item.line_total_minor), amount_edge),
+        ] {
+            add_line(
+                row_page,
+                text.clone(),
+                row_size,
+                false,
+                right_x(&text, edge, row_size, false, meter),
+                y,
+            );
+        }
+        y += height + row_gap(row_size);
+    }
+
     if y + needed > bottom {
         if pages.len() >= MAX_BILL_PAGES {
             return Err(PrintError::Invalid(
@@ -1306,6 +1337,99 @@ mod tests {
             .join(" ");
         assert!(joined.contains("Collect within 30 days"));
         assert!(joined.contains("Sample Road"));
+    }
+
+    const A5_LANDSCAPE: PageSpec = PageSpec {
+        width_pt: 595.28,
+        height_pt: 419.53,
+    };
+
+    fn a5_bill(items: usize) -> BillDocument {
+        let mut document = bill(items);
+        document.header = full_header();
+        document
+    }
+
+    fn item_row_size(pages: &[LaidOutPage]) -> Option<f32> {
+        pages
+            .iter()
+            .flat_map(|page| page.lines.iter())
+            .find(|line| line.text == "Garment 0")
+            .map(|line| line.size_pt)
+    }
+
+    fn garment_count(pages: &[LaidOutPage]) -> usize {
+        pages
+            .iter()
+            .flat_map(|page| page.lines.iter())
+            .filter(|line| line.text.starts_with("Garment "))
+            .count()
+    }
+
+    #[test]
+    fn a_bill_with_a_few_items_stays_on_one_a5_page_at_the_normal_size() {
+        for items in 1..=4 {
+            let pages = layout_bill(&a5_bill(items), A5_LANDSCAPE, &FakeMeter).unwrap();
+            assert_eq!(pages.len(), 1, "{items} items");
+            assert_eq!(item_row_size(&pages), Some(10.0), "{items} items");
+            assert_within(&pages[0], A5_LANDSCAPE);
+        }
+    }
+
+    #[test]
+    fn a_bill_that_does_not_fit_at_the_normal_size_shrinks_its_rows_to_stay_on_one_page() {
+        let pages = layout_bill(&a5_bill(7), A5_LANDSCAPE, &FakeMeter).unwrap();
+        assert_eq!(pages.len(), 1);
+        let size = item_row_size(&pages).unwrap();
+        assert!((7.0..10.0).contains(&size), "row size {size}");
+        assert_within(&pages[0], A5_LANDSCAPE);
+        assert_eq!(garment_count(&pages), 7);
+        let lines = texts(&pages[0]);
+        assert!(lines.contains(&"Example Cleaners"), "header is on the page");
+        assert!(lines.contains(&"Visit again soon"), "footer is on the page");
+        assert!(
+            lines.contains(&"Total: \u{20b9}350.00"),
+            "totals are on the page"
+        );
+    }
+
+    #[test]
+    fn row_size_only_shrinks_as_items_grow_and_never_goes_below_seven_points() {
+        let mut previous = f32::MAX;
+        for items in 1..=30 {
+            let pages = layout_bill(&a5_bill(items), A5_LANDSCAPE, &FakeMeter).unwrap();
+            let size = item_row_size(&pages).unwrap();
+            assert!(size >= 7.0, "{items} items at {size}pt");
+            assert!(
+                size <= previous,
+                "{items} items grew from {previous} to {size}"
+            );
+            previous = size;
+            assert_eq!(garment_count(&pages), items);
+            for page in &pages {
+                assert_within(page, A5_LANDSCAPE);
+            }
+            let sizes: Vec<f32> = pages
+                .iter()
+                .flat_map(|page| page.lines.iter())
+                .filter(|line| line.text.starts_with("Garment "))
+                .map(|line| line.size_pt)
+                .collect();
+            assert!(sizes.iter().all(|s| *s == size), "{items} items mix sizes");
+        }
+    }
+
+    #[test]
+    fn a_bill_too_long_even_at_the_smallest_size_continues_on_the_next_page() {
+        let pages = layout_bill(&a5_bill(8), A5_LANDSCAPE, &FakeMeter).unwrap();
+        assert_eq!(pages.len(), 2);
+        assert_eq!(item_row_size(&pages), Some(7.0));
+        assert!(pages[1].lines[0].text.ends_with("(continued)"));
+        assert_eq!(garment_count(&pages), 8);
+        assert!(texts(&pages[1]).contains(&"Visit again soon"));
+        for page in &pages {
+            assert_within(page, A5_LANDSCAPE);
+        }
     }
 
     #[test]
