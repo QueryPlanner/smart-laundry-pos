@@ -37,7 +37,7 @@ const printers: NativePrinter[] = [
 const staffRow = (extra: Partial<CounterAccount>): CounterAccount => ({ id: 's1', fullName: 'Asha', role: 'staff', active: true, ...extra });
 
 const setup = (overrides: Partial<React.ComponentProps<typeof CounterAdmin>> = {}) => {
-  const props = { catalogue, onCatalogue: vi.fn(), printers, onReloadPrinters: vi.fn(), onOldAdmin: vi.fn(), onError: vi.fn(), onNotice: vi.fn(), ...overrides };
+  const props = { catalogue, onCatalogue: vi.fn(), printers, onReloadPrinters: vi.fn(), onError: vi.fn(), onNotice: vi.fn(), onRestoreStaged: vi.fn(), ...overrides };
   render(<CounterAdmin {...props} />);
   return props;
 };
@@ -134,19 +134,18 @@ describe('CounterAdmin rate card', () => {
     expect((screen.getByLabelText('Shoes Wash available') as HTMLInputElement).checked).toBe(false);
   });
 
-  it('opens the full admin workspace and every tab', async () => {
-    const props = setup();
-    fireEvent.click(screen.getByRole('button', { name: 'Open full admin workspace' }));
-    expect(props.onOldAdmin).toHaveBeenCalledOnce();
+  it('has no link to a second admin workspace and switches between every tab', async () => {
+    setup();
+    expect(screen.queryByRole('button', { name: /full admin workspace/i })).toBeNull();
     tab('Discounts'); expect(screen.getByText('discounts panel')).toBeTruthy();
     tab('Backups'); expect(screen.getByText('backups panel')).toBeTruthy();
     tab('Rate card'); expect(screen.getByLabelText('Shirt Wash price')).toBeTruthy();
   });
 
   it('picks up a refreshed catalogue passed in from above', () => {
-    const view = render(<CounterAdmin catalogue={catalogue} onCatalogue={vi.fn()} printers={printers} onReloadPrinters={vi.fn()} onOldAdmin={vi.fn()} onError={vi.fn()} onNotice={vi.fn()} />);
+    const view = render(<CounterAdmin catalogue={catalogue} onCatalogue={vi.fn()} printers={printers} onReloadPrinters={vi.fn()} onError={vi.fn()} onNotice={vi.fn()} onRestoreStaged={vi.fn()} />);
     const changed = { ...catalogue, rates: catalogue.rates.map(r => (r.garmentId === 'shirt' && r.serviceId === 'wash' ? { ...r, priceMinor: 2000 } : r)) };
-    view.rerender(<CounterAdmin catalogue={changed} onCatalogue={vi.fn()} printers={printers} onReloadPrinters={vi.fn()} onOldAdmin={vi.fn()} onError={vi.fn()} onNotice={vi.fn()} />);
+    view.rerender(<CounterAdmin catalogue={changed} onCatalogue={vi.fn()} printers={printers} onReloadPrinters={vi.fn()} onError={vi.fn()} onNotice={vi.fn()} onRestoreStaged={vi.fn()} />);
     expect((screen.getAllByLabelText('Shirt Wash price')[0] as HTMLInputElement).value).toBe('20.00');
   });
 
@@ -245,7 +244,7 @@ describe('CounterAdmin printers', () => {
   });
 
   it('shows a reloaded printer list from above without touching the printers already picked', async () => {
-    const props = { catalogue, onCatalogue: vi.fn(), printers, onReloadPrinters: vi.fn(), onOldAdmin: vi.fn(), onError: vi.fn(), onNotice: vi.fn() };
+    const props = { catalogue, onCatalogue: vi.fn(), printers, onReloadPrinters: vi.fn(), onError: vi.fn(), onNotice: vi.fn(), onRestoreStaged: vi.fn() };
     api.getPrinterProfiles.mockResolvedValue(null);
     const view = render(<CounterAdmin {...props} />);
     tab('Printers');

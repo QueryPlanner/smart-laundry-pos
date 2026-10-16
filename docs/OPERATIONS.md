@@ -23,9 +23,26 @@ The first time the program opens it asks you to create the administrator. Type y
 
 ## Signing in and locking
 
-The sign-in screen has two buttons, **Staff login** and **Admin**. Pick your name, enter your PIN, press **Sign in**. If a name is missing, press "Refresh account list". Press **Lock** at the top right when you leave the counter. If an order is half-entered, the program asks before it throws it away. Five wrong PINs lock that account for five minutes. Opening the older admin workspace and coming back also locks the program, so you sign in again.
+The sign-in screen has two buttons, **Staff login** and **Admin**. Pick your name, enter your PIN, press **Sign in**. If a name is missing, press "Refresh account list". Press **Lock** at the top right when you leave the counter. If an order is half-entered, the program asks before it throws it away. Five wrong PINs lock that account for five minutes.
 
-Staff see New order, Orders / Pickup and Print queue. Only the admin also sees **Admin**. Staff cannot change prices, discounts, printers, staff or backups, and cannot cancel an order.
+There is one screen layout for everyone. The menu under the title bar has four groups: **Counter** (New order, Orders / Pickup, Print queue), **Insights** (Dashboard, Sales), **Shop** (Customers, Expenses, Inventory, Machines) and, for the admin only, **Admin** (Admin, Shop settings). The program always opens on New order. Staff see everything except the Admin group.
+
+**Who can do what**
+
+| | Staff | Admin |
+| --- | --- | --- |
+| Take orders, record payments, move an order through processing, pack, hand over, reprint bills and tags | Yes | Yes |
+| See Dashboard and Sales (the same figures for both) | Yes | Yes |
+| Add or edit customers, record expenses, add inventory items and adjust stock, add machines and record services | Yes | Yes |
+| Set prices (Rate card) and discounts | No | Yes |
+| Create staff accounts, deactivate them, reset PINs | No | Yes |
+| Choose printers | No | Yes |
+| Back up now, set the USB folder, restore a backup | No | Yes |
+| Change shop name, address, phone, bill footer and bill number prefix | No | Yes |
+| Cancel an order | No | Yes |
+| **Delete** a customer, expense, inventory item or machine | No | Yes |
+
+The program enforces this itself; hiding a menu item is only a convenience. Every delete asks for a reason (3 to 200 characters) and is recorded with the old values. Orders are never deleted, so bill numbers and records stay traceable: to remove an order, the admin cancels it.
 
 ## Staff accounts
 
@@ -47,6 +64,41 @@ A returning customer is recognised by mobile number and name together. Two peopl
 ## Printers
 
 Install the Canon and TSC drivers as described in [PRINTING_WINDOWS.md](PRINTING_WINDOWS.md). In the driver settings, check the Canon is on A4 with one copy and the TSC is on the label size with one copy. Then in Admin > Printers choose the Canon queue for the bill and the TSC queue for the tags (they must be different) and press **Save printers**. If a printer is missing from the list, switch it on, check Windows shows it as ready, and press **Refresh printer list**. A printer that is switched to "Use Printer Offline" is treated as unavailable.
+
+## Dashboard
+
+Insights > **Dashboard** is for a quick look at the day. It shows today's figures (orders and pieces, billed, collected, orders ready to collect, orders in process, low-stock items), this month's figures (orders, billed, collected, expenses and profit), a graph of the last 14 days, a list of orders that have been ready for pickup for more than 2 days, a list of orders in process (soonest promise first, overdue ones marked), and the most recent orders. Click a bill number to open that order in Orders / Pickup. Press **Refresh** to reload. Older orders that were saved without individual pieces are not shown in the two attention lists. **Profit** is money collected minus expenses (a cash figure, not an accounting profit).
+
+## Sales
+
+Insights > **Sales** answers "how much did we do between these times". Choose a period (Today, Yesterday, Last 7 days, This month, or Custom with date and time boxes) and optionally filter by payment method, order status, staff member, or search by bill number, customer name or phone. All times are shop time (IST). A custom period includes its start and stops just before its end.
+
+It shows summary cards (orders, before discount, discounts, billed, collected, refunded, net collected, cancelled, expenses, profit), a graph (the program picks hours, days or months from the period; you can switch), and two tables: **Orders** and **Transactions** (payments and refunds, who took them and why money went back). Rules to know:
+
+- **Billed** leaves out cancelled orders unless the filter says to include them. A cancelled order is counted as cancelled in the period it was cancelled.
+- **Collected** is the payments taken in the period. A payment that is cancelled later is shown as **Refunded** in the period when it was cancelled; earlier periods are never rewritten. **Net collected** is collected minus refunded.
+- **Expenses** are counted by the date of the expense, not the time. **Profit** is not shown while filters are on.
+- The **Staff** filter means: orders created by that person, and money taken by that person.
+
+## Customers
+
+Shop > **Customers** lists everyone who has left laundry, with their orders, total billed and last order; type in the search box to find one. **Add customer** takes a name and a 10-digit mobile number (spaces, dashes and +91 are accepted); address, alternate mobile, customer type and notes are optional. Opening a customer shows their details and their recent orders; click one to open it in Orders / Pickup. The same person is one customer if the mobile number and the name both match, so two people can share a number. A customer who has an automatic discount is marked, and only the admin can change that customer's name or mobile number (so a discount cannot be handed to someone else). The admin can **Delete** a customer who has no orders; a customer with orders cannot be deleted, and the program says so. The customer's own discount rule is deleted with them and recorded in the audit.
+
+## Expenses
+
+Shop > **Expenses** lists what you spent, with a total for the dates and category you choose (there are quick choices for **This month** and **All time**). **Add expense** takes a date, category, amount, how it was paid and optional description and notes. Dates are shop dates and both the first and last day of a range are included. Only the admin can **Delete** an expense. Deleting an expense changes the profit figure for the day it was dated, including a past day, and the delete box says so before asking for a reason.
+
+## Inventory
+
+Shop > **Inventory** lists supplies such as detergent, hangers and packaging with how much is in stock. **Add item** takes a name, unit, optional cost per unit, the stock now and a "warn me at or below" level; an item with no warn level never raises a low-stock flag. **Adjust stock** records stock coming in, stock used, or a correction to a counted number, each with a reason. Low-stock items are marked and counted on the Dashboard. Only the admin can **Delete** an item; the item's whole stock history is deleted with it and recorded in the audit.
+
+## Machines
+
+Shop > **Machines** is a list of your washers, dryers and irons with when each was last serviced and when it is next due. There is no live on/off status: a machine's "status" is its maintenance record. **Add machine** takes a name and type (capacity, purchase date and notes are optional). **Record service** sets the service date, the next due date and notes. A machine whose next service date is today or earlier is marked as due. Only the admin can **Delete** a machine.
+
+## Shop settings
+
+Admin group > **Shop settings** (admin only). Set the shop name, address, phone and receipt footer, and the bill number prefix (1 to 6 capital letters or digits, for example `LA`, no hyphen). A preview shows the bill header. These are printed at the top and bottom of every new bill. The header is copied onto each bill when the order is saved, so a reprint of an old bill still shows what that bill showed. If the footer is blank the bill ends with "Thank you". An existing installation starts with shop name "Smart Laundry" and footer "Thank you for choosing us.", so change them to your own. The prefix applies to bills numbered after you save it. The old settings for GST number, receipt width and default completion days were not carried over: the bill has a fixed A4 layout and the ready time is always two days at 5:00 PM.
 
 ## Taking an order
 
@@ -112,15 +164,17 @@ From then on every backup is also copied into that subfolder (the newest 90 are 
 
 ## Restoring a backup
 
-Restore replaces everything on the laptop with the contents of a backup. Orders and payments entered after that backup was made are lost from the program. Only restore when you must, and make sure no one is taking orders.
+Restore replaces everything on the laptop with the contents of a backup. Orders and payments entered after that backup was made are lost from the program. **It also brings back the accounts and PINs from that backup: a staff member who was deactivated since then can sign in again, and a staff PIN or the admin PIN that was changed since then goes back to the old one.** Only restore when you must, and make sure no one is taking orders. Only an admin can restore.
 
-1. Sign in as admin. Admin > **Open full admin workspace** > **Settings** > **Restore backup**. (Restore is only in that older workspace.)
-2. Choose the backup file (`laundry-....db`) from the `backups` folder or from the `SmartLaundry-backups-...` folder on the USB drive, then confirm.
-3. The program checks the file and saves a safety backup of the current records. It then says the restore is staged and stops accepting changes.
-4. Close the program completely and open it again. The restore is applied at start-up and the previous records are kept as `laundry-recovery-....db` in the `backups` folder, which is not deleted automatically.
-5. Check that the orders you expect are there.
+1. Sign in as admin. Admin > **Backups** > **Restore from backup...**
+2. Choose the backup file (`laundry-....db`) from the `backups` folder or from the `SmartLaundry-backups-...` folder on the USB drive, then confirm in the box that appears.
+3. The program checks the file and saves a safety backup of the current records. It then says the restore is staged, stops accepting changes, and shows a yellow banner on every screen until you restart: close the program completely and open it again.
+4. The restore is applied at start-up and the previous records are kept as `laundry-recovery-....db` in the `backups` folder, which is not deleted automatically.
+5. Check that the orders you expect are there, then open Admin > Staff and check who is active.
 
 If the chosen file is not a valid backup, the program refuses it. If a staged restore turns out to be damaged when the program opens, it keeps your existing records, saves the bad file under a name starting `restore-rejected-`, and shows a warning. If the restore fails with a message about a file being in use (antivirus can do this briefly), wait a minute and try the steps again; the program does not retry by itself.
+
+If the program cannot open its database at all (it shows an error and **Try again**), nobody can sign in, so there is no Restore button. In that case close the program, keep a copy of the whole data folder, and ask for help; the usual fix is to put a good backup in place of `laundry.db` by hand.
 
 ## Forgotten admin PIN
 
@@ -158,6 +212,9 @@ If the PIN was not acceptable, the file could not be read, or there is no admini
 | The last copy to the second folder failed… | The USB folder is missing, full, or is a different stick from the one chosen. Reconnect it, or choose the folder again, and press Back up now. |
 | Choose a different drive from the one that holds the app's data… | The second backup folder is on the same drive as the data. Use a USB stick. |
 | A restore is staged. Close and reopen the app before writing. | A restore is waiting. Close the program and open it again. |
+| A backup restore is staged. Close and reopen Smart Laundry… (yellow banner) | A restore was staged and is waiting for a restart. Close the program completely and open it again. Afterwards check who is active in Admin > Staff, because the backup's accounts and PINs come back. |
+| Administrator access is required to … / The administrator session is no longer valid. | A staff account tried an admin action, or the admin was deactivated while signed in. Sign in again as an admin. |
+| This customer has … order(s) and cannot be deleted… | Customers with orders are kept. To remove an order, the admin cancels it. |
 | Another Smart Laundry POS instance is using this database. | The program is already running. Do not start a second copy. |
 | This order still has … to pay. | Only affects older orders with a balance. Use Record later payment on the order, then collect. |
 | Every order piece must be confirmed for collection first. | Tick every piece before completing pickup. |
@@ -168,7 +225,7 @@ If the PIN was not acceptable, the file could not be read, or there is no admini
 
 ## What the program does not do
 
-There is no barcode or QR code, no scanner, no link a customer can open, no cloud copy or second-computer sync, no Marathi on bills or tags, no editing of saved orders, no refund or till record beyond what cancelling notes, and no way to change the "ready in two days at 5 PM" rule. The bill title is always "SMART LAUNDRY"; the shop name in the older settings screen is not used on it.
+There is no barcode or QR code, no scanner, no link a customer can open, no cloud copy or second-computer sync, no Marathi on bills or tags, no editing of saved orders, no refund or till record beyond what cancelling notes, no way to void a single payment (only cancel the whole order), no export of sales to a spreadsheet, and no way to change the "ready in two days at 5 PM" rule. Old orders that were saved without individual pieces cannot be closed from the counter.
 
 ## Getting help
 

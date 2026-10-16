@@ -38,24 +38,6 @@ impl CounterSession {
         Ok(())
     }
 }
-pub async fn authorize_sql(db: &DatabaseState, session: &CounterSession) -> Result<(), String> {
-    let actor = session.actor()?;
-    if actor.role != "admin" {
-        return Err("Direct database access is restricted to administrators.".into());
-    }
-    let authorized: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM counter_accounts WHERE id=? AND role='admin' AND active=1",
-    )
-    .bind(&actor.id)
-    .fetch_one(db.writer_pool()?)
-    .await
-    .map_err(db_err)?;
-    if authorized != 1 {
-        return Err("The administrator session is no longer valid.".into());
-    }
-    Ok(())
-}
-
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Account {
@@ -72,6 +54,9 @@ pub struct Bootstrap {
     pub account: Option<Account>,
     pub accounts: Vec<Account>,
     pub warning: Option<String>,
+    /// A restored backup is waiting for the next start. Writes are blocked until then, and the
+    /// restore brings back that backup's accounts and PINs, so the app keeps saying so.
+    pub restore_pending: bool,
 }
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -116,7 +101,7 @@ fn account(row: &sqlx::sqlite::SqliteRow) -> Result<Account, String> {
         active: row.try_get::<i64, _>("active").map_err(db_err)? == 1,
     })
 }
-fn db_err(e: sqlx::Error) -> String {
+pub(crate) fn db_err(e: sqlx::Error) -> String {
     format!("Local counter database error: {e}")
 }
 
@@ -153,6 +138,7 @@ pub async fn bootstrap(db: &DatabaseState, session: &CounterSession) -> Result<B
         account: current,
         accounts,
         warning: join_warnings(db.info().warning, db.backup_health().await),
+        restore_pending: db.info().restore_pending,
     })
 }
 pub async fn setup_admin(
@@ -307,6 +293,7 @@ pub async fn create_staff(
     let hash = hash_pin(&input.pin, &salt);
     let now = Utc::now().to_rfc3339();
     let mut tx = db.begin_counter_write().await?;
+    require_admin_in_tx(&mut tx, session, "create staff accounts").await?;
     sqlx::query("INSERT INTO counter_accounts(id,full_name,pin_hash,pin_salt,role,active,created_at,updated_at) VALUES(?,?,?,?,'staff',1,?,?)").bind(&id).bind(input.full_name.trim()).bind(hash).bind(salt).bind(&now).bind(&now).execute(&mut *tx).await.map_err(db_err)?;
     // The old order/payment tables reference local_users, so staff need a row there. It carries a
     // random value no PIN can produce, so it can never be used to sign in or to guess a PIN.
@@ -348,6 +335,7 @@ pub async fn update_staff(
     }
     let now = Utc::now().to_rfc3339();
     let mut tx = db.begin_counter_write().await?;
+    require_admin_in_tx(&mut tx, session, "change staff accounts").await?;
     if let Some(active) = active {
         // Turning an account back on also clears any lockout from wrong PINs.
         sqlx::query("UPDATE counter_accounts SET active=?1,failed_attempts=CASE WHEN ?1=1 THEN 0 ELSE failed_attempts END,locked_until=CASE WHEN ?1=1 THEN NULL ELSE locked_until END,updated_at=?2 WHERE id=?3")
@@ -397,7 +385,7 @@ async fn audit(
 
 /// Audit row that also records the values involved (old and new price, reason, amounts), so a
 /// dispute can be reconstructed later without guessing.
-async fn audit_details(
+pub(crate) async fn audit_details(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     actor: &str,
     action: &str,
@@ -522,6 +510,50 @@ pub struct Catalogue {
     pub rates: Vec<serde_json::Value>,
 }
 
+/// `%text%` for a LIKE ... ESCAPE '\\' query, with the operator's own wildcards matched literally.
+pub(crate) fn like_contains(text: &str) -> String {
+    let escaped = text
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_");
+    format!("%{escaped}%")
+}
+
+/// Any logged-in account. The caller still validates its own input.
+pub(crate) fn require_actor(session: &CounterSession) -> Result<SessionActor, String> {
+    session.actor()
+}
+
+/// Admin check for writes: the session says admin AND the database still says an active admin,
+/// read inside the write transaction (one writer connection), so a role change or deactivation
+/// cannot slip in between the check and the write.
+pub(crate) async fn require_admin_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    session: &CounterSession,
+    what: &str,
+) -> Result<SessionActor, String> {
+    let actor = require_admin(session, what)?;
+    require_active_admin_in_tx(tx, &actor.id).await?;
+    Ok(actor)
+}
+
+async fn require_active_admin_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    actor_id: &str,
+) -> Result<(), String> {
+    let admin: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM counter_accounts WHERE id=? AND role='admin' AND active=1",
+    )
+    .bind(actor_id)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(db_err)?;
+    if admin != 1 {
+        return Err("The administrator session is no longer valid.".into());
+    }
+    Ok(())
+}
+
 fn actor(session: &CounterSession) -> Result<SessionActor, String> {
     session.actor()
 }
@@ -548,7 +580,7 @@ pub async fn catalogue(db: &DatabaseState, session: &CounterSession) -> Result<C
         rates: r.iter().map(row_value).collect(),
     })
 }
-fn row_value(row: &sqlx::sqlite::SqliteRow) -> serde_json::Value {
+pub(crate) fn row_value(row: &sqlx::sqlite::SqliteRow) -> serde_json::Value {
     let mut m = serde_json::Map::new();
     for c in row.columns() {
         let k = c.name();
@@ -571,7 +603,7 @@ fn row_value(row: &sqlx::sqlite::SqliteRow) -> serde_json::Value {
 }
 /// ASCII value of a decimal digit written in any of the scripts used in India (and the Arabic-Indic
 /// and full-width forms), so "९८७६५४३२१०" and "9876543210" are the same phone number.
-fn digit_value(c: char) -> Option<u32> {
+pub(crate) fn digit_value(c: char) -> Option<u32> {
     if c.is_ascii_digit() {
         return c.to_digit(10);
     }
@@ -587,7 +619,7 @@ fn digit_value(c: char) -> Option<u32> {
 /// Canonical 10-digit mobile number: digits from any script, spaces, dashes, dots, brackets and a
 /// leading +91, 91 or 0 are accepted and removed. Anything else is refused, so the same customer
 /// is always found whatever way the number was typed.
-fn normalize_phone(raw: &str) -> Result<String, String> {
+pub(crate) fn normalize_phone(raw: &str) -> Result<String, String> {
     let mut digits = String::new();
     for c in raw.trim().chars() {
         if let Some(value) = digit_value(c) {
@@ -607,7 +639,7 @@ fn normalize_phone(raw: &str) -> Result<String, String> {
 
 /// Drop a leading 91 (country code) or 0 (trunk prefix) from a complete-looking number, so a
 /// search typed as "+91 98765 43210" matches the stored 10 digits.
-fn strip_country_prefix(mut digits: String) -> String {
+pub(crate) fn strip_country_prefix(mut digits: String) -> String {
     if digits.len() == 12 && digits.starts_with("91") {
         digits.drain(..2);
     } else if digits.len() == 11 && digits.starts_with('0') {
@@ -617,7 +649,7 @@ fn strip_country_prefix(mut digits: String) -> String {
 }
 
 /// A customer name compared without caring about case or extra spaces.
-fn name_key(name: &str) -> String {
+pub(crate) fn name_key(name: &str) -> String {
     name.split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
@@ -819,6 +851,7 @@ pub async fn set_rate(
         }
     }
     let mut tx = db.begin_counter_write().await?;
+    require_admin_in_tx(&mut tx, session, "change rates").await?;
     let before = sqlx::query("SELECT price_minor,available,version FROM garment_service_rates WHERE garment_id=? AND service_id=?")
         .bind(garment).bind(service).fetch_optional(&mut *tx).await.map_err(db_err)?
         .ok_or("Garment or service not found.")?;
@@ -860,7 +893,8 @@ pub struct DiscountRule {
     pub active: bool,
 }
 
-fn require_admin(session: &CounterSession, what: &str) -> Result<SessionActor, String> {
+/// Admin check against the session alone; fine for reads. Writes must use [`require_admin_in_tx`].
+pub(crate) fn require_admin(session: &CounterSession, what: &str) -> Result<SessionActor, String> {
     let a = actor(session)?;
     if a.role != "admin" {
         return Err(format!("Administrator access is required to {what}."));
@@ -918,6 +952,7 @@ pub async fn set_discount(
     };
     let now = Utc::now().to_rfc3339();
     let mut tx = db.begin_counter_write().await?;
+    require_admin_in_tx(&mut tx, session, "change discounts").await?;
     if let Some(id) = customer {
         let exists: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM customers WHERE id=?")
             .bind(id)
@@ -1063,6 +1098,7 @@ pub async fn set_backup_mirror(
     }
     let now = Utc::now().to_rfc3339();
     let mut tx = db.begin_counter_write().await?;
+    require_admin_in_tx(&mut tx, session, "change backup settings").await?;
     sqlx::query("INSERT INTO app_settings(key,value,updated_at) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at")
         .bind(BACKUP_MIRROR_DIR).bind(&chosen).bind(&now)
         .execute(&mut *tx).await.map_err(db_err)?;
@@ -1085,6 +1121,51 @@ pub async fn backup_now(
     require_admin(session, "back up the database")?;
     db.backup_database().await?;
     read_backup_settings(db).await
+}
+
+/// Stage a backup file to replace the database at the next start. Administrators only. The role is
+/// checked from the session first (before any file is touched) and again against the database on
+/// the writer connection just before staging (see [`authorize_restore`]); the app keeps a safety
+/// copy of the current database first and blocks writes until it restarts.
+pub async fn restore_backup(
+    db: &DatabaseState,
+    session: &CounterSession,
+    source_path: String,
+) -> Result<String, String> {
+    let actor = require_admin(session, "restore a backup")?;
+    if source_path.trim().is_empty() {
+        return Err("Choose a backup file to restore.".into());
+    }
+    let request = db
+        .restore_database(source_path.trim().to_string())
+        .with_admin_actor(actor.id);
+    tauri::async_runtime::spawn_blocking(move || tauri::async_runtime::block_on(request.apply()))
+        .await
+        .map_err(|error| format!("The database restore task failed: {error}"))?
+}
+
+/// Runs on the writer connection while a restore is being staged: the account must still be an
+/// active administrator, and the request is audited before the safety backup is taken, so the
+/// audit row is inside that safety copy.
+pub(crate) async fn authorize_restore(
+    connection: &mut sqlx::SqliteConnection,
+    actor_id: &str,
+    source_path: &str,
+) -> Result<(), String> {
+    use sqlx::Connection;
+    let mut tx = connection.begin().await.map_err(db_err)?;
+    require_active_admin_in_tx(&mut tx, actor_id).await?;
+    audit_details(
+        &mut tx,
+        actor_id,
+        "restore_requested",
+        "backup",
+        "database",
+        &Utc::now().to_rfc3339(),
+        &serde_json::json!({ "sourcePath": source_path }),
+    )
+    .await?;
+    tx.commit().await.map_err(db_err)
 }
 
 pub const ADMIN_PIN_RESET_FILE: &str = "reset-admin-pin.txt";
@@ -1344,12 +1425,7 @@ pub async fn save_order(
         .ok_or("Could not create order timestamp.")?
         .format("%Y")
         .to_string();
-    let prefix: String =
-        sqlx::query_scalar("SELECT value FROM app_settings WHERE key='order_prefix'")
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(db_err)?
-            .unwrap_or("LA".into());
+    let prefix = crate::shop_settings::order_prefix(&mut tx).await?;
     sqlx::query("INSERT INTO order_sequences(year,next_number) VALUES(?,2) ON CONFLICT(year) DO UPDATE SET next_number=next_number+1").bind(year.parse::<i64>().unwrap_or(0)).execute(&mut *tx).await.map_err(db_err)?;
     let seq: i64 = sqlx::query_scalar("SELECT next_number-1 FROM order_sequences WHERE year=?")
         .bind(year.parse::<i64>().unwrap_or(0))
@@ -1443,7 +1519,10 @@ pub async fn save_order(
             .await
             .map_err(db_err)?;
     }
+    // The shop identity is copied into the document now, so a reprint matches this bill.
+    let header = crate::shop_settings::bill_header(&mut tx).await?;
     let bill = crate::printing::BillDocument {
+        header,
         order_number: order_no.clone(),
         created_at_ist: ist_time(now),
         promised_at_ist: ist_time(
@@ -1577,11 +1656,7 @@ pub async fn search_orders(
         return Ok(Vec::new());
     }
     // LIKE wildcards typed by the operator are matched literally.
-    let escaped = q
-        .replace('\\', "\\\\")
-        .replace('%', "\\%")
-        .replace('_', "\\_");
-    let pattern = format!("%{escaped}%");
+    let pattern = like_contains(q);
     // A typed phone number ("98765 43210", "+91 98765 43210") also matches the stored digits.
     let phone_digits = strip_country_prefix(
         q.chars()
@@ -1806,6 +1881,7 @@ pub async fn cancel_order(
         return Err("Give a reason of 3 to 200 characters.".into());
     }
     let mut tx = db.begin_counter_write().await?;
+    require_admin_in_tx(&mut tx, session, "cancel an order").await?;
     let status: String = sqlx::query_scalar("SELECT status FROM orders WHERE id=?")
         .bind(order_id)
         .fetch_optional(&mut *tx)
@@ -2172,6 +2248,7 @@ pub async fn set_profiles(
     }
     let now = Utc::now().to_rfc3339();
     let mut tx = db.begin_counter_write().await?;
+    require_admin_in_tx(&mut tx, session, "configure printers").await?;
     for (kind, id) in [
         ("bill", input.bill_printer_id),
         ("tags", input.tag_printer_id),
@@ -4220,6 +4297,271 @@ mod counter_tests {
         );
     }
     #[test]
+    fn older_admin_writes_recheck_the_database_inside_their_transaction() {
+        tauri::async_runtime::block_on(async {
+            let db = DatabaseState::open(fixture_path()).await;
+            let admin = admin_fixture(&db).await;
+            // The session still says admin, but the database no longer has an active admin.
+            sqlx::query("UPDATE counter_accounts SET active=0 WHERE id='fixture-admin'")
+                .execute(db.writer_pool().unwrap())
+                .await
+                .unwrap();
+            let gone = |e: String| assert!(e.contains("no longer valid"), "{e}");
+            gone(
+                set_rate(&db, &admin, "g-shirt", "svc-wash", Some(100), true)
+                    .await
+                    .unwrap_err(),
+            );
+            gone(
+                set_discount(&db, &admin, None, 500, true, "x")
+                    .await
+                    .unwrap_err(),
+            );
+            gone(set_backup_mirror(&db, &admin, None).await.unwrap_err());
+            gone(
+                cancel_order(&db, &admin, "missing", "duplicate")
+                    .await
+                    .unwrap_err(),
+            );
+            gone(
+                create_staff(
+                    &db,
+                    &admin,
+                    AccountInput {
+                        full_name: "New Staff".into(),
+                        pin: "482913".into(),
+                    },
+                )
+                .await
+                .unwrap_err(),
+            );
+            gone(
+                update_staff(&db, &admin, "fixture-staff", Some(false), None)
+                    .await
+                    .unwrap_err(),
+            );
+        });
+    }
+
+    #[test]
+    fn admin_in_tx_checks_session_role_and_database_state() {
+        tauri::async_runtime::block_on(async {
+            let db = DatabaseState::open(fixture_path()).await;
+            let admin = admin_fixture(&db).await;
+            let forged = CounterSession::default();
+            forged
+                .set(SessionActor {
+                    id: "fixture-staff".into(),
+                    role: "admin".into(),
+                })
+                .unwrap();
+            let staff = CounterSession::default();
+            staff
+                .set(SessionActor {
+                    id: "fixture-staff".into(),
+                    role: "staff".into(),
+                })
+                .unwrap();
+            let signed_out = CounterSession::default();
+
+            let mut tx = db.begin_counter_write().await.unwrap();
+            assert_eq!(
+                require_admin_in_tx(&mut tx, &admin, "test")
+                    .await
+                    .unwrap()
+                    .id,
+                "fixture-admin"
+            );
+            assert!(require_admin_in_tx(&mut tx, &staff, "test").await.is_err());
+            assert!(require_admin_in_tx(&mut tx, &signed_out, "test")
+                .await
+                .is_err());
+            assert!(
+                require_admin_in_tx(&mut tx, &forged, "test")
+                    .await
+                    .unwrap_err()
+                    .contains("no longer valid"),
+                "database role, not session text, authorizes admin writes"
+            );
+            sqlx::query("UPDATE counter_accounts SET active=0 WHERE id='fixture-admin'")
+                .execute(&mut *tx)
+                .await
+                .unwrap();
+            assert!(require_admin_in_tx(&mut tx, &admin, "test").await.is_err());
+            tx.rollback().await.unwrap();
+            assert_eq!(require_actor(&staff).unwrap().role, "staff");
+            assert!(require_admin(&staff, "test").is_err());
+            assert!(require_admin(&admin, "test").is_ok());
+        });
+    }
+
+    async fn backup_source(label: &str) -> (DatabaseState, PathBuf) {
+        let path = fixture_path();
+        let db = DatabaseState::open(path.clone()).await;
+        assert_eq!(db.info().error, None, "{label}");
+        (db, path)
+    }
+
+    #[test]
+    fn restore_is_admin_only_checked_against_the_database_and_never_stages_for_others() {
+        tauri::async_runtime::block_on(async {
+            let path = fixture_path();
+            let db = DatabaseState::open(path.clone()).await;
+            let admin = admin_fixture(&db).await;
+            let staff = staff_fixture(&db).await;
+            let (_source_db, source_path) = backup_source("source").await;
+            let source = source_path.to_string_lossy().into_owned();
+            let signed_out = CounterSession::default();
+            let forged = CounterSession::default();
+            forged
+                .set(SessionActor {
+                    id: "fixture-staff".into(),
+                    role: "admin".into(),
+                })
+                .unwrap();
+
+            for session in [&staff, &signed_out] {
+                assert!(restore_backup(&db, session, source.clone()).await.is_err());
+            }
+            assert!(
+                restore_backup(&db, &forged, source.clone())
+                    .await
+                    .unwrap_err()
+                    .contains("no longer valid"),
+                "database role, not session text, authorizes a restore"
+            );
+            assert!(restore_backup(&db, &admin, "   ".into())
+                .await
+                .unwrap_err()
+                .contains("Choose a backup file"));
+            assert!(
+                !db.info().restore_pending,
+                "a refused restore stages nothing"
+            );
+            assert!(!bootstrap(&db, &admin).await.unwrap().restore_pending);
+            let staged_files: Vec<_> = std::fs::read_dir(path.parent().unwrap())
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|e| e.file_name().to_string_lossy().contains("restore"))
+                .collect();
+            assert!(staged_files.is_empty(), "no staged file after refusals");
+            let audited: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM counter_audit WHERE action='restore_requested'",
+            )
+            .fetch_one(db.writer_pool().unwrap())
+            .await
+            .unwrap();
+            assert_eq!(audited, 0, "refused restores are not recorded as requests");
+
+            sqlx::query("UPDATE counter_accounts SET active=0 WHERE id='fixture-admin'")
+                .execute(db.writer_pool().unwrap())
+                .await
+                .unwrap();
+            assert!(
+                restore_backup(&db, &admin, source.clone())
+                    .await
+                    .unwrap_err()
+                    .contains("no longer valid"),
+                "a deactivated administrator cannot restore with a session that is still open"
+            );
+            assert!(!db.info().restore_pending);
+            cleanup(db, path).await;
+            let _ = std::fs::remove_dir_all(source_path.parent().unwrap());
+        });
+    }
+
+    #[test]
+    fn an_admin_restore_is_audited_keeps_a_safety_backup_and_blocks_writes_until_restart() {
+        tauri::async_runtime::block_on(async {
+            let path = fixture_path();
+            let db = DatabaseState::open(path.clone()).await;
+            let admin = admin_fixture(&db).await;
+            let (_source_db, source_path) = backup_source("source").await;
+            let source = source_path.to_string_lossy().into_owned();
+            let safety_before = std::fs::read_dir(db.backup_folder().unwrap())
+                .map(|entries| entries.count())
+                .unwrap_or(0);
+
+            let message = restore_backup(&db, &admin, format!("  {source}  "))
+                .await
+                .unwrap();
+            assert!(message.contains("Restore staged"), "{message}");
+            assert!(db.info().restore_pending);
+            let booted = bootstrap(&db, &admin).await.unwrap();
+            assert!(booted.restore_pending, "the app is told a restore waits");
+
+            let safety_after = std::fs::read_dir(db.backup_folder().unwrap())
+                .unwrap()
+                .count();
+            assert_eq!(
+                safety_after,
+                safety_before + 1,
+                "a safety backup is taken first"
+            );
+            let details: String = sqlx::query_scalar(
+                "SELECT details_json FROM counter_audit WHERE action='restore_requested' AND actor_id='fixture-admin'",
+            )
+            .fetch_one(db.writer_pool().unwrap())
+            .await
+            .unwrap();
+            assert!(details.contains(&source.replace('\\', "\\\\")), "{details}");
+
+            let blocked = set_rate(&db, &admin, "g-shirt", "svc-wash", Some(300), true)
+                .await
+                .unwrap_err();
+            assert!(blocked.contains("restore is staged"), "{blocked}");
+            let again = restore_backup(&db, &admin, source).await.unwrap_err();
+            assert!(again.contains("already staged"), "{again}");
+            cleanup(db, path).await;
+            let _ = std::fs::remove_dir_all(source_path.parent().unwrap());
+        });
+    }
+
+    #[test]
+    fn an_unreadable_or_unopenable_database_refuses_restore_with_its_own_error() {
+        tauri::async_runtime::block_on(async {
+            let path = fixture_path();
+            std::fs::write(&path, b"this is not a database").unwrap();
+            let broken = DatabaseState::open(path.clone()).await;
+            let startup_error = broken.info().error.expect("a damaged file fails to open");
+            let session = CounterSession::default();
+            session
+                .set(SessionActor {
+                    id: "boss".into(),
+                    role: "admin".into(),
+                })
+                .unwrap();
+            let refused = restore_backup(&broken, &session, "backup.db".into())
+                .await
+                .unwrap_err();
+            assert_eq!(refused, startup_error);
+            let booted = bootstrap(&broken, &session).await;
+            assert_eq!(
+                booted.err().as_deref(),
+                Some(startup_error.as_str()),
+                "bootstrap reports why the database could not be opened"
+            );
+            let unavailable = DatabaseState::unavailable("no folder");
+            assert_eq!(
+                restore_backup(&unavailable, &session, "backup.db".into())
+                    .await
+                    .unwrap_err(),
+                "no folder"
+            );
+            assert_eq!(
+                bootstrap(&unavailable, &session).await.err().as_deref(),
+                Some("no folder")
+            );
+            cleanup(broken, path).await;
+        });
+    }
+
+    #[test]
+    fn like_contains_matches_operator_wildcards_literally() {
+        assert_eq!(like_contains("50%_off\\"), "%50\\%\\_off\\\\%");
+    }
+
+    #[test]
     fn native_rates_orders_pieces_reprints_and_role_gate_are_consistent() {
         tauri::async_runtime::block_on(async {
             let path = fixture_path();
@@ -4239,18 +4581,10 @@ mod counter_tests {
                     .await
                     .is_err()
             );
-            assert!(authorize_sql(&db, &staff).await.is_err());
-            let forged = CounterSession::default();
-            forged
-                .set(SessionActor {
-                    id: "fixture-staff".into(),
-                    role: "admin".into(),
-                })
-                .unwrap();
-            assert!(
-                authorize_sql(&db, &forged).await.is_err(),
-                "database role, not session text, authorizes admin SQL"
-            );
+            assert!(restore_backup(&db, &staff, "backup.db".into())
+                .await
+                .unwrap_err()
+                .contains("Administrator access"));
             // The starter rate card is preloaded; an admin clearing a rate makes it unsellable.
             set_rate(&db, &admin, "g-shirt", "svc-wash", None, true)
                 .await

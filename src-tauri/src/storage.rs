@@ -7,11 +7,14 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
+#[cfg(test)]
 use serde_json::{Map, Number, Value};
-use sqlx::sqlite::{
-    SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions, SqliteRow,
-};
-use sqlx::{Column, Connection, Row, TypeInfo, ValueRef};
+#[cfg(test)]
+use sqlx::sqlite::SqliteRow;
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions};
+#[cfg(test)]
+use sqlx::{Column, TypeInfo, ValueRef};
+use sqlx::{Connection, Row};
 
 const MIGRATION_SQL: &str = include_str!("../migrations/001_initial_schema.sql");
 const MIGRATION_V2_SQL: &str = include_str!("../migrations/002_counter_domain.sql");
@@ -256,8 +259,12 @@ const REQUIRED_FOREIGN_KEYS: &[(&str, &str, &str, &str)] = &[
     ("audit_log", "local_users", "user_id", "NO ACTION"),
 ];
 
+// The SQL helpers below are the storage layer's own test fixtures. The app no longer exposes them
+// as commands: the UI reaches the database only through the role-checked `counter_*` commands.
+#[cfg(test)]
 type SqlRows = Vec<Value>;
 
+#[cfg(test)]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SqlStatement {
@@ -272,6 +279,7 @@ pub struct SqlStatement {
     pub mode: Option<StatementMode>,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum StatementMode {
@@ -280,6 +288,7 @@ pub enum StatementMode {
     Select,
 }
 
+#[cfg(test)]
 #[derive(Debug, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct SqlExecutionResult {
@@ -302,6 +311,9 @@ pub struct LocalDatabaseInfo {
 
 struct DatabasePools {
     writer: SqlitePool,
+    // Only the test SQL helpers read through this pool today; kept so read-only screens can use
+    // WAL snapshots without queueing behind the single writer.
+    #[cfg_attr(not(test), allow(dead_code))]
     reader: SqlitePool,
 }
 
@@ -320,6 +332,9 @@ pub struct RestoreRequest {
     prior_error: Option<String>,
     lock_available: bool,
     restore_pending: Arc<AtomicBool>,
+    /// Set for restores asked for through the app: the administrator account that must still be an
+    /// active administrator when staging begins (see `crate::counter::authorize_restore`).
+    admin_actor: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
@@ -454,6 +469,7 @@ impl DatabaseState {
         });
     }
 
+    #[cfg(test)]
     pub async fn local_select(&self, query: String, values: Vec<Value>) -> Result<SqlRows, String> {
         validate_sql(&query, SqlOperation::Select)?;
         let pool = &self.pools()?.reader;
@@ -464,6 +480,7 @@ impl DatabaseState {
         rows_to_json(rows)
     }
 
+    #[cfg(test)]
     pub async fn local_read_batch(
         &self,
         statements: Vec<SqlStatement>,
@@ -530,6 +547,7 @@ impl DatabaseState {
         Ok(transaction)
     }
 
+    #[cfg(test)]
     pub async fn local_batch(
         &self,
         statements: Vec<SqlStatement>,
@@ -760,11 +778,20 @@ impl DatabaseState {
             prior_error: self.pools.as_ref().err().cloned(),
             lock_available: self._lock_file.is_some(),
             restore_pending: Arc::clone(&self.restore_pending),
+            admin_actor: None,
         }
     }
 }
 
 impl RestoreRequest {
+    /// Require `actor_id` to still be an active administrator, checked and audited on the writer
+    /// connection itself, after the "already staged" check and before the safety backup and
+    /// staging, so a role change cannot slip in between the check and the restore.
+    pub fn with_admin_actor(mut self, actor_id: String) -> Self {
+        self.admin_actor = Some(actor_id);
+        self
+    }
+
     pub async fn apply(self) -> Result<String, String> {
         let Self {
             database_path,
@@ -773,13 +800,20 @@ impl RestoreRequest {
             prior_error,
             lock_available,
             restore_pending,
+            admin_actor,
         } = self;
         async move {
             if !lock_available {
                 return Err(prior_error
                     .unwrap_or_else(|| "The database instance lock is unavailable.".to_string()));
             }
+            if admin_actor.is_some() && writer_pool.is_none() {
+                return Err(
+                    prior_error.unwrap_or_else(|| "The database is unavailable.".to_string())
+                );
+            }
 
+            let requested_path = source_path.clone();
             let source = PathBuf::from(source_path);
             ensure_not_live_database(&source, &database_path)?;
             let ready_snapshot = match prepare_restore_snapshot(&source, &database_path).await {
@@ -802,6 +836,18 @@ impl RestoreRequest {
                 {
                     let _ = remove_database_files(&ready_snapshot);
                     return Err("A database restore is already staged.".to_string());
+                }
+                if let Some(actor_id) = admin_actor.as_deref() {
+                    if let Err(error) = crate::counter::authorize_restore(
+                        &mut connection,
+                        actor_id,
+                        &requested_path,
+                    )
+                    .await
+                    {
+                        let _ = remove_database_files(&ready_snapshot);
+                        return Err(error);
+                    }
                 }
                 if let Err(error) =
                     create_backup_on_connection(&mut connection, &database_path).await
@@ -1865,6 +1911,7 @@ fn ensure_not_live_database(source: &Path, database_path: &Path) -> Result<(), S
     Ok(())
 }
 
+#[cfg(test)]
 fn validate_sql(sql: &str, operation: SqlOperation) -> Result<(), String> {
     let bytes = sql.as_bytes();
     let mut index = 0;
@@ -1930,12 +1977,14 @@ fn validate_sql(sql: &str, operation: SqlOperation) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(test)]
 #[derive(Clone, Copy)]
 enum SqlOperation {
     Select,
     Write,
 }
 
+#[cfg(test)]
 fn bind_values<'q>(
     mut query: sqlx::query::Query<'q, sqlx::Sqlite, sqlx::sqlite::SqliteArguments<'q>>,
     values: &[Value],
@@ -1970,10 +2019,12 @@ fn bind_values<'q>(
     Ok(query)
 }
 
+#[cfg(test)]
 fn rows_to_json(rows: Vec<SqliteRow>) -> Result<SqlRows, String> {
     rows.iter().map(row_to_json).collect()
 }
 
+#[cfg(test)]
 fn row_to_json(row: &SqliteRow) -> Result<Value, String> {
     let mut object = Map::with_capacity(row.columns().len());
     for (index, column) in row.columns().iter().enumerate() {

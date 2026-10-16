@@ -13,7 +13,7 @@ export type CounterJobState = 'pending' | 'submitting' | 'submitted' | 'failed' 
 export type CounterPaymentMethod = 'cash' | 'upi' | 'card' | 'bank_transfer' | 'other';
 
 export interface CounterAccount { id: string; fullName: string; role: CounterRole; active: boolean }
-export interface CounterBootstrap { setupRequired: boolean; authenticated: boolean; account: CounterAccount | null; accounts: CounterAccount[]; warning: string | null }
+export interface CounterBootstrap { setupRequired: boolean; authenticated: boolean; account: CounterAccount | null; accounts: CounterAccount[]; warning: string | null; restorePending: boolean }
 export interface CounterGarment {
   id: string; key: string; nameEn: string; nameMr: string; category: string;
   imageKey: string; billingUnit: 'piece' | 'pair'; active: boolean;
@@ -91,6 +91,11 @@ export const getCounterBackupSettings = (): Promise<CounterBackupSettings> => ca
 /** A blank or null directory clears the second backup folder. Admin only. */
 export const setCounterBackupMirror = (directory: string | null): Promise<void> => call('counter_set_backup_mirror', { directory });
 export const runCounterBackup = (): Promise<CounterBackupSettings> => call('counter_backup_now');
+/**
+ * Admin only. Stages the chosen backup file to replace the database the next time the app starts;
+ * the native side saves a safety copy first and blocks every write until the restart.
+ */
+export const restoreCounterBackup = (sourcePath: string): Promise<string> => call('counter_restore_backup', { sourcePath });
 export const quoteCounterOrder = (input: CounterOrderInput): Promise<CounterQuote> => call('counter_quote_order', { input });
 export const saveCounterOrder = (input: CounterSaveInput): Promise<CounterSavedOrder> => call('counter_save_order', { input });
 export const getOrderPieces = (orderId: string): Promise<CounterPiece[]> => call('counter_get_order_pieces', { orderId });

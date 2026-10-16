@@ -57,6 +57,10 @@ A modern, comprehensive Point of Sale (POS) system designed specifically for lau
 - **Draft Orders**: Save orders for later completion
 - **Revenue Tracking**: Real-time revenue calculations and statistics
 
+## 🖥 Desktop app (offline, one computer)
+
+This repository also contains a separate Tauri desktop app for a single shop computer. It does not use Supabase, keeps its records in a local SQLite database, and has one interface for staff and administrators: New order, Orders / Pickup, Print queue, Dashboard, Sales, Customers, Expenses, Inventory, Machines, and, for admins only, Admin and Shop settings. The UI reaches the database only through role-checked native commands; there is no raw SQL access. It has not been run on Windows or printed on the shop's printers yet. See [docs/DESKTOP.md](docs/DESKTOP.md) (architecture), [docs/OPERATIONS.md](docs/OPERATIONS.md) (owner's guide), [docs/PRINTING_WINDOWS.md](docs/PRINTING_WINDOWS.md) and [docs/DESKTOP_ACCEPTANCE.md](docs/DESKTOP_ACCEPTANCE.md) (what is and is not verified).
+
 ## 🛠 Tech Stack
 
 - **Frontend**: React 18 + TypeScript + Vite

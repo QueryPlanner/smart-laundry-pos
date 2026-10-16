@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { LockKeyhole, LogOut, ShieldCheck, WashingMachine } from 'lucide-react';
+import { BarChart3, ClipboardList, LayoutDashboard, LockKeyhole, LogOut, Package, Printer, Receipt, Settings, ShieldCheck, ShoppingBasket, Store, Users, WashingMachine, Wrench, type LucideIcon } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -18,10 +18,19 @@ import { GarmentGrid } from './GarmentGrid';
 import { OrderSummary } from './OrderSummary';
 import { parsePaymentAmountMinor } from '@/lib/localFirst/payment';
 import { CounterAdmin } from './CounterAdmin';
+import { RestorePendingBanner } from './RestorePendingBanner';
 import { CancelOrder } from './CancelOrder';
 import { PrintProgress, PrintQueue } from './PrintJobs';
 import { JOB_STATE_LABEL } from './printJobState';
 import { defaultServiceId } from './orderDefaults';
+import { canOpen, visibleNavGroups, type SectionId, type SectionProps } from './sections';
+import { DashboardPage } from './DashboardPage';
+import { SalesPage } from './SalesPage';
+import { CustomersPage } from './CustomersPage';
+import { ExpensesPage } from './ExpensesPage';
+import { InventoryPage } from './InventoryPage';
+import { MachinesPage } from './MachinesPage';
+import { ShopSettingsPage } from './ShopSettingsPage';
 
 const problem = (e: unknown) => e instanceof Error ? e.message : String(e || 'Something went wrong.');
 
@@ -40,14 +49,22 @@ const useSingleFlight = () => {
   }, []);
 };
 
-/** Things that would throw away a half-built order, and so need a confirmation first. */
-type LeaveAction = 'new-order' | 'lock' | 'admin-workspace';
+/** Everything the workspace can show: the registry sections plus the per-order pages reached from an order. */
+type Page = SectionId | 'detail' | 'prints' | 'pieces';
 
-export const CounterApp = ({ onAdminWorkspace }: { onAdminWorkspace: (account: CounterAccount) => void }) => {
+/** Where a tap on the navigation or Lock goes. Leaving the order page with a draft needs a confirmation first. */
+type Destination = Page | 'lock';
+
+const NAV_ICON: Record<SectionId, LucideIcon> = {
+  order: ShoppingBasket, orders: ClipboardList, queue: Printer, dashboard: LayoutDashboard, sales: BarChart3,
+  customers: Users, expenses: Receipt, inventory: Package, machines: Wrench, admin: ShieldCheck, settings: Settings,
+};
+
+export const CounterApp = () => {
   const [bootstrap, setBootstrap] = useState<CounterBootstrap | null>(null);
   const [account, setAccount] = useState<CounterAccount | null>(null);
   const [catalogue, setCatalogue] = useState<CounterCatalogue | null>(null);
-  const [page, setPage] = useState<'order' | 'admin' | 'pieces' | 'prints' | 'orders' | 'detail' | 'queue'>('order');
+  const [page, setPage] = useState<Page>('order');
   const [error, setError] = useState('');
   const [quoteError, setQuoteError] = useState('');
   const [notice, setNotice] = useState('');
@@ -57,7 +74,7 @@ export const CounterApp = ({ onAdminWorkspace }: { onAdminWorkspace: (account: C
   const [customer, setCustomer] = useState<{ name: string; phone: string; customerId?: string }>({ name: '', phone: '' });
   const [quote, setQuote] = useState<CounterQuote | null>(null);
   const [quoteRefresh, setQuoteRefresh] = useState(0);
-  const [pendingLeave, setPendingLeave] = useState<LeaveAction | null>(null);
+  const [pendingLeave, setPendingLeave] = useState<Destination | null>(null);
   const [payment, setPayment] = useState('');
   const [paymentMethod, setPaymentMethod] = useState<'cash' | 'upi' | 'card' | 'bank_transfer' | 'other'>('cash');
   const [saved, setSaved] = useState<Awaited<ReturnType<typeof saveCounterOrder>> | null>(null);
@@ -70,6 +87,7 @@ export const CounterApp = ({ onAdminWorkspace }: { onAdminWorkspace: (account: C
   const [reprintBusy, setReprintBusy] = useState(false);
   const [selectedReprintPieces, setSelectedReprintPieces] = useState<string[]>([]);
   const [startupWarning, setStartupWarning] = useState('');
+  const [restoreStaged, setRestoreStaged] = useState(false);
   const [orderSearch, setOrderSearch] = useState('');
   const [orderResults, setOrderResults] = useState<CounterOrderSummary[]>([]);
   const [orderOffset, setOrderOffset] = useState(0);
@@ -287,47 +305,66 @@ export const CounterApp = ({ onAdminWorkspace }: { onAdminWorkspace: (account: C
   const openPrinterSettings = async () => { try { setPrinters(await enumeratePrinters()); setPage('admin'); } catch (e) { setError(problem(e)); } };
   const logout = async () => { try { await lockCounter(); } catch (e) { setError(`The counter could not be locked: ${problem(e)}`); return; } clearDraft(); setSaved(null); setJobs([]); setPieces([]); setOrderResults([]); setOrderSearch(''); setOrderOffset(0); setPieceChecks([]); setSelectedReprintPieces([]); setAccount(null); setCatalogue(null); setPage('order'); setBootstrap(await getCounterBootstrap()); };
 
-  const leaveActions: Record<LeaveAction, () => void> = {
-    'new-order': () => { clearDraft(); setSaved(null); setPage('order'); },
-    lock: () => void logout(),
-    'admin-workspace': () => onAdminWorkspace(account as CounterAccount),
+  /** Moves to a page, doing whatever that page needs loaded first. */
+  const arrive = (destination: Destination) => {
+    if (destination === 'lock') { void logout(); return; }
+    if (destination === 'order') { clearDraft(); setSaved(null); }
+    if (destination === 'queue') void refreshJobs();
+    if (destination === 'prints') void refreshJobs((saved as CounterSavedOrder).orderId);
+    if (destination === 'pieces') { void loadPieces((saved as CounterSavedOrder).orderId); return; }
+    setPage(destination);
   };
-  /** Runs the action at once, or asks first when it would discard an order that is being taken. */
-  const leaveOrder = (action: LeaveAction) => {
-    if (draftInProgress) { setPendingLeave(action); return; }
-    leaveActions[action]();
+  /** Goes there at once, or asks first when it would walk away from an order that is being taken. */
+  const leaveTo = (destination: Destination) => {
+    if (destination === 'order' && page === 'order') return;
+    if (draftInProgress && destination !== 'order') { setPendingLeave(destination); return; }
+    arrive(destination);
   };
   const discardDraftAndLeave = () => {
-    const action = pendingLeave as LeaveAction;
+    const destination = pendingLeave as Destination;
     setPendingLeave(null);
-    leaveActions[action]();
+    // A failed lock keeps the draft, so only clear it for pages that really replace it.
+    if (destination !== 'lock') clearDraft();
+    arrive(destination);
   };
-  const keepEditing = () => { setPendingLeave(null); setPage('order'); };
+  const keepEditing = () => setPendingLeave(null);
+  // Section pages load their own data in effects; keep these callbacks stable so they do not reload on every render here.
+  const openOrderRef = useRef(openOrder);
+  openOrderRef.current = openOrder;
+  const onOpenOrder = useCallback((orderId: string) => void openOrderRef.current(orderId), []);
 
+  const restoreWaiting = restoreStaged || !!bootstrap?.restorePending;
   if (!bootstrap) {
     // A failed start-up must say so; the spinner text is only for a request that is really pending.
     if (error) return <div className="counter-auth"><div className="counter-auth-card"><WashingMachine /><h1>Smart Laundry</h1><p role="alert">{error}</p><Button onClick={retryStartup}>Try again</Button></div></div>;
     return <div className="counter-auth"><p>Opening local counter…</p></div>;
   }
   if (bootstrap.setupRequired) return <Setup onDone={async name => { try { const a = await setupCounterAdmin({ fullName: name.fullName, pin: name.pin }); setAccount(a); setCatalogue(await getCounterCatalogue()); const next=await getCounterBootstrap(); setBootstrap(next); setStartupWarning(next.warning||''); } catch (e) { setError(problem(e)); } }} error={error} />;
-  if (!account) return <Login accounts={bootstrap.accounts || []} busy={busy} error={error} onLogin={signIn} onRefresh={() => void refresh().catch(e => setError(problem(e)))} />;
+  if (!account) return <>{restoreWaiting && <RestorePendingBanner />}<Login accounts={bootstrap.accounts || []} busy={busy} error={error} onLogin={signIn} onRefresh={() => void refresh().catch(e => setError(problem(e)))} /></>;
   const admin = account.role === 'admin';
   const orderCancelled = saved?.status === 'cancelled';
   const shortOrderQuery = orderSearch.trim().length === 1;
   // Jobs of other orders can sit in the shared list; this page only ever shows its own order's.
   const savedOrderJobs = saved ? jobs.filter(j => j.orderId === saved.orderId) : [];
 
+  const activeSection: Page = page === 'detail' ? 'orders' : page;
+  const sectionProps: SectionProps = { account, onError: reportError, onNotice: setNotice, onOpenOrder };
+  const showing = (section: SectionId) => page === section && canOpen(section, account.role);
+
   return <div className="counter-shell">
-    <header className="counter-topbar"><div className="counter-brand"><span className="counter-brand-mark"><WashingMachine /></span><span><strong>Smart Laundry</strong><small>Counter · Offline</small></span></div><div className="counter-session"><Badge variant="outline">{admin ? 'Admin' : 'Staff'} · {account.fullName}</Badge><Button variant="outline" size="sm" onClick={() => leaveOrder('lock')}><LogOut className="mr-2 h-4 w-4" />Lock</Button></div></header>
-    <nav className="counter-nav" aria-label="Counter sections">
-      <button className={page === 'order' ? 'active' : ''} onClick={() => { if (page !== 'order') leaveOrder('new-order'); }}>New order</button>
-      <button className={page === 'orders' || page === 'detail' ? 'active' : ''} onClick={() => setPage('orders')}>Orders / Pickup</button>
-      <button className={page === 'queue' ? 'active' : ''} onClick={() => { void refreshJobs(); setPage('queue'); }}>Print queue</button>
-      {saved && <>
-        <button className={page === 'prints' ? 'active' : ''} onClick={() => { void refreshJobs(saved.orderId); setPage('prints'); }}>Print progress</button>
-        {!orderCancelled && <button className={page === 'pieces' ? 'active' : ''} onClick={() => void loadPieces(saved.orderId)}>Packing / pickup</button>}
-      </>}
-      {admin && <button className={page === 'admin' ? 'active' : ''} onClick={() => setPage('admin')}><ShieldCheck className="h-4 w-4" />Admin</button>}
+    <header className="counter-topbar"><div className="counter-brand"><span className="counter-brand-mark"><WashingMachine /></span><span><strong>Smart Laundry</strong><small>Counter · Offline</small></span></div><div className="counter-session"><Badge variant="outline">{admin ? 'Admin' : 'Staff'} · {account.fullName}</Badge><Button variant="outline" size="sm" onClick={() => leaveTo('lock')}><LogOut className="mr-2 h-4 w-4" />Lock</Button></div></header>
+    <nav className="counter-nav" aria-label="Workspace sections">
+      {visibleNavGroups(account.role).map(group => <div key={group.label} className="counter-nav-group" role="group" aria-label={group.label}>
+        <span className="counter-nav-label" aria-hidden="true">{group.label}</span>
+        {group.sections.map(section => {
+          const Icon = NAV_ICON[section.id];
+          return <button key={section.id} type="button" className={activeSection === section.id ? 'active' : ''} aria-current={activeSection === section.id ? 'page' : undefined} onClick={() => leaveTo(section.id)}><Icon className="h-4 w-4" />{section.label}</button>;
+        })}
+        {group.label === 'Counter' && saved && <>
+          <button type="button" className={page === 'prints' ? 'active' : ''} aria-current={page === 'prints' ? 'page' : undefined} onClick={() => leaveTo('prints')}>Print progress</button>
+          {!orderCancelled && <button type="button" className={page === 'pieces' ? 'active' : ''} aria-current={page === 'pieces' ? 'page' : undefined} onClick={() => leaveTo('pieces')}>Packing / pickup</button>}
+        </>}
+      </div>)}
     </nav>
     {pendingLeave && <div className="counter-discard-bar" role="alertdialog" aria-label="Unsaved order">
       <p>You have an unsaved order. Discard it?</p>
@@ -336,6 +373,7 @@ export const CounterApp = ({ onAdminWorkspace }: { onAdminWorkspace: (account: C
     </div>}
     {notice && <p className="counter-notice" role="status">{notice}</p>}{error && <p className="counter-error" role="alert">{error}</p>}
     {quoteError && <p className="counter-error" role="alert">{quoteError}</p>}
+    {restoreWaiting && <RestorePendingBanner />}
     {startupWarning && <p className="counter-error" role="status">{startupWarning}</p>}
     {page === 'order' && <fieldset className="counter-fieldset" disabled={busy}><div className="counter-layout"><main className="counter-main"><CustomerEntry customer={customer} onChange={setCustomer} search={searchCounterCustomers} /><section className="counter-panel"><div className="counter-services" role="tablist" aria-label="Service"><span className="counter-section-label">Choose service</span>{catalogue?.services.filter(x => x.active).map(s => <button key={s.id} role="tab" aria-selected={s.id === serviceId} className={s.id === serviceId ? 'selected' : ''} onClick={() => setServiceId(s.id)}>{s.name}</button>)}</div><GarmentGrid catalogue={catalogue} serviceId={serviceId} lines={lines} onAdd={id => addGarment(id)} onQuantity={setQuantity} /></section></main><aside className="counter-aside"><OrderSummary catalogue={catalogue} lines={lines} quote={quote} quoteFailed={quoteError !== ''} customer={customer} paymentMethod={paymentMethod} onPaymentMethod={setPaymentMethod} onRemove={(id, sid) => setQuantity(id, 0, sid)} onQuantity={setQuantity} onSave={() => void save()} busy={busy} /></aside></div></fieldset>}
     {page === 'orders' && <section className="counter-panel counter-status-page">
@@ -363,7 +401,14 @@ export const CounterApp = ({ onAdminWorkspace }: { onAdminWorkspace: (account: C
       </div>
       {admin && saved.status !== 'collected' && !orderCancelled && <CancelOrder key={saved.orderId} busy={busy} onCancel={reason => cancelOrder(saved, reason)} />}
     </section>}
-    {page === 'admin' && admin && <CounterAdmin catalogue={catalogue} onCatalogue={setCatalogue} printers={printers} onReloadPrinters={openPrinterSettings} onOldAdmin={() => leaveOrder('admin-workspace')} onError={reportError} onNotice={setNotice} />}
+    {showing('admin') && <CounterAdmin catalogue={catalogue} onCatalogue={setCatalogue} printers={printers} onReloadPrinters={openPrinterSettings} onError={reportError} onNotice={setNotice} onRestoreStaged={() => setRestoreStaged(true)} />}
+    {showing('dashboard') && <DashboardPage {...sectionProps} />}
+    {showing('sales') && <SalesPage {...sectionProps} />}
+    {showing('customers') && <CustomersPage {...sectionProps} />}
+    {showing('expenses') && <ExpensesPage {...sectionProps} />}
+    {showing('inventory') && <InventoryPage {...sectionProps} />}
+    {showing('machines') && <MachinesPage {...sectionProps} />}
+    {showing('settings') && <ShopSettingsPage {...sectionProps} />}
     {page === 'prints' && saved && <PrintProgress orderNumber={saved.orderNumber} promisedAt={saved.promisedAt} jobs={savedOrderJobs.length ? savedOrderJobs : saved.printJobs} pieces={saved.pieces} selected={selectedReprintPieces} onSelected={setSelectedReprintPieces} reprintBusy={reprintBusy} onReprintBill={() => void reprint(saved, 'bill')} onReprintTags={() => void reprint(saved, 'tags', selectedReprintPieces)} onRetry={doRetry} onResume={resumePendingJob} />}
     {page === 'pieces' && saved && <PieceMatching orderNumber={saved.orderNumber} stage={pieceStage} pieces={pieces} selected={pieceChecks} complete={collectionComplete} onSelected={setPieceChecks} onSubmit={() => void submitMatches(saved)} />}
     {page === 'queue' && <PrintQueue jobs={jobs} onRefresh={() => void refreshJobs()} onOpenOrder={orderId => void openOrder(orderId)} onRetry={doRetry} onResume={resumePendingJob} />}

@@ -8,19 +8,23 @@ The target installation is one Windows laptop in a shop with a Canon laser print
 
 | Layer | Where | Responsibility |
 | --- | --- | --- |
-| Entry | `src/desktop.tsx`, `src/pages/LocalFirstApp.tsx` | Mounts the counter. Admins can also open the older admin workspace from the Admin screen. |
-| Counter UI | `src/components/localCounter/` | Login, garment grid, order summary, orders and pickup, cancel order (admin), print queue and progress, and the Admin tabs (rate card, discounts, staff, printers, backups). |
-| Counter API | `src/lib/localFirst/counter.ts` | Typed wrappers over the native `counter_*` commands. The UI never sends prices, discounts, roles or SQL for counter work. |
-| Native commands | `src-tauri/src/lib.rs` | Registers the Tauri commands, runs start-up (recover interrupted prints, apply the admin PIN reset file) and starts the backup thread. |
-| Business rules | `src-tauri/src/counter.rs` | Accounts and roles, rate card, discounts, quoting, order save, cancel, pieces, collection, print job state, backup settings, PIN reset file. Every command checks the signed-in role here. |
+| Entry | `src/desktop.tsx`, `src/pages/LocalFirstApp.tsx` | Mounts the one workspace, `CounterApp`. There is no second interface. |
+| Workspace UI | `src/components/localCounter/` | `CounterApp.tsx` is the shell (sign-in, role-filtered navigation, the New order screen and the order, pickup and print screens). `sections.ts` is the registry of sections and which role may open each; the section screens are `DashboardPage`, `SalesPage`, `CustomersPage`, `ExpensesPage`, `InventoryPage`, `MachinesPage` and `ShopSettingsPage`, plus `CounterAdmin` (rate card, discounts, staff, printers, backups and restore). Shared pieces are in `ui.tsx`. |
+| Native API wrappers | `src/lib/localFirst/counter.ts`, `office.ts`, `insights.ts`, `shopSettings.ts` | Typed wrappers over the native `counter_*` commands. The UI never sends prices, discounts, roles or SQL. `commands.guard.test.ts` fails if a registered command has no wrapper, a wrapper calls an unregistered command, or any registered command is not named `counter_*`. |
+| Native commands | `src-tauri/src/lib.rs` | Registers the Tauri commands, runs start-up (recover interrupted prints, apply the admin PIN reset file) and starts the backup thread. Every registered command is a `counter_*` command. |
+| Business rules | `src-tauri/src/counter.rs` | Accounts and roles, rate card, discounts, quoting, order save, cancel, pieces, collection, print job state, backup settings, backup restore, PIN reset file. Every command checks the signed-in role here. |
+| Back office | `src-tauri/src/office.rs` | Customers, expenses, inventory and machines: list, create, edit and (admin only) delete, with audit rows. |
+| Insights | `src-tauri/src/insights.rs` | Dashboard overview, sales summary, sales graph series, order list and payment (transaction) list, all read-only. |
+| Shop settings | `src-tauri/src/shop_settings.rs` | The five editable shop settings and the bill header built from them. |
 | Storage | `src-tauri/src/storage.rs` | SQLite via `sqlx` (one writer connection, four read-only connections), single-instance lock, schema checks, backup, staged restore. |
 | Printing | `src-tauri/src/printing.rs`, `src-tauri/src/print_layout.rs` | Document model and validation, Windows GDI and Linux CUPS adapters, and the pure page layout. Details in [PRINTING_WINDOWS.md](PRINTING_WINDOWS.md). |
 | Schema | `src-tauri/migrations/001_initial_schema.sql`, `002_counter_domain.sql` | Version 1 is the original local-first schema. Version 2 adds the counter domain and the starter rate card. |
 
 ### Rules the native layer enforces
 
-- The signed-in account lives in native memory (`CounterSession`), not in the webview. Locking clears it. Leaving the older admin workspace also locks it.
-- Roles are `admin` and `staff`. Rates, discounts, staff accounts, printers, backup settings, cancelling an order, and all direct SQL commands (`local_select`, `local_read_batch`, `local_batch`, `backup_database`, `restore_database`) require an active admin.
+- The signed-in account lives in native memory (`CounterSession`), not in the webview. Locking clears it.
+- Roles are `admin` and `staff`. Only an active admin can set rates, set discounts, manage staff accounts, choose printers, change backup settings, back up now or restore a backup, change the shop settings, cancel an order, or delete any record. Everything else is open to both roles. The deletes, shop settings save and restore re-check against the database, inside the write transaction, that the account is still an active admin (`require_admin_in_tx`), so a stale or forged session claiming "admin" is refused. The older admin writes check the session role only (see Security boundary).
+- There are no raw SQL commands. The UI can only reach the database through the `counter_*` commands, each of which validates its own input.
 - PINs are 4 to 8 digits. Five wrong PINs lock that account for five minutes. Switching a staff account back on, resetting a staff PIN, or the admin PIN reset file also clears the lock. PINs are stored as a salted SHA-256 hash iterated 150,000 times, with a one-time upgrade from the older single-round hash on first login. A 4 to 8 digit PIN protects the screen, not the data: the database file is not encrypted.
 - Prices come only from the rate card (garment by service, integer paise, at most Rs 10,000 per rate). A line quantity is 1 to 200. An order has at most 100 lines, 500 pieces, and a total under Rs 10,00,000. Shoes are billed per pair and cannot be ironed (Iron and Wash + Iron are refused for shoes).
 - Ready time is the received date (Asia/Kolkata) plus two calendar days at 17:00, with no configuration.
@@ -34,6 +38,23 @@ The target installation is one Windows laptop in a shop with a Canon laser print
 - The order, its pieces, its payment and its two print jobs (bill and tags) are written in one transaction before any printing starts.
 - Print job retry checks and changes the job's state in one transaction, so a double click cannot queue the same output twice. A saved print document that cannot be read is marked failed instead of staying claimed. Printers for bills and tags must be different queues.
 
+### Role matrix
+
+| Area | Staff | Admin |
+| --- | --- | --- |
+| New order, Orders / Pickup, Print queue (take orders, record payment, move status, collect, reprint) | Yes | Yes |
+| Cancel an order (reason 3 to 200 characters) | No | Yes |
+| Dashboard and Sales (all figures, the same for both roles) | Yes | Yes |
+| Customers, Expenses, Inventory, Machines: view, create, edit; adjust stock; record a machine's maintenance | Yes | Yes |
+| Delete a customer, expense, inventory item or machine (reason 3 to 200 characters, audited) | No | Yes |
+| Rate card, discounts, staff accounts, printer choice | No | Yes |
+| Backups: status, back up now, second folder, restore | No | Yes |
+| Shop settings: read | Yes (the bill needs the shop name) | Yes |
+| Shop settings: save | No | Yes |
+| Edit a customer's name or phone when that customer has a discount rule | No | Yes |
+
+Orders are never hard-deleted, so bill numbers, pieces and the audit trail stay traceable; cancelling is the admin's way to remove an order. Every delete is one transaction and writes the full old record to the audit table. A customer who has orders cannot be deleted (checked by customer id and by phone inside the same transaction).
+
 ### Money storage
 
 New counter data uses integer paise (`price_minor`, `unit_price_minor`, `line_total_minor`). The version 1 tables that orders and payments still use (`orders.total_amount`, `payments.amount`) store rupees as floating point numbers, so the native code converts with rounding when it reads them. This works for the amounts the counter produces, but it is two representations of money in one database.
@@ -42,9 +63,19 @@ New counter data uses integer paise (`price_minor`, `unit_price_minor`, `line_to
 
 Version 2 was changed in place during development, so a database written by an earlier development build of version 2 is rejected by the schema check, with no migration. From now on treat `001` and `002` as frozen: any later schema change must ship as a new migration (`003`) with its own upgrade step. The upgrade code in `storage.rs` only knows how to take version 0 or 1 to version 2 today.
 
-### The older admin workspace
+### One interface, no raw SQL
 
-An admin can open the "full admin workspace" from the Admin screen (it asks first if an order is half-entered). It is the earlier local-first screen (dashboard, customers, services, payments, expenses, inventory, machines, reports, settings). It talks to the database through the SQL bridge, so it is not bound by the counter's rules (full payment, discount rules, ready time). The counter bill and ready time do not read its shop name, receipt width or completion-days settings. The restore screen lives only there. I did not audit everything this workspace can change.
+An earlier version had a second, blue "full admin workspace" that talked to SQLite through a raw SQL bridge (`local_select`, `local_read_batch`, `local_batch`) and was not bound by the counter's rules (payment in full, discount rules, rate card). It, the bridge commands, `backup_database` and `restore_database`, and the frontend modules behind them (`repository`, `db`, `startup`, `security`, `domain`, `types`, `backup`) were removed. Its useful screens were rebuilt as sections of the one workspace on top of role-checked native commands: Dashboard, Sales, Customers, Expenses, Inventory, Machines and Shop settings. The old services screen is replaced by the rate card, and the old PIN login by the counter accounts. The dead settings it had (GST number, receipt width, default completion days) were not carried over.
+
+The `SqlStatement` helpers and `DatabaseState::local_select`, `local_read_batch` and `local_batch` still exist in `storage.rs`, but only under `#[cfg(test)]`, as fixtures for the storage tests. They are not compiled into the app and are not reachable from the UI. The read-only connection pool they use is likewise only exercised by tests today.
+
+The office tables (`customers`, `expenses`, `inventory_items`, `inventory_transactions`, `machines`, `app_settings`) are the version 1 tables. They store money as rupees (floating point); the native code converts to paise at the API edge.
+
+### Bill header and shop settings
+
+Admin > Shop settings edits five values: shop name, address, phone, receipt footer and the bill number prefix (1 to 6 letters or digits, upper-cased, no hyphen). Only those keys can be read or written through the screen; `device_id` and the backup bookkeeping keys in the same table are not reachable. A save changes only the keys that differ and writes one audit row with the old and new values.
+
+The bill header (shop name, address, phone, footer) is copied from the settings into the bill document when the order is saved, so a reprint matches the original bill even after the settings change. A bill saved before this existed has an empty header and prints the built-in title "SMART LAUNDRY" and the footer "Thank you". Existing installs start with the values the version 1 schema seeded: shop name "Smart Laundry" and footer "Thank you for choosing us." (an install that has never edited them will therefore print those). The Linux plain-text adapter prints the same header and footer text but does not use the layout code.
 
 ## Data on disk
 
@@ -70,12 +101,12 @@ The data folder comes from Tauri's `app_config_dir()` for the identifier in `src
 - An optional second folder (for example a USB drive) must be an absolute path to an existing, writable folder outside the data folder and, on Windows, not on the same drive letter as the data folder. Choosing it creates a subfolder `SmartLaundry-backups-<first 8 characters of this computer's id>`. Every backup is copied into that subfolder (written as `.partial`, size-checked, renamed), and only that subfolder is pruned (newest 90 `laundry-*.db`). If the subfolder is missing at backup time the copy fails and is recorded; it is never recreated, so a different USB stick that took over the same drive letter is not written to. A failed copy is recorded and does not fail the backup.
 - Before the first upgrade of an existing version 1 database, a verified `pre-upgrade-v1-*.db` copy is written to `backups/`. If that copy cannot be made and verified, the upgrade is refused and the database is left as it was. A brand-new database, or an empty file left by an interrupted first run, is set up normally with no such copy.
 - Schema checks compare the live database object by object against the expected schema (an in-memory database built from the two migrations).
-- Restore is staged, then applied on the next start. Staging validates integrity, foreign keys, schema and version of the chosen file and takes a normal backup of the current data. After staging the app refuses writes until restarted. At start the app takes `laundry-recovery-*.db`, moves the original aside, installs the replacement, and keeps a journal so an interrupted application can be recovered. If a staged file is invalid at start, it is kept under a `restore-rejected-` name and the original database opens with a warning. The Windows restore code does not retry if a file is briefly locked (for example by antivirus); it fails and the operator can try again.
+- Restore is staged, then applied on the next start. It is done from Admin > Backups > Restore from backup (the file chooser filters on `.db`, then a confirmation dialog warns what will happen), through the admin-only `counter_restore_backup` command. The session role is checked before the file is touched, and the database is asked again on the writer connection (still an active admin) immediately before staging; that same step writes a `restore_requested` audit row, so the row is inside the safety copy that is taken next. A non-admin, a forged session or a deactivated admin stages nothing. Staging validates integrity, foreign keys, schema and version of the chosen file and takes a normal backup of the current data. After staging the app refuses writes until restarted, and the app shows a banner on every screen (the sign-in screen included) saying so. The banner is driven by `restorePending` in the `counter_bootstrap` result, which is true whenever a staged restore file exists, so it also appears after an app restart that has not yet applied it. A restore brings back the accounts and PINs of the backup, including staff who were deactivated after it was made, and the banner and the confirmation dialog say so. The audit rows written after the backup are lost with the rest of the later data. There is no restore path when the database itself will not open, because there is then no signed-in admin to authorize it (the start-up screen shows the error); recover by copying a backup over the data folder by hand, as described in OPERATIONS.md. At start the app takes `laundry-recovery-*.db`, moves the original aside, installs the replacement, and keeps a journal so an interrupted application can be recovered. If a staged file is invalid at start, it is kept under a `restore-rejected-` name and the original database opens with a warning. The Windows restore code does not retry if a file is briefly locked (for example by antivirus); it fails and the operator can try again.
 - Admin PIN reset file: at start, `reset-admin-pin.txt` in the data folder is read and deleted first, and only then applied once and audited, so a leftover file can never re-apply an old PIN. If it cannot be deleted it is not applied. Rejected files (bad PIN, no admin, unreadable text, a pending restore blocking writes) are deleted too, so no PIN stays on disk, and the start-up message says why. UTF-8, UTF-8 with a byte-order mark, and UTF-16 (what Notepad's Unicode option and PowerShell produce) are accepted. The reset also re-activates the admin and clears any lock. It adds no access beyond what file access already gives, since the database is not encrypted.
 
 ## Security boundary
 
-The bundled UI is trusted. The SQL bridge rejects multiple statements, transaction control and schema changes, reads use a read-only connection, and all of it needs an admin session. It does not authorize individual tables. The content security policy allows local assets and Tauri IPC only. Adding remote pages, renderer plugins or untrusted scripts would mean replacing the bridge with narrower commands first. The window capability grants default core permissions, webview printing (used by the older workspace), and the file-open dialog (used for restore).
+The webview can only call the registered `counter_*` commands. Each one checks the session role itself and validates its input; every admin write (rates, discounts, staff, printers, backup folder, cancel order, deletes, shop settings, restore) also re-checks the role against the database inside its transaction. There is no command that runs caller-supplied SQL. The content security policy allows local assets and Tauri IPC only. The window capability (`src-tauri/capabilities/default.json`) grants default core permissions, webview printing, and the dialog plugin (`dialog:default`, `dialog:allow-open`), used by the restore file chooser and confirmation. I did not review whether `core:webview:allow-print` is still needed now that the older workspace is gone. The database file is not encrypted, so none of this protects against someone with access to the computer's files.
 
 ## Development commands
 
@@ -98,7 +129,7 @@ cargo clippy --all-targets -- -D warnings
 
 Running only the Vite server in a normal browser does not give you the native runtime, so the counter cannot work there. The coverage gate covers the JavaScript desktop code only; Rust coverage is not measured by any gate (use `cargo llvm-cov` if installed).
 
-Native tests use throwaway SQLite databases in the temporary directory. The code that actually talks to the operating system's printing (the Windows GDI calls, `lp`) cannot run in tests. Everything around it is tested: validation, layout with a stand-in text measurer, the deadline helper, printer availability flags, the per-printer guard, and the job state handling up to the point of the OS call (on macOS the call reports "not supported", so those tests see `failed`). The `submitted` and `uncertain` outcomes of a real OS submission are not exercised. See [DESKTOP_ACCEPTANCE.md](DESKTOP_ACCEPTANCE.md).
+Native tests use throwaway SQLite databases in the temporary directory. Role checks, delete rules, audit rows and the Sales time-zone and reconciliation rules are tested in `counter.rs`, `office.rs`, `insights/tests.rs` and `shop_settings.rs`; `app_tests.rs` checks over mock IPC that the retired SQL and unguarded backup commands are not registered. The code that actually talks to the operating system's printing (the Windows GDI calls, `lp`) cannot run in tests. Everything around it is tested: validation, layout with a stand-in text measurer, the deadline helper, printer availability flags, the per-printer guard, and the job state handling up to the point of the OS call (on macOS the call reports "not supported", so those tests see `failed`). The `submitted` and `uncertain` outcomes of a real OS submission are not exercised. See [DESKTOP_ACCEPTANCE.md](DESKTOP_ACCEPTANCE.md).
 
 ## Packaging
 

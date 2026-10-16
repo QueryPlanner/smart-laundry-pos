@@ -69,12 +69,13 @@ Retrying an `uncertain` job needs two steps in the app: "Review uncertain job", 
 
 Page margin is 0.5 inch. Text, in order:
 
-- "SMART LAUNDRY" (fixed text; the bill does not use the shop name from the older settings screen), bill number, date and time (IST), customer name, and phone if there is one.
+- The shop name as the title (bold, 18 pt), then the shop address, then "Tel: <shop phone>" (each only if the admin filled it in). The shop name, address, phone and footer come from Admin > Shop settings and are copied into the bill when the order is saved, so a reprint always matches the first bill even after the settings change. A bill saved before shop settings existed has no saved header and prints the built-in title "SMART LAUNDRY". An existing installation starts with the shop name "Smart Laundry" and the footer "Thank you for choosing us." until the admin edits them.
+- Then the bill number, date and time (IST), customer name, and phone if there is one.
 - For each line: "Garment - Service", then "quantity x unit price = line total".
 - "Pieces:" count, "Subtotal:", "Discount (x%):" with the amount (only when the discount is more than zero), "Total:", "Paid:". "Balance due:" appears only if a balance exists, which does not happen for orders saved by the current counter because payment is always taken in full.
-- "Ready by:" the received date plus two calendar days at 5:00 PM IST, then "Thank you".
+- "Ready by:" the received date plus two calendar days at 5:00 PM IST, then the shop's receipt footer, or "Thank you" when no footer was saved.
 
-Long names wrap. A bill longer than one page continues on further pages headed "Bill: NUMBER (continued)", up to 50 pages. A bill that would need more fails with an error.
+Long names wrap, including the shop name, address and footer. Each of those four fields is limited to 200 characters in a bill document (the settings screen allows fewer), and control characters in them print as spaces. A bill longer than one page continues on further pages headed "Bill: NUMBER (continued)", up to 50 pages. A bill that would need more fails with an error.
 
 The bill must pass a money check before printing: every line total equals unit price times quantity, the lines add up to the subtotal, the discount is between 0 and 100% and not above the subtotal, and paid plus balance equals subtotal minus discount.
 
@@ -96,4 +97,4 @@ Text sizes step down in five steps until everything fits the label, wrapping lon
 
 ### Linux (development only)
 
-The Linux adapter finds queues with `lpstat` and sends plain text to the chosen queue with `lp -d QUEUE -o sides=one-sided -o media=A4` for bills or `-o media=Custom.50x50mm` for tags, plus `fit-to-page`. It does not use the layout code above, so it has none of the wrapping, pagination or fit checks, always prints the "Discount" and "Balance" lines, and depends on the CUPS filters and fonts of the installed queue. A text job from Linux says nothing about how Windows will print. The Linux queues are chosen in the same Admin > Printers screen.
+The Linux adapter finds queues with `lpstat` and sends plain text to the chosen queue with `lp -d QUEUE -o sides=one-sided -o media=A4` for bills or `-o media=Custom.50x50mm` for tags, plus `fit-to-page`. It prints the same shop title, address, phone and footer lines, but does not use the layout code above, so it has none of the wrapping, pagination or fit checks, always prints the "Discount" and "Balance" lines, and depends on the CUPS filters and fonts of the installed queue. A text job from Linux says nothing about how Windows will print. The Linux queues are chosen in the same Admin > Printers screen.
