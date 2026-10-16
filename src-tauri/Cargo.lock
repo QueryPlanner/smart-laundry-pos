@@ -2996,6 +2996,7 @@ name = "smart-laundry-pos"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "cairo-rs",
  "chrono",
  "serde",
  "serde_json",

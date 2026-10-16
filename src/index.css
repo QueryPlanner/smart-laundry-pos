@@ -497,6 +497,16 @@ All colors MUST be HSL.
 .counter-settings-sample+.counter-settings-sample{border-top:0}
 .counter-settings-preview em{margin-top:2px;color:#1c2a25;overflow-wrap:anywhere}
 .counter-settings-preview small{margin-top:8px;text-align:left;color:#5f6f68}
+.counter-print-options{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 14px;border:1px solid #dce7e1;border-radius:12px;padding:14px;margin:0;min-width:0}
+.counter-print-options legend{padding:0 6px;font-size:14px;font-weight:700;color:#263b32}
+.counter-print-options .counter-field,.counter-print-options .counter-settings-note{grid-column:1/-1}
+.counter-print-option{display:flex;align-items:center;gap:9px;min-height:36px;font-size:13px;color:#34483f;cursor:pointer}
+.counter-print-option input{width:17px;height:17px;accent-color:#21835f}
+.counter-tag-preview-label{margin-top:12px;padding-top:12px;border-top:1px dashed #cddbd4}
+.counter-settings-tag-preview{display:grid;gap:5px;max-width:220px;justify-self:center;width:100%;padding:12px 10px 18px;border:1px dashed #9cafa5;border-radius:8px;text-align:left;font:12px/1.35 ui-monospace,monospace;color:#263b32;overflow-wrap:anywhere}
+.counter-settings-tag-preview strong{font-size:13px}
+.counter-settings-tag-preview small{text-align:center;border-top:1px dashed #cddbd4;padding-top:8px;color:#73857c}
+@media(max-width:540px){.counter-print-options{grid-template-columns:1fr}}
 @media(max-width:960px){.counter-settings-grid{grid-template-columns:1fr}.counter-settings-preview{position:static}}
 /* --- end A2 --- */
 

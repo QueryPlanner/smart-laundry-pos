@@ -4,23 +4,23 @@ The app prints two things for every saved order: a customer bill on a Canon lase
 
 Important limits, stated once here:
 
-- The Windows printing code type-checks and passes clippy for the Windows target through a stand-in harness that is not in this repository, and CI is set up to compile it on a Windows runner. It has never been run on Windows and has never printed on the Canon or the TSC.
+- The Windows adapter now requests landscape A4 bills and a custom 50 mm-wide tag page through the Windows printer driver. It has not yet been run on Windows or physically tested there; Linux output does not prove Windows output.
 - "Submitted" means the operating system's spooler accepted the job. It does not prove paper came out. Paper-out, jams and a switched-off printer after that point are not reported back to the app.
-- macOS has no printing support (the app reports that). Linux printing is a development aid only.
+- Linux uses the same positioned layout as Windows, renders a PDF and sends that PDF through CUPS. Linux is a development aid only.
 
 The release checklist for real hardware is in [DESKTOP_ACCEPTANCE.md](DESKTOP_ACCEPTANCE.md). The shop owner's guide to the screens is in [OPERATIONS.md](OPERATIONS.md).
 
 ## Printer setup on the Windows laptop
 
-1. Install the Windows driver for the exact Canon model from Canon's support site and connect the printer. In the driver preferences set the paper size to A4. The app does not bundle drivers.
+1. Install the Windows driver for the exact Canon model from Canon's support site and connect the printer. In the driver preferences set the paper size to A4 and copies to 1. The app requests landscape for each bill but does not bundle drivers.
 2. Install the TSC TE244 Windows driver from the [TSC downloads page](https://in.tscprinters.com/en/downloads). The queue must show as ready in Windows.
-3. In the TSC driver preferences define the label stock that matches the roll (50 mm wide, gap or continuous as the roll requires) and set darkness. Calibrate the media sensor with the roll loaded, following [TSC's TE-series instructions](https://apac.tscprinters.com/en/products/te-series-4-inch-performance-desktop-printers). Set the driver's paper size to that label size and the number of copies to 1. If the driver is left on a sheet size, the app refuses to print tags (see below). The driver owns media setup. The app sends drawn text through Windows and never sends TSPL or other printer commands.
+3. In the TSC driver preferences set the loaded stock to a 50 mm-wide continuous roll, copies to 1, and the correct darkness. Calibrate the media sensor with the roll loaded, following [TSC's TE-series instructions](https://apac.tscprinters.com/en/products/te-series-4-inch-performance-desktop-printers). The app requests a custom page whose length is set in Admin > Shop settings; the driver must accept custom 50 mm × selected-length media. The app sends drawn text through Windows and never sends TSPL or other printer commands.
 4. In the app, sign in as admin, open Admin > Printers, press "Refresh printer list", choose the Canon queue for bills and the TE244 queue for tags (they must be different queues), and press "Save printers". Saving checks that each queue is currently listed as available.
 5. Print a test order (see the checklist) and inspect it before real use.
 
 The two drop-downs on the Printers tab offer only queues the app considers available; the list underneath shows every queue and its state. On Windows a queue counts as unavailable when its status includes any of: paused, error, pending deletion, paper jam, paper out, paper problem, offline, not available, user intervention or door open, or when the queue is set to "Use Printer Offline". A queue that is only busy or printing counts as available, because it still accepts the next job. Saving the two choices is refused if both are the same queue.
 
-The app creates the print context without a device mode, so the driver's own defaults apply: number of copies, orientation, paper or label size and darkness are never set by the app. Check in the Windows printer preferences that the Canon is on A4 and one copy, and that the TSC is on the label size with one copy.
+The app reads each queue's current Windows `DEVMODE`, preserves the other driver settings, then asks the driver for landscape A4 for a bill or portrait custom 50 mm × batch-strip length for tags. A tag batch uses one continuous strip whose length is the configured pitch multiplied by its piece count, plus one 10 mm feed after the physical final tag. It verifies the resulting physical media dimensions, then checks the drawable rectangle and offsets before creating a spool job. Copies and darkness remain driver settings, so keep copies at 1. If the TSC driver refuses the requested custom media, the app fails before spooling.
 
 The app finds queues with `EnumPrintersW` (local and connected queues), opens a device context for the chosen queue, and uses `StartDocW`/`StartPage`/`TextOutW`/`EndPage`/`EndDoc`. Text is drawn with the Segoe UI font. Customer text is drawn as text; it is never put into a shell command or printer language. I have not tested how names in scripts that Segoe UI lacks (for example Devanagari) print; the bills and tags are designed for English text.
 
@@ -46,7 +46,7 @@ Once the spooler has started the document the rules are:
 - A failure while finishing a page, or after at least one page was finished, aborts the document but counts as `uncertain`, with the message saying how many pages were sent.
 - If the print thread panics with a document open, the open document is aborted so it does not stay in the spooler.
 
-Layout uses the printer driver's own printable area and font measurements, so wrapping and fit match what the printer will draw. That area comes from the driver's paper or label definition, which is why step 1 and step 3 above matter.
+Layout uses the requested physical paper or strip size and the printer driver's font measurements. Before spooling, the adapter checks that every line and rule fits inside the driver's printable rectangle, then translates media-relative positions by the physical offset to the printable origin. That rectangle and offset come from the driver's paper or label definition, which is why step 1 and step 3 above matter.
 
 ### One submission per printer at a time
 
@@ -65,23 +65,19 @@ Retrying an `uncertain` job needs two steps in the app: "Review uncertain job", 
 
 ## Document contract
 
-### Bill (Canon, A4)
+### Bill (Canon, A4 landscape)
 
-Page margin is 0.5 inch. Text, in order:
+The app requests A4 landscape and uses a 24 pt (about 8.5 mm) safe margin. The configurable laundry name, address, phone and optional message are centered above the order details. The bill number and received time share a row; customer and optional phone, ready-by time, payment summary, piece count, and a full-width table with Particulars, Service, Qty, Rate and Amount follow. Totals and configurable multiline footer/terms finish the bill. Text and rules are positioned against measured printer-font widths; long values wrap, and totals move to another page when needed.
 
-- The shop name as the title (bold, 18 pt), then the shop address, then "Tel: <shop phone>" (each only if the admin filled it in). The shop name, address, phone and footer come from Admin > Shop settings and are copied into the bill when the order is saved, so a reprint always matches the first bill even after the settings change. A bill saved before shop settings existed has no saved header and prints the built-in title "SMART LAUNDRY". An existing installation starts with the shop name "Smart Laundry" and the footer "Thank you for choosing us." until the admin edits them.
-- Then the bill number, date and time (IST), customer name, and phone if there is one.
-- For each line: "Garment - Service", then "quantity x unit price = line total".
-- "Pieces:" count, "Subtotal:", "Discount (x%):" with the amount (only when the discount is more than zero), "Total:", "Paid:". "Balance due:" appears only if a balance exists, which does not happen for orders saved by the current counter because payment is always taken in full.
-- "Ready by:" the received date plus two calendar days at 5:00 PM IST, then the shop's receipt footer, or "Thank you" when no footer was saved.
+Admin > Shop settings lets the admin choose whether the shop name, address, shop phone, customer phone, received time and ready-by time appear, and set the centered message and multiline footer/terms. The order number, customer name, garment and service rows, piece count, totals and payment remain on the bill. Shop identity, message, footer and visibility choices are copied into each new bill so reprints retain their original content. Old bills keep the legacy visible fields. A bill saved before shop settings existed prints the built-in title "SMART LAUNDRY" and footer "Thank you". An existing installation starts with "Smart Laundry" and "Thank you for choosing us." until the admin edits them.
 
-Long names wrap, including the shop name, address and footer. Each of those four fields is limited to 200 characters in a bill document (the settings screen allows fewer), and control characters in them print as spaces. A bill longer than one page continues on further pages headed "Bill: NUMBER (continued)", up to 50 pages. A bill that would need more fails with an error.
+A bill longer than one page continues on further pages headed "Bill: NUMBER (continued)", up to 50 pages. A bill that would need more fails with an error.
 
 The bill must pass a money check before printing: every line total equals unit price times quantity, the lines add up to the subtotal, the discount is between 0 and 100% and not above the subtotal, and paid plus balance equals subtotal minus discount.
 
-### Tags (TSC, 50 mm)
+### Tags (TSC, 50 mm wide continuous roll)
 
-One page per piece, so a bill with N pieces prints N tags (a pair of shoes is one piece). Each tag shows only:
+One continuous strip contains the tags for a batch, so a bill with N pieces prints N tag positions (a pair of shoes is one piece). The 30 mm default pitch is configurable from 30–200 mm. The batch adds a single 10 mm trailing feed after the piece that physically exits last; the current TSC output order makes Piece 1 exit last. Each tag shows only:
 
 ```
 Bill LA-2026-00123
@@ -91,10 +87,10 @@ Piece 3/5
 ID 2600123-3
 ```
 
-The ID is two digits of the year, the bill's sequence number and the piece position, for example `2600123-3`. Tags show no customer name, phone number, date, barcode or QR code.
+The ID is two digits of the year, the bill's sequence number and the piece position, for example `2600123-3`. Tags show no customer name, phone number, date, barcode or QR code. The admin may add the shop name and a short tag line. Text starts 10 mm from the roll's left edge and keeps about 3 mm clear at the right edge. The configurable pitch and shop branding are saved with each new tag document; old saved tag documents retain their prior 101.6 mm fallback.
 
-Text sizes step down in five steps until everything fits the label, wrapping long words if needed. Garment, service and piece position go from 12 pt down to 7 pt, the bill line from 10 pt down to 6 pt, and the piece ID from 10 pt down to 8 pt. The ID never prints below 8 pt because staff match it at pickup. By the layout constants, the largest size needs about 26 mm of height plus a 6 pt margin at top and bottom, so a 50 x 50 mm label fits comfortably; this is computed from the code, not measured on a printer. A page narrower than about 21 mm or shorter than about 11 mm is rejected, and so is one wider than about 4.6 inches. A document holds at most 500 tags.
+The tag layout uses smaller type and checks each piece's text against the configured pitch; the piece ID remains at least 8 pt. It rejects text that cannot fit, a page narrower than about 21 mm, a pitch below the supported range, a strip exceeding the printer's signed page-length limit, and any reported width wider than about 4.6 inches. A document holds at most 500 tags.
 
 ### Linux (development only)
 
-The Linux adapter finds queues with `lpstat` and sends plain text to the chosen queue with `lp -d QUEUE -o sides=one-sided -o media=A4` for bills or `-o media=Custom.50x50mm` for tags, plus `fit-to-page`. It prints the same shop title, address, phone and footer lines, but does not use the layout code above, so it has none of the wrapping, pagination or fit checks, always prints the "Discount" and "Balance" lines, and depends on the CUPS filters and fonts of the installed queue. A text job from Linux says nothing about how Windows will print. The Linux queues are chosen in the same Admin > Printers screen.
+The Linux adapter finds queues with `lpstat`, renders the shared positioned layout to PDF with Cairo, and sends it to the selected queue. Bills use landscape A4 (`media=A4`, `orientation-requested=4`); tags use `Custom.50x{cut length}mm` in portrait. The layouts, wrapping, pagination and fit checks are shared with Windows, but physical Linux output still needs its own inspection and does not prove Windows output. The Linux queues are chosen in the same Admin > Printers screen.

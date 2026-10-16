@@ -9,7 +9,11 @@ vi.mock('./runtime', () => ({ isTauriRuntime: mocks.isTauriRuntime }));
 
 import * as shop from './shopSettings';
 
-const valid: shop.ShopSettings = { shopName: 'Sunrise', shopAddress: '12 MG Road', shopPhone: '020 5550 1234', receiptFooter: 'Thanks', orderPrefix: 'sr' };
+const valid: shop.ShopSettings = {
+  shopName: 'Sunrise', shopAddress: '12 MG Road', shopPhone: '020 5550 1234', receiptFooter: 'Thanks', receiptMessage: '', orderPrefix: 'sr',
+  printShopNameOnBill: true, printShopAddress: true, printShopPhone: true, printCustomerPhone: true,
+  printReceivedAt: true, printReadyBy: true, printShopNameOnTags: false, tagLine: '', tagLengthMm: 30,
+};
 
 /** [wrapper, native command, exact arguments sent]. Every exported function wrapper appears once. */
 const table: Array<[string, () => Promise<unknown>, string, Record<string, unknown> | undefined]> = [
@@ -43,14 +47,18 @@ describe('shop settings form checks', () => {
 
   const cases: Array<[string, Partial<shop.ShopSettings>, string | null]> = [
     ['valid values', {}, null],
-    ['limits are inclusive', { shopName: 'n'.repeat(60), shopAddress: 'a'.repeat(120), shopPhone: '1'.repeat(20), receiptFooter: 'f'.repeat(120), orderPrefix: 'ab12cd' }, null],
+    ['limits are inclusive', { shopName: 'n'.repeat(60), shopAddress: 'a'.repeat(120), shopPhone: '1'.repeat(20), receiptFooter: 'f'.repeat(600), receiptMessage: 'm'.repeat(120), orderPrefix: 'ab12cd' }, null],
     ['blank name', { shopName: '  ' }, 'Enter the shop name.'],
     ['long name', { shopName: 'n'.repeat(61) }, 'Shop name must be 60 characters or fewer.'],
     ['long address', { shopAddress: 'a'.repeat(121) }, 'Address must be 120 characters or fewer.'],
     ['long phone', { shopPhone: '1'.repeat(21) }, 'Phone must be 20 characters or fewer.'],
-    ['long footer', { receiptFooter: 'f'.repeat(121) }, 'Receipt footer must be 120 characters or fewer.'],
-    ['name line break', { shopName: 'a\nb' }, 'Shop name cannot contain line breaks.'],
-    ['footer control character', { receiptFooter: 'a\u0007b' }, 'Receipt footer cannot contain line breaks.'],
+    ['long footer', { receiptFooter: 'f'.repeat(601) }, 'Bill footer / terms must be 600 characters or fewer.'],
+    ['multiline footer terms', { receiptFooter: 'Wash within 24 hours.\nUncollected items may be donated.' }, null],
+    ['long message', { receiptMessage: 'm'.repeat(121) }, 'Message line must be 120 characters or fewer.'],
+    ['message line break', { receiptMessage: 'a\nb' }, 'Message line cannot contain control characters.'],
+    ['long tag line', { tagLine: 't'.repeat(41) }, 'Tag line must be 40 characters or fewer.'],
+    ['name line break', { shopName: 'a\nb' }, 'Shop name cannot contain control characters.'],
+    ['footer control character', { receiptFooter: 'a\u0007b' }, 'Bill footer / terms cannot contain control characters.'],
     ['blank prefix', { orderPrefix: ' ' }, 'The bill number prefix must be 1 to 6 letters or digits.'],
     ['long prefix', { orderPrefix: 'ABCDEFG' }, 'The bill number prefix must be 1 to 6 letters or digits.'],
     ['hyphen prefix', { orderPrefix: 'A-B' }, 'The bill number prefix must be 1 to 6 letters or digits.'],
