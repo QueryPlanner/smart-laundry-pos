@@ -20,7 +20,7 @@ The release checklist for real hardware is in [DESKTOP_ACCEPTANCE.md](DESKTOP_AC
 
 The two drop-downs on the Printers tab offer only queues the app considers available; the list underneath shows every queue and its state. On Windows a queue counts as unavailable when its status includes any of: paused, error, pending deletion, paper jam, paper out, paper problem, offline, not available, user intervention or door open, or when the queue is set to "Use Printer Offline". A queue that is only busy or printing counts as available, because it still accepts the next job. Saving the two choices is refused if both are the same queue.
 
-The app reads each queue's current Windows `DEVMODE`, preserves the other driver settings, then asks the driver for landscape A4 for a bill or portrait custom 50 mm × batch-strip length for tags. A tag batch uses one continuous strip whose length is the configured pitch multiplied by its piece count, plus one 10 mm feed after the physical final tag. It verifies the resulting printable area before creating a spool job. Copies and darkness remain driver settings, so keep copies at 1. If the TSC driver refuses the requested custom media, the app fails before spooling.
+The app reads each queue's current Windows `DEVMODE`, preserves the other driver settings, then asks the driver for landscape A4 for a bill or portrait custom 50 mm × batch-strip length for tags. A tag batch uses one continuous strip whose length is the configured pitch multiplied by its piece count, plus one 10 mm feed after the physical final tag. It verifies the resulting physical media dimensions, then checks the drawable rectangle and offsets before creating a spool job. Copies and darkness remain driver settings, so keep copies at 1. If the TSC driver refuses the requested custom media, the app fails before spooling.
 
 The app finds queues with `EnumPrintersW` (local and connected queues), opens a device context for the chosen queue, and uses `StartDocW`/`StartPage`/`TextOutW`/`EndPage`/`EndDoc`. Text is drawn with the Segoe UI font. Customer text is drawn as text; it is never put into a shell command or printer language. I have not tested how names in scripts that Segoe UI lacks (for example Devanagari) print; the bills and tags are designed for English text.
 
@@ -46,7 +46,7 @@ Once the spooler has started the document the rules are:
 - A failure while finishing a page, or after at least one page was finished, aborts the document but counts as `uncertain`, with the message saying how many pages were sent.
 - If the print thread panics with a document open, the open document is aborted so it does not stay in the spooler.
 
-Layout uses the printer driver's own printable area and font measurements, so wrapping and fit match what the printer will draw. That area comes from the driver's paper or label definition, which is why step 1 and step 3 above matter.
+Layout uses the requested physical paper or strip size and the printer driver's font measurements. Before spooling, the adapter checks that every line and rule fits inside the driver's printable rectangle, then translates media-relative positions by the physical offset to the printable origin. That rectangle and offset come from the driver's paper or label definition, which is why step 1 and step 3 above matter.
 
 ### One submission per printer at a time
 

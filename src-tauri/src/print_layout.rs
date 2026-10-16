@@ -42,7 +42,8 @@ const TAG_SIZE_STEPS: [(f32, f32, f32); 4] = [
 /// large sheet. The TSC driver must be set to the label size.
 const MAX_TAG_WIDTH_PT: f32 = 330.0;
 
-/// Printable area of a page in typographic points (1/72 inch).
+/// Physical media dimensions in typographic points (1/72 inch). Platform adapters check their
+/// printable rectangle separately and translate these media-relative coordinates when needed.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PageSpec {
     pub width_pt: f32,
@@ -59,9 +60,9 @@ pub struct StyledLine {
     pub text: String,
     pub size_pt: f32,
     pub bold: bool,
-    /// Distance from the left edge of the printable area to this line.
+    /// Distance from the physical page's left edge to this line.
     pub x_pt: f32,
-    /// Distance from the top of the printable area to the top of this line.
+    /// Distance from the physical page's top edge to the top of this line.
     pub y_pt: f32,
 }
 
@@ -74,7 +75,7 @@ pub struct StyledRule {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct LaidOutPage {
-    /// Distance from the left of the printable area to every line.
+    /// Safe inset from the physical page's left edge used by the layout.
     pub margin_pt: f32,
     /// Distance from the right edge to the maximum allowed text extent.
     pub right_margin_pt: f32,

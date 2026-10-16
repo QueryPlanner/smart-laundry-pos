@@ -16,6 +16,8 @@ use std::fmt;
 use std::mem::{align_of, size_of};
 use std::time::Duration;
 
+use crate::print_layout::{LaidOutPage, PageSpec, TextMeter};
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct PrinterInfo {
@@ -237,6 +239,163 @@ pub enum PrintError {
     PrinterUnavailable(String),
     Adapter(String),
     Uncertain(String),
+}
+
+/// Windows reports the physical medium and the drawable rectangle separately. Layout uses
+/// physical-media coordinates so custom tag lengths are validated against the requested stock;
+/// GDI coordinates are then translated to the printable-area origin reported by the driver.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct PrinterPageGeometry {
+    media: PageSpec,
+    printable_left_pt: f32,
+    printable_top_pt: f32,
+    printable_width_pt: f32,
+    printable_height_pt: f32,
+    x_dpi: i32,
+    y_dpi: i32,
+}
+
+impl PrinterPageGeometry {
+    #[allow(clippy::too_many_arguments)]
+    fn from_device_caps(
+        physical_width_px: i32,
+        physical_height_px: i32,
+        printable_offset_x_px: i32,
+        printable_offset_y_px: i32,
+        printable_width_px: i32,
+        printable_height_px: i32,
+        x_dpi: i32,
+        y_dpi: i32,
+    ) -> Result<Self, PrintError> {
+        if physical_width_px <= 0
+            || physical_height_px <= 0
+            || printable_width_px <= 0
+            || printable_height_px <= 0
+            || x_dpi <= 0
+            || y_dpi <= 0
+            || printable_offset_x_px < 0
+            || printable_offset_y_px < 0
+            || i64::from(printable_offset_x_px) + i64::from(printable_width_px)
+                > i64::from(physical_width_px)
+            || i64::from(printable_offset_y_px) + i64::from(printable_height_px)
+                > i64::from(physical_height_px)
+        {
+            return Err(PrintError::Adapter(
+                "the printer driver reported inconsistent physical and printable page dimensions"
+                    .into(),
+            ));
+        }
+        let x_scale = 72.0 / x_dpi as f32;
+        let y_scale = 72.0 / y_dpi as f32;
+        Ok(Self {
+            media: PageSpec {
+                width_pt: physical_width_px as f32 * x_scale,
+                height_pt: physical_height_px as f32 * y_scale,
+            },
+            printable_left_pt: printable_offset_x_px as f32 * x_scale,
+            printable_top_pt: printable_offset_y_px as f32 * y_scale,
+            printable_width_pt: printable_width_px as f32 * x_scale,
+            printable_height_pt: printable_height_px as f32 * y_scale,
+            x_dpi,
+            y_dpi,
+        })
+    }
+
+    fn validate_tag_media(mut self, tags: &TagDocument) -> Result<Self, PrintError> {
+        const TAG_WIDTH_TENTHS_MM: f32 = 500.0;
+        let requested = PageSpec {
+            width_pt: TAG_WIDTH_TENTHS_MM * 72.0 / 254.0,
+            height_pt: f32::from(crate::print_layout::tag_strip_length_tenths_mm(tags)?) * 72.0
+                / 254.0,
+        };
+        // Device caps are integer pixels. Allow one pixel for conversion/driver rounding, but
+        // require the driver to have accepted the requested 50 mm strip and batch length.
+        let x_tolerance = 72.0 / self.x_dpi as f32;
+        let y_tolerance = 72.0 / self.y_dpi as f32;
+        if (self.media.width_pt - requested.width_pt).abs() > x_tolerance
+            || (self.media.height_pt - requested.height_pt).abs() > y_tolerance
+        {
+            return Err(PrintError::Adapter(
+                "the TSC driver did not accept the requested 50 mm tag strip dimensions".into(),
+            ));
+        }
+        // Layout against the exact requested media while retaining the driver's measured
+        // printable rectangle for clipping checks and coordinate translation.
+        self.media = requested;
+        Ok(self)
+    }
+
+    fn validate_bill_media(mut self) -> Result<Self, PrintError> {
+        let requested = PageSpec {
+            width_pt: 297.0 * 72.0 / 25.4,
+            height_pt: 210.0 * 72.0 / 25.4,
+        };
+        if (self.media.width_pt - requested.width_pt).abs() > 72.0 / self.x_dpi as f32
+            || (self.media.height_pt - requested.height_pt).abs() > 72.0 / self.y_dpi as f32
+        {
+            return Err(PrintError::Adapter(
+                "the Canon driver did not accept A4 landscape media".into(),
+            ));
+        }
+        self.media = requested;
+        Ok(self)
+    }
+
+    fn validate_layout(
+        self,
+        pages: &[LaidOutPage],
+        meter: &dyn TextMeter,
+    ) -> Result<(), PrintError> {
+        let right = self.printable_left_pt + self.printable_width_pt;
+        let bottom = self.printable_top_pt + self.printable_height_pt;
+        let x_tolerance = 36.0 / self.x_dpi as f32;
+        let y_tolerance = 36.0 / self.y_dpi as f32;
+        for (index, page) in pages.iter().enumerate() {
+            for line in &page.lines {
+                let line_right = line.x_pt + meter.width_pt(&line.text, line.size_pt, line.bold);
+                let line_bottom = line.y_pt + line.size_pt * 1.3;
+                if !line_right.is_finite()
+                    || line.x_pt < self.printable_left_pt - x_tolerance
+                    || line_right > right + x_tolerance
+                    || line.y_pt < self.printable_top_pt - y_tolerance
+                    || line_bottom > bottom + y_tolerance
+                {
+                    return Err(PrintError::Adapter(format!(
+                        "page {} content extends beyond the printer's drawable area",
+                        index + 1
+                    )));
+                }
+            }
+            for rule in &page.rules {
+                if rule.x1_pt < self.printable_left_pt - x_tolerance
+                    || rule.x2_pt > right + x_tolerance
+                    || rule.y_pt < self.printable_top_pt - y_tolerance
+                    || rule.y_pt > bottom + y_tolerance
+                {
+                    return Err(PrintError::Adapter(format!(
+                        "page {} rule extends beyond the printer's drawable area",
+                        index + 1
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Converts a physical-media point to a GDI point whose origin is the printable area.
+    fn media_point_to_device(self, x_pt: f32, y_pt: f32) -> Result<(i32, i32), PrintError> {
+        let x = x_pt - self.printable_left_pt;
+        let y = y_pt - self.printable_top_pt;
+        if x < 0.0 || y < 0.0 || x > self.printable_width_pt || y > self.printable_height_pt {
+            return Err(PrintError::Adapter(
+                "print position falls outside the printer's drawable area".into(),
+            ));
+        }
+        Ok((
+            (x * self.x_dpi as f32 / 72.0).round() as i32,
+            (y * self.y_dpi as f32 / 72.0).round() as i32,
+        ))
+    }
 }
 
 impl fmt::Display for PrintError {
@@ -953,7 +1112,8 @@ mod windows_adapter {
         DEFAULT_PITCH, DEFAULT_QUALITY, DEVMODEW, DMORIENT_LANDSCAPE, DMORIENT_PORTRAIT,
         DMPAPER_A4, DMPAPER_USER, DM_IN_BUFFER, DM_ORIENTATION, DM_OUT_BUFFER, DM_PAPERLENGTH,
         DM_PAPERSIZE, DM_PAPERWIDTH, FF_DONTCARE, FW_BOLD, HDC, HFONT, HORZRES, LOGPIXELSX,
-        LOGPIXELSY, OUT_DEFAULT_PRECIS, VERTRES,
+        LOGPIXELSY, OUT_DEFAULT_PRECIS, PHYSICALHEIGHT, PHYSICALOFFSETX, PHYSICALOFFSETY,
+        PHYSICALWIDTH, VERTRES,
     };
     use windows::Win32::Graphics::Printing::{
         ClosePrinter, DocumentPropertiesW, EnumPrintersW, OpenPrinterW, PRINTER_ENUM_CONNECTIONS,
@@ -1162,10 +1322,6 @@ mod windows_adapter {
         }
     }
 
-    fn points_to_device(points: f32, dpi: i32) -> i32 {
-        (points * dpi as f32 / 72.0).round() as i32
-    }
-
     struct PrinterHandle(PRINTER_HANDLE);
     impl Drop for PrinterHandle {
         fn drop(&mut self) {
@@ -1279,23 +1435,42 @@ mod windows_adapter {
             )));
         }
         let context = DeviceContext::new(hdc);
-        let (x_dpi, y_dpi, page_width_px, page_height_px) = unsafe {
+        let (
+            x_dpi,
+            y_dpi,
+            physical_width_px,
+            physical_height_px,
+            offset_x_px,
+            offset_y_px,
+            printable_width_px,
+            printable_height_px,
+        ) = unsafe {
             (
                 GetDeviceCaps(Some(hdc), LOGPIXELSX),
                 GetDeviceCaps(Some(hdc), LOGPIXELSY),
+                GetDeviceCaps(Some(hdc), PHYSICALWIDTH),
+                GetDeviceCaps(Some(hdc), PHYSICALHEIGHT),
+                GetDeviceCaps(Some(hdc), PHYSICALOFFSETX),
+                GetDeviceCaps(Some(hdc), PHYSICALOFFSETY),
                 GetDeviceCaps(Some(hdc), HORZRES),
                 GetDeviceCaps(Some(hdc), VERTRES),
             )
         };
-        if x_dpi <= 0 || y_dpi <= 0 || page_width_px <= 0 || page_height_px <= 0 {
-            return Err(PrintError::Adapter(
-                "the printer driver did not report a usable page size".into(),
-            ));
-        }
-        let spec = PageSpec {
-            width_pt: page_width_px as f32 * 72.0 / x_dpi as f32,
-            height_pt: page_height_px as f32 * 72.0 / y_dpi as f32,
+        let geometry = PrinterPageGeometry::from_device_caps(
+            physical_width_px,
+            physical_height_px,
+            offset_x_px,
+            offset_y_px,
+            printable_width_px,
+            printable_height_px,
+            x_dpi,
+            y_dpi,
+        )?;
+        let geometry = match document {
+            PrintDocument::Tags(tags) => geometry.validate_tag_media(tags)?,
+            PrintDocument::Bill(_) => geometry.validate_bill_media()?,
         };
+        let spec = geometry.media;
         if matches!(document, PrintDocument::Bill(_)) && spec.width_pt <= spec.height_pt {
             return Err(PrintError::Adapter(
                 "the Canon driver did not accept A4 landscape orientation".into(),
@@ -1309,6 +1484,30 @@ mod windows_adapter {
             y_dpi,
         };
         let pages = layout_document(document, spec, &meter)?;
+        geometry.validate_layout(&pages, &meter)?;
+        // Resolve translations before StartDoc so a failed mapping cannot leave a partially
+        // submitted job. Layout coordinates use the physical media origin; GDI uses the
+        // printable-area origin reported by the driver.
+        let mapped_pages: Vec<(Vec<(i32, i32, i32)>, Vec<(i32, i32)>)> = pages
+            .iter()
+            .map(|page| {
+                let rules = page
+                    .rules
+                    .iter()
+                    .map(|rule| {
+                        let (x1, y) = geometry.media_point_to_device(rule.x1_pt, rule.y_pt)?;
+                        let (x2, _) = geometry.media_point_to_device(rule.x2_pt, rule.y_pt)?;
+                        Ok((x1, x2, y))
+                    })
+                    .collect::<Result<_, PrintError>>()?;
+                let lines = page
+                    .lines
+                    .iter()
+                    .map(|line| geometry.media_point_to_device(line.x_pt, line.y_pt))
+                    .collect::<Result<_, PrintError>>()?;
+                Ok((rules, lines))
+            })
+            .collect::<Result<_, PrintError>>()?;
 
         let doc_name: Vec<u16> = match document {
             PrintDocument::Bill(b) => format!("Laundry bill {}", safe_text(&b.order_number)),
@@ -1353,45 +1552,24 @@ mod windows_adapter {
                 })
             }
         };
-        for (done, page) in pages.iter().enumerate() {
+        for (done, (page, (rule_positions, line_positions))) in
+            pages.iter().zip(mapped_pages.iter()).enumerate()
+        {
             if unsafe { StartPage(context.0) } <= 0 {
                 return stop(done, "Windows could not start a page", false);
             }
-            for rule in &page.rules {
-                let moved = unsafe {
-                    MoveToEx(
-                        context.0,
-                        points_to_device(rule.x1_pt, x_dpi),
-                        points_to_device(rule.y_pt, y_dpi),
-                        None,
-                    )
-                }
-                .as_bool();
-                let drawn = unsafe {
-                    LineTo(
-                        context.0,
-                        points_to_device(rule.x2_pt, x_dpi),
-                        points_to_device(rule.y_pt, y_dpi),
-                    )
-                }
-                .as_bool();
+            for (x1, x2, y) in rule_positions {
+                let moved = unsafe { MoveToEx(context.0, *x1, *y, None) }.as_bool();
+                let drawn = unsafe { LineTo(context.0, *x2, *y) }.as_bool();
                 if !moved || !drawn {
                     return stop(done, "Windows could not draw a bill rule", false);
                 }
             }
-            for line in &page.lines {
+            for (line, (x, y)) in page.lines.iter().zip(line_positions) {
                 let font = create_font(line.size_pt, line.bold, y_dpi);
                 let previous = unsafe { SelectObject(context.0, font.into()) };
                 let wide: Vec<u16> = line.text.encode_utf16().collect();
-                let drawn = unsafe {
-                    TextOutW(
-                        context.0,
-                        points_to_device(line.x_pt, x_dpi),
-                        points_to_device(line.y_pt, y_dpi),
-                        &wide,
-                    )
-                }
-                .as_bool();
+                let drawn = unsafe { TextOutW(context.0, *x, *y, &wide) }.as_bool();
                 unsafe {
                     let _ = SelectObject(context.0, previous);
                     let _ = DeleteObject(font.into());
@@ -1427,6 +1605,15 @@ mod windows_adapter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::print_layout::{layout_document, LaidOutPage, TextMeter};
+
+    struct TestMeter;
+    impl TextMeter for TestMeter {
+        fn width_pt(&self, text: &str, size_pt: f32, _bold: bool) -> f32 {
+            text.chars().count() as f32 * size_pt * 0.5
+        }
+    }
+
     fn tags() -> PrintDocument {
         PrintDocument::Tags(TagDocument {
             order_number: "SL-103".into(),
@@ -1463,6 +1650,94 @@ mod tests {
             physical_piece_count: 1,
         })
     }
+
+    #[test]
+    fn physical_media_geometry_translates_into_nonzero_printable_offsets() {
+        // 300 DPI caps for a 50 x 100 mm custom strip. The physical edge has a 12 px left
+        // and 18 px top offset before the 550 x 1140 px printable rectangle begins.
+        let document = PrintDocument::Tags(TagDocument {
+            order_number: "SL-105".into(),
+            pieces: (1..=3)
+                .map(|position| TagPiece {
+                    piece_id: format!("piece-{position:03}"),
+                    garment: "Shirt".into(),
+                    service: "Wash + Iron".into(),
+                    position,
+                    total: 3,
+                })
+                .collect(),
+            tag_length_tenths_mm: 300,
+            ..TagDocument::default()
+        });
+        let PrintDocument::Tags(tags) = &document else {
+            unreachable!()
+        };
+        let geometry =
+            PrinterPageGeometry::from_device_caps(591, 1181, 12, 18, 550, 1140, 300, 300)
+                .unwrap()
+                .validate_tag_media(tags)
+                .unwrap();
+        assert!((geometry.media.width_pt - 50.0 * 72.0 / 25.4).abs() < 0.01);
+        assert!((geometry.media.height_pt - 100.0 * 72.0 / 25.4).abs() < 0.01);
+        let pages = layout_document(&document, geometry.media, &TestMeter).unwrap();
+        geometry.validate_layout(&pages, &TestMeter).unwrap();
+
+        let first_line = pages[0]
+            .lines
+            .iter()
+            .find(|line| line.text.starts_with("Bill "))
+            .unwrap();
+        // Layout is 10 mm from the physical left edge. GDI coordinates are relative to the
+        // printable area's left edge, so add back PHYSICALOFFSETX to recover the media position.
+        let (device_x, device_y) = geometry
+            .media_point_to_device(first_line.x_pt, first_line.y_pt)
+            .unwrap();
+        let physical_x_px = device_x + 12;
+        let physical_y_px = device_y + 18;
+        assert!((physical_x_px as f32 * 25.4 / 300.0 - 10.0).abs() < 0.05);
+        assert!(physical_y_px >= 18);
+        assert!(device_x >= 0 && device_y >= 0);
+        assert!(pages.iter().all(|page: &LaidOutPage| page
+            .lines
+            .iter()
+            .all(|line| { geometry.media_point_to_device(line.x_pt, line.y_pt).is_ok() })));
+
+        let bill_geometry =
+            PrinterPageGeometry::from_device_caps(3508, 2480, 15, 20, 3480, 2450, 300, 300)
+                .unwrap()
+                .validate_bill_media()
+                .unwrap();
+        assert!((bill_geometry.media.width_pt - 297.0 * 72.0 / 25.4).abs() < 0.01);
+        assert!((bill_geometry.media.height_pt - 210.0 * 72.0 / 25.4).abs() < 0.01);
+    }
+
+    #[test]
+    fn physical_media_geometry_rejects_printable_rectangles_outside_the_page() {
+        assert!(matches!(
+            PrinterPageGeometry::from_device_caps(591, 1181, 12, 18, 580, 1140, 300, 300),
+            Err(PrintError::Adapter(message)) if message.contains("inconsistent")
+        ));
+
+        let tags = TagDocument {
+            order_number: "SL-106".into(),
+            pieces: vec![TagPiece {
+                piece_id: "piece-001".into(),
+                garment: "Shirt".into(),
+                service: "Wash".into(),
+                position: 1,
+                total: 1,
+            }],
+            tag_length_tenths_mm: 300,
+            ..TagDocument::default()
+        };
+        let reported_width_mismatch =
+            PrinterPageGeometry::from_device_caps(600, 472, 12, 18, 550, 430, 300, 300).unwrap();
+        assert!(matches!(
+            reported_width_mismatch.validate_tag_media(&tags),
+            Err(PrintError::Adapter(message)) if message.contains("50 mm tag strip dimensions")
+        ));
+    }
+
     #[test]
     fn tags_have_piece_identity_and_no_customer_or_due_fields() {
         let lines = render_lines(&tags()).concat();
