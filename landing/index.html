@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Smart Laundry POS for Windows</title>
+<meta name="description" content="Download the Windows installer for Smart Laundry POS, laundry counter software.">
+<style>
+  :root {
+    --bg: #eeecea;
+    --surface: #e4e1dd;
+    --ink: #333231;
+    --accent: #5c6b54;
+    --accent-hover: #4d5a46;
+    --accent-ink: #ffffff;
+    --serif: "Times New Roman", Times, Georgia, serif;
+  }
+  *, *::before, *::after { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    min-height: 100svh;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--serif);
+    font-size: 1.0625rem;
+    line-height: 1.5;
+    letter-spacing: 0;
+  }
+  .page {
+    padding: 16vh 20px 12vh;
+  }
+  .column {
+    max-width: 34rem;
+    margin-left: 0;
+  }
+  @media (min-width: 720px) {
+    .column { margin-left: 22vw; }
+  }
+  h1 {
+    margin: 0 0 0.75rem;
+    font-weight: 400;
+    font-size: clamp(2.25rem, 1.2rem + 3.6vw, 4.25rem);
+    line-height: 1.1;
+    letter-spacing: -0.02em;
+  }
+  .lead {
+    margin: 0 0 2rem;
+    font-size: clamp(1.125rem, 1.05rem + 0.3vw, 1.3125rem);
+  }
+  .download {
+    display: inline-block;
+    min-height: 44px;
+    padding: 0.75rem 1.25rem;
+    background: var(--accent);
+    color: var(--accent-ink);
+    font: inherit;
+    font-size: 1.0625rem;
+    text-decoration: none;
+    border-radius: 0;
+  }
+  .download:hover { background: var(--accent-hover); }
+  .download:focus-visible {
+    outline: 3px solid var(--ink);
+    outline-offset: 3px;
+  }
+  .requirement {
+    margin: 0.75rem 0 0;
+    font-size: 1rem;
+  }
+  .notes {
+    margin: 4rem 0 0;
+    font-size: 1rem;
+  }
+  .notes p { margin: 0 0 0.75rem; }
+  .notes p:last-child { margin-bottom: 0; }
+</style>
+</head>
+<body>
+  <main class="page">
+    <div class="column">
+      <h1>Smart Laundry POS</h1>
+      <p class="lead">Laundry counter software for Windows</p>
+      <a class="download" href="https://pub-27046f6f7d4846ad8e1f30901696fd07.r2.dev/latest/Smart-Laundry-POS-setup.exe" download>Download for Windows</a>
+      <p class="requirement">Windows 10 or 11</p>
+      <div class="notes">
+        <p>The installer is not code-signed yet, so Windows may show a SmartScreen warning: choose More info, then Run anyway.</p>
+        <p>Updating? Run the new installer over the old one. Your data is kept.</p>
+      </div>
+    </div>
+  </main>
+</body>
+</html>
