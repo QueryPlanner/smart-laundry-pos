@@ -1,6 +1,6 @@
 [package]
 name = "smart-laundry-pos"
-version = "0.2.0"
+version = "0.2.1"
 description = "Smart Laundry POS desktop application"
 authors = ["Smart Laundry"]
 edition = "2021"
