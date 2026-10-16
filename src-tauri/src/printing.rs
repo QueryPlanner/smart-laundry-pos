@@ -325,20 +325,15 @@ impl PrinterPageGeometry {
         Ok(self)
     }
 
-    fn validate_bill_media(mut self) -> Result<Self, PrintError> {
-        let requested = PageSpec {
+    fn use_requested_bill_media(mut self) -> Self {
+        // configured_devmode has already asked DocumentPropertiesW to accept A4 landscape.
+        // Keep the requested paper size for layout; use GetDeviceCaps only for the printable
+        // rectangle and DPI because some printer drivers report rounded physical dimensions.
+        self.media = PageSpec {
             width_pt: 297.0 * 72.0 / 25.4,
             height_pt: 210.0 * 72.0 / 25.4,
         };
-        if (self.media.width_pt - requested.width_pt).abs() > 72.0 / self.x_dpi as f32
-            || (self.media.height_pt - requested.height_pt).abs() > 72.0 / self.y_dpi as f32
-        {
-            return Err(PrintError::Adapter(
-                "the Canon driver did not accept A4 landscape media".into(),
-            ));
-        }
-        self.media = requested;
-        Ok(self)
+        self
     }
 
     fn validate_layout(
@@ -1468,14 +1463,9 @@ mod windows_adapter {
         )?;
         let geometry = match document {
             PrintDocument::Tags(tags) => geometry.validate_tag_media(tags)?,
-            PrintDocument::Bill(_) => geometry.validate_bill_media()?,
+            PrintDocument::Bill(_) => geometry.use_requested_bill_media(),
         };
         let spec = geometry.media;
-        if matches!(document, PrintDocument::Bill(_)) && spec.width_pt <= spec.height_pt {
-            return Err(PrintError::Adapter(
-                "the Canon driver did not accept A4 landscape orientation".into(),
-            ));
-        }
         // Everything that can be wrong with the content is found here, before a spool job exists,
         // so such failures are certain (nothing printed) rather than "uncertain".
         let meter = GdiMeter {
@@ -1633,8 +1623,8 @@ mod tests {
             order_number: "SL-103".into(),
             created_at_ist: "15 Oct 2026 10:30 IST".into(),
             promised_at_ist: "17 Oct 2026 17:00 IST".into(),
-            customer_name: "Asha Patil".into(),
-            customer_phone: "9876543210".into(),
+            customer_name: "Test Customer".into(),
+            customer_phone: "TEST-PHONE".into(),
             items: vec![BillItem {
                 garment: "Kurta".into(),
                 service: "Wash + Iron".into(),
@@ -1703,12 +1693,13 @@ mod tests {
             .all(|line| { geometry.media_point_to_device(line.x_pt, line.y_pt).is_ok() })));
 
         let bill_geometry =
-            PrinterPageGeometry::from_device_caps(3508, 2480, 15, 20, 3480, 2450, 300, 300)
+            PrinterPageGeometry::from_device_caps(3515, 2486, 15, 20, 3478, 2450, 300, 300)
                 .unwrap()
-                .validate_bill_media()
-                .unwrap();
+                .use_requested_bill_media();
         assert!((bill_geometry.media.width_pt - 297.0 * 72.0 / 25.4).abs() < 0.01);
         assert!((bill_geometry.media.height_pt - 210.0 * 72.0 / 25.4).abs() < 0.01);
+        let pages = layout_document(&bill(), bill_geometry.media, &TestMeter).unwrap();
+        bill_geometry.validate_layout(&pages, &TestMeter).unwrap();
     }
 
     #[test]
@@ -1769,17 +1760,17 @@ mod tests {
     #[test]
     fn bill_header_and_footer_come_from_the_saved_document() {
         let document = PrintDocument::Bill(bill_with_header(BillHeader {
-            shop_name: "Sunrise  Cleaners".into(),
-            address: "12 MG Road".into(),
-            phone: "020 5550 1234".into(),
+            shop_name: "Example  Cleaners".into(),
+            address: "12 Example Road".into(),
+            phone: "PHONE TEST VALUE".into(),
             footer: "Visit again".into(),
             ..BillHeader::default()
         }));
         validate_document(&document).unwrap();
         let lines = render_lines(&document).concat();
-        assert_eq!(lines[0], "Sunrise Cleaners");
-        assert_eq!(lines[1], "12 MG Road");
-        assert_eq!(lines[2], "Tel: 020 5550 1234");
+        assert_eq!(lines[0], "Example Cleaners");
+        assert_eq!(lines[1], "12 Example Road");
+        assert_eq!(lines[2], "Tel: PHONE TEST VALUE");
         assert_eq!(lines.last().unwrap(), "Visit again");
         assert!(!lines.iter().any(|l| l == "Thank you"));
     }
