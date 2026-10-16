@@ -18,7 +18,8 @@ use sqlx::{Connection, Row};
 
 const MIGRATION_SQL: &str = include_str!("../migrations/001_initial_schema.sql");
 const MIGRATION_V2_SQL: &str = include_str!("../migrations/002_counter_domain.sql");
-const SCHEMA_VERSION: i64 = 2;
+const MIGRATION_V3_SQL: &str = include_str!("../migrations/003_default_rate_card.sql");
+const SCHEMA_VERSION: i64 = 3;
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const WRITER_CONNECTIONS: u32 = 1;
 const READER_CONNECTIONS: u32 = 4;
@@ -923,6 +924,27 @@ async fn connect_reader_pool(
         .map_err(|error| format!("Could not open the read-only local database: {error}"))
 }
 
+/// Which schema version the file in front of us really is, whatever `PRAGMA user_version` says:
+/// 0 for a file with no tables (new, or left by an interrupted first run), 1 for the original
+/// tables, and 2 or more once the counter tables exist. A database from before the version was
+/// recorded can hold the counter tables with `user_version` still 0; it counts as version 2.
+/// One function decides this for both the safety copy and the migration, so they cannot disagree.
+async fn detect_applied_version(
+    connection: &mut sqlx::pool::PoolConnection<sqlx::Sqlite>,
+    recorded: i64,
+) -> Result<i64, String> {
+    if count_app_tables(connection).await? == 0 {
+        return Ok(0);
+    }
+    if recorded >= 2 {
+        return Ok(recorded);
+    }
+    if table_exists(connection, "counter_accounts").await? {
+        return Ok(2);
+    }
+    Ok(1)
+}
+
 async fn initialize_schema(pool: &SqlitePool, existed: bool) -> Result<(), String> {
     let mut connection = pool
         .acquire()
@@ -935,41 +957,50 @@ async fn initialize_schema(pool: &SqlitePool, existed: bool) -> Result<(), Strin
 
     if !(0..=SCHEMA_VERSION).contains(&version) {
         return Err(format!(
-            "The local database uses unsupported schema version {version}. This app supports versions 0 and {SCHEMA_VERSION}."
+            "The local database uses unsupported schema version {version}. This app supports versions up to {SCHEMA_VERSION}; install the latest version of the app."
         ));
     }
 
-    let has_v2 =
-        version == 0 && existed && table_exists(&mut connection, "counter_accounts").await?;
-    if version == SCHEMA_VERSION || has_v2 {
-        validate_schema(&mut connection).await?;
-        validate_integrity_and_foreign_keys(&mut connection).await?;
-    } else if version == 0 && existed && count_app_tables(&mut connection).await? > 0 {
-        validate_v1_schema(&mut connection).await?;
-        validate_integrity_and_foreign_keys(&mut connection).await?;
-    } else if version == 0 {
-        validate_integrity_and_foreign_keys(&mut connection).await?;
-    }
     // A file left by an interrupted first run exists but holds no tables; it must still get the
     // full schema, so "is this a new database" is decided by what is inside, not by the file.
-    let has_existing_tables = existed && count_app_tables(&mut connection).await? > 0;
-    if version < SCHEMA_VERSION && !has_v2 {
+    let applied = if existed {
+        detect_applied_version(&mut connection, version).await?
+    } else {
+        0
+    };
+    match applied {
+        0 => validate_integrity_and_foreign_keys(&mut connection).await?,
+        1 => {
+            validate_v1_schema(&mut connection).await?;
+            validate_integrity_and_foreign_keys(&mut connection).await?;
+        }
+        _ => {
+            validate_schema(&mut connection).await?;
+            validate_integrity_and_foreign_keys(&mut connection).await?;
+        }
+    }
+    if applied < SCHEMA_VERSION {
         let mut transaction = connection
             .begin_with("BEGIN IMMEDIATE")
             .await
             .map_err(|error| format!("Could not begin the schema migration: {error}"))?;
         let migration_result = async {
-            if version == 0 && !has_existing_tables {
-                sqlx::raw_sql(MIGRATION_SQL)
-                    .execute(&mut *transaction)
-                    .await
-                    .map_err(|error| format!("The v1 local database migration failed: {error}"))?;
+            // Each step runs only if the database has not had it yet, oldest first, all in one
+            // transaction: a failure leaves the database exactly as it was.
+            let steps: [(i64, &str, &str); 3] = [
+                (1, MIGRATION_SQL, "v1 local database"),
+                (2, MIGRATION_V2_SQL, "v2 counter"),
+                (3, MIGRATION_V3_SQL, "v3 default rate card"),
+            ];
+            for (step, sql, name) in steps {
+                if applied < step {
+                    sqlx::raw_sql(sql)
+                        .execute(&mut *transaction)
+                        .await
+                        .map_err(|error| format!("The {name} migration failed: {error}"))?;
+                }
             }
-            sqlx::raw_sql(MIGRATION_V2_SQL)
-                .execute(&mut *transaction)
-                .await
-                .map_err(|error| format!("The v2 counter migration failed: {error}"))?;
-            sqlx::query("PRAGMA user_version = 2")
+            sqlx::query(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))
                 .execute(&mut *transaction)
                 .await
                 .map_err(|error| format!("Could not record the schema version: {error}"))?;
@@ -988,14 +1019,8 @@ async fn initialize_schema(pool: &SqlitePool, existed: bool) -> Result<(), Strin
             .commit()
             .await
             .map_err(|error| format!("Could not commit the schema migration: {error}"))?;
-    }
-    if version < SCHEMA_VERSION {
         validate_schema(&mut connection).await?;
         validate_integrity_and_foreign_keys(&mut connection).await?;
-        sqlx::query("PRAGMA user_version = 2")
-            .execute(&mut *connection)
-            .await
-            .map_err(|error| format!("Could not record the upgraded schema version: {error}"))?;
     }
 
     sqlx::query(
@@ -1013,10 +1038,11 @@ async fn initialize_schema(pool: &SqlitePool, existed: bool) -> Result<(), Strin
     Ok(())
 }
 
-/// Before an existing version-1 database is upgraded for the first time, keep a verified copy of
-/// it. This app cannot downgrade a database, so the copy is the way back if anything is wrong.
-/// The copy lives in the backups folder under a name the automatic pruning never touches.
-/// The upgrade is refused (the app reports why) if the copy cannot be made and verified.
+/// Before an existing database is moved to a newer schema, keep a verified copy of it. This app
+/// cannot downgrade a database, so the copy is the way back if anything is wrong. The copy lives
+/// in the backups folder, named for the version it holds (`pre-upgrade-v1-...`, `pre-upgrade-v2-...`),
+/// under a name the automatic pruning never touches. The upgrade is refused (the app reports why)
+/// if the copy cannot be made and verified.
 async fn preserve_before_upgrade(pool: &SqlitePool, database_path: &Path) -> Result<(), String> {
     let mut connection = pool
         .acquire()
@@ -1026,14 +1052,17 @@ async fn preserve_before_upgrade(pool: &SqlitePool, database_path: &Path) -> Res
         .fetch_one(&mut *connection)
         .await
         .map_err(|error| format!("Could not read the local schema version: {error}"))?;
-    let already_upgraded =
-        version >= SCHEMA_VERSION || table_exists(&mut connection, "counter_accounts").await?;
-    if already_upgraded || count_app_tables(&mut connection).await? == 0 {
+    // A newer file is refused later with a clear message; nothing here is being upgraded.
+    if version >= SCHEMA_VERSION {
+        return Ok(());
+    }
+    let applied = detect_applied_version(&mut connection, version).await?;
+    if applied == 0 || applied >= SCHEMA_VERSION {
         return Ok(());
     }
     let mut created = None;
     let result = async {
-        let destination = new_backup_path(database_path, "pre-upgrade-v1")?;
+        let destination = new_backup_path(database_path, &format!("pre-upgrade-v{applied}"))?;
         created = Some(destination.clone());
         write_verified_snapshot(&mut connection, &destination).await
     }
@@ -1043,7 +1072,7 @@ async fn preserve_before_upgrade(pool: &SqlitePool, database_path: &Path) -> Res
             let _ = remove_database_files(&destination);
         }
         return Err(format!(
-            "The database could not be safely copied before upgrading, so it was left unchanged: {error}"
+            "The database could not be safely copied before upgrading, so it was left unchanged: {error} Free some disk space or check that the backups folder is writable, then open the program again."
         ));
     }
     Ok(())
@@ -1375,7 +1404,7 @@ async fn validate_database_pool(pool: &SqlitePool) -> Result<(), String> {
         .map_err(|error| format!("Could not read the database schema version: {error}"))?;
     if !(0..=SCHEMA_VERSION).contains(&version) {
         return Err(format!(
-            "The database uses unsupported schema version {version}. This app supports versions 0 and {SCHEMA_VERSION}."
+            "The database uses unsupported schema version {version}. This app supports versions up to {SCHEMA_VERSION}; install the latest version of the app."
         ));
     }
     match version {
@@ -1383,7 +1412,7 @@ async fn validate_database_pool(pool: &SqlitePool) -> Result<(), String> {
             validate_schema(&mut connection).await?
         }
         0 | 1 => validate_v1_schema(&mut connection).await?,
-        2 => validate_schema(&mut connection).await?,
+        2 | 3 => validate_schema(&mut connection).await?,
         _ => unreachable!("schema version was range checked"),
     }
 

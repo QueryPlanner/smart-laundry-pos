@@ -17,3 +17,7 @@ Primary request: <subject below>.
 Subjects: an everyday cotton shirt, front view; a short sleeve cotton T-shirt; a pair of blue denim jeans; a pair of formal trousers; a pair of cotton shorts; a long cotton kurta; a pair of loose cotton pyjama pants; a pair of salwar churidar pants; a pair of cotton leggings; a gracefully draped silk saree; a short sleeve blouse; a cotton petticoat skirt; a lightweight dupatta scarf; a white dhoti garment; a checked lungi wrap; a simple child dress frock; a lightweight jacket; a knit sweater; a pair of everyday shoes shown side by side.
 
 The images contain no labels or prices. The application renders English and Marathi names from its native garment catalogue. Bundle path: `public/garments/`; the counter loads `/garments/<imageKey>-transparent.png` locally, with the first-letter fallback in the tile.
+
+## Added later: coat and kurta pyjama
+
+`coat-transparent.png` and `kurta-pyjama-transparent.png` were generated with Codex CLI (`codex exec`, its image generation tool with the transparent-background option) using the same shared prompt as above, with `jacket-transparent.png` and `kurta-transparent.png` attached as style references. Subjects: a tailored dark navy formal blazer / suit coat; a men's plain cotton kurta shown with its matching pyjama pants as one set. Both are 1254 x 1254 RGBA, like the originals.

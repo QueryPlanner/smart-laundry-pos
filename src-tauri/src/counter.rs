@@ -2818,7 +2818,7 @@ mod counter_tests {
     }
 
     #[test]
-    fn starter_rate_card_is_preloaded_and_shoes_cannot_be_ironed() {
+    fn default_rate_card_is_preloaded_and_shoes_cannot_be_ironed() {
         tauri::async_runtime::block_on(async {
             let path = fixture_path();
             let db = DatabaseState::open(path.clone()).await;
@@ -2828,10 +2828,31 @@ mod counter_tests {
                     .fetch_one(db.writer_pool().unwrap())
                     .await
                     .unwrap();
-            // 18 garments x 4 services plus shoes (wash and dry clean only).
-            assert_eq!(configured, 18 * 4 + 2);
+            // 20 garments x 4 services plus shoes (wash and dry clean only).
+            assert_eq!(configured, 20 * 4 + 2);
             let quoted = quote(&db, &admin, &order_input(2)).await.unwrap();
-            assert_eq!((quoted.subtotal_minor, quoted.discount_minor), (3000, 0));
+            assert_eq!((quoted.subtotal_minor, quoted.discount_minor), (10000, 0));
+            for garment in ["g-coat", "g-kurta-pyjama"] {
+                let active: i64 = sqlx::query_scalar("SELECT active FROM garments WHERE id=?")
+                    .bind(garment)
+                    .fetch_one(db.writer_pool().unwrap())
+                    .await
+                    .unwrap();
+                assert_eq!(active, 1, "{garment} is active");
+            }
+            for (garment, service, price) in [
+                ("g-coat", "svc-iron", 2500),
+                ("g-kurta-pyjama", "svc-dry-clean", 15000),
+            ] {
+                let mut item = order_input(1);
+                item.items[0].garment_id = garment.into();
+                item.items[0].service_id = service.into();
+                assert_eq!(
+                    quote(&db, &admin, &item).await.unwrap().subtotal_minor,
+                    price,
+                    "{garment} {service}"
+                );
+            }
             for service in ["svc-iron", "svc-wash-iron"] {
                 let mut shoes = order_input(1);
                 shoes.items[0].garment_id = "g-shoes".into();
@@ -3708,8 +3729,8 @@ mod counter_tests {
                 "no duplicate customer for the same person"
             );
             assert_eq!(
-                again_order.total_minor, 1200,
-                "20% off the 15.00 wash price"
+                again_order.total_minor, 4000,
+                "20% off the 50.00 wash price"
             );
 
             // Orders keep the canonical phone, and every spelling finds them.
@@ -3815,7 +3836,7 @@ mod counter_tests {
             assert_eq!(last["newAvailable"], false);
             let first: serde_json::Value = serde_json::from_str(&details[0]).unwrap();
             assert_eq!(
-                first["oldPriceMinor"], 1500,
+                first["oldPriceMinor"], 5000,
                 "the starter price is recorded as the old value"
             );
 
@@ -4174,7 +4195,7 @@ mod counter_tests {
             .await
             .unwrap();
             let details: serde_json::Value = serde_json::from_str(&audit_row).unwrap();
-            assert_eq!(details["refundMinor"], 3000);
+            assert_eq!(details["refundMinor"], 10000);
             assert_eq!(details["reason"], "entered twice");
             assert!(cancel_order(&db, &admin, &order.order_id, "again")
                 .await
