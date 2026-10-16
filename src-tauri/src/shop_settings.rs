@@ -16,11 +16,12 @@ use crate::printing::{
 use crate::storage::DatabaseState;
 
 /// The only `app_settings` keys this module reads for the screen or writes.
-pub const EDITABLE_KEYS: [&str; 14] = [
+pub const EDITABLE_KEYS: [&str; 15] = [
     "shop_name",
     "shop_address",
     "shop_phone",
     "receipt_footer",
+    "receipt_message",
     "order_prefix",
     "print_shop_name_on_bill",
     "print_shop_address",
@@ -38,10 +39,11 @@ const DEFAULT_ORDER_PREFIX: &str = "LA";
 const MAX_NAME_CHARS: usize = 60;
 const MAX_ADDRESS_CHARS: usize = 120;
 const MAX_PHONE_CHARS: usize = 20;
-const MAX_FOOTER_CHARS: usize = 120;
+const MAX_FOOTER_CHARS: usize = 600;
+const MAX_MESSAGE_CHARS: usize = 120;
 const MAX_PREFIX_CHARS: usize = 6;
 const MAX_TAG_LINE_CHARS: usize = 40;
-const DEFAULT_TAG_LENGTH_TENTHS_MM: u16 = 1016;
+const DEFAULT_TAG_LENGTH_TENTHS_MM: u16 = 300;
 
 /// What the settings screen shows and saves. `deny_unknown_fields` is the whitelist: a request
 /// naming any other setting (for example `deviceId`) fails to parse and writes nothing.
@@ -52,6 +54,8 @@ pub struct ShopSettings {
     pub shop_address: String,
     pub shop_phone: String,
     pub receipt_footer: String,
+    #[serde(default)]
+    pub receipt_message: String,
     pub order_prefix: String,
     #[serde(default = "default_true")]
     pub print_shop_name_on_bill: bool,
@@ -112,6 +116,7 @@ impl ShopSettings {
             shop_address: value("shop_address"),
             shop_phone: value("shop_phone"),
             receipt_footer: value("receipt_footer"),
+            receipt_message: value("receipt_message"),
             order_prefix: or_default(value("order_prefix"), DEFAULT_ORDER_PREFIX),
             print_shop_name_on_bill: flag("print_shop_name_on_bill", true),
             print_shop_address: flag("print_shop_address", true),
@@ -132,6 +137,7 @@ impl ShopSettings {
             ("shop_address", self.shop_address.clone()),
             ("shop_phone", self.shop_phone.clone()),
             ("receipt_footer", self.receipt_footer.clone()),
+            ("receipt_message", self.receipt_message.clone()),
             ("order_prefix", self.order_prefix.clone()),
             (
                 "print_shop_name_on_bill",
@@ -163,6 +169,11 @@ impl ShopSettings {
             shop_name: clamp(&self.shop_name),
             address: clamp(&self.shop_address),
             phone: clamp(&self.shop_phone),
+            message: self
+                .receipt_message
+                .chars()
+                .take(MAX_HEADER_FIELD_CHARS)
+                .collect(),
             footer: clamp(&self.receipt_footer),
             show_shop_name: self.print_shop_name_on_bill,
             show_shop_address: self.print_shop_address,
@@ -199,6 +210,26 @@ fn clean_text(label: &str, raw: &str, max_chars: usize, required: bool) -> Resul
     Ok(text.to_string())
 }
 
+/// Footer terms may span lines; other control characters remain refused so they cannot alter the
+/// printer's page structure. Normalize Windows newlines before snapshotting the settings.
+fn clean_multiline_text(label: &str, raw: &str, max_chars: usize) -> Result<String, String> {
+    let text = raw.replace("\r\n", "\n").replace('\r', "\n");
+    if text.chars().any(|ch| ch.is_control() && ch != '\n') {
+        return Err(format!("{label} cannot contain control characters."));
+    }
+    let text = text
+        .lines()
+        .map(str::trim)
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string();
+    if text.chars().count() > max_chars {
+        return Err(format!("{label} must be {max_chars} characters or fewer."));
+    }
+    Ok(text)
+}
+
 /// 1-6 letters or digits, upper-cased. A hyphen is refused because bill numbers are
 /// `PREFIX-YEAR-NUMBER` and other code splits them on it.
 fn clean_prefix(raw: &str) -> Result<String, String> {
@@ -226,10 +257,15 @@ fn validate(input: &ShopSettings) -> Result<ShopSettings, String> {
         shop_name: clean_text("Shop name", &input.shop_name, MAX_NAME_CHARS, true)?,
         shop_address: clean_text("Address", &input.shop_address, MAX_ADDRESS_CHARS, false)?,
         shop_phone: clean_text("Phone", &input.shop_phone, MAX_PHONE_CHARS, false)?,
-        receipt_footer: clean_text(
-            "Receipt footer",
+        receipt_footer: clean_multiline_text(
+            "Bill footer / terms",
             &input.receipt_footer,
             MAX_FOOTER_CHARS,
+        )?,
+        receipt_message: clean_text(
+            "Message line",
+            &input.receipt_message,
+            MAX_MESSAGE_CHARS,
             false,
         )?,
         order_prefix: clean_prefix(&input.order_prefix)?,
@@ -246,7 +282,7 @@ fn validate(input: &ShopSettings) -> Result<ShopSettings, String> {
 }
 
 const SELECT_EDITABLE: &str =
-    "SELECT key,value FROM app_settings WHERE key IN (?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
+    "SELECT key,value FROM app_settings WHERE key IN (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
 
 fn pairs_from(rows: &[sqlx::sqlite::SqliteRow]) -> Result<Vec<(String, String)>, String> {
     rows.iter()
@@ -444,6 +480,7 @@ mod tests {
             shop_address: "12 MG Road, Pune".into(),
             shop_phone: "020 5550 1234".into(),
             receipt_footer: "Visit again soon".into(),
+            receipt_message: "Your garments, ready when you are".into(),
             order_prefix: "sr".into(),
             print_shop_name_on_bill: true,
             print_shop_address: true,
@@ -482,6 +519,7 @@ mod tests {
             assert_eq!(got.shop_name, "Smart Laundry");
             assert_eq!(got.order_prefix, "LA");
             assert_eq!(got.shop_address, "");
+            assert_eq!(got.tag_length_tenths_mm, 300);
             cleanup(db, path);
         });
     }
@@ -505,6 +543,7 @@ mod tests {
                 .unwrap();
             assert_eq!(got.shop_name, "Smart Laundry");
             assert_eq!(got.order_prefix, "LA");
+            assert_eq!(got.tag_length_tenths_mm, 300);
             assert_eq!(got.receipt_footer, "");
             cleanup(db, path);
         });
@@ -629,11 +668,19 @@ mod tests {
                 ("phone tab", Box::new(|s| s.shop_phone = "1\t2".into())),
                 (
                     "long footer",
-                    Box::new(|s| s.receipt_footer = "f".repeat(121)),
+                    Box::new(|s| s.receipt_footer = "f".repeat(MAX_FOOTER_CHARS + 1)),
                 ),
                 (
-                    "footer newline",
-                    Box::new(|s| s.receipt_footer = "a\r\nb".into()),
+                    "footer control",
+                    Box::new(|s| s.receipt_footer = "a\u{7}b".into()),
+                ),
+                (
+                    "long message",
+                    Box::new(|s| s.receipt_message = "m".repeat(MAX_MESSAGE_CHARS + 1)),
+                ),
+                (
+                    "message newline",
+                    Box::new(|s| s.receipt_message = "a\nb".into()),
                 ),
                 ("blank prefix", Box::new(|s| s.order_prefix = " ".into())),
                 (
@@ -674,7 +721,8 @@ mod tests {
                 shop_name: "\u{938}".repeat(60),
                 shop_address: "a".repeat(120),
                 shop_phone: "+91 98765 43210 x12 ".trim().into(),
-                receipt_footer: "f".repeat(120),
+                receipt_footer: "f".repeat(MAX_FOOTER_CHARS),
+                receipt_message: "m".repeat(MAX_MESSAGE_CHARS),
                 order_prefix: "ab12cd".into(),
                 ..input()
             };
@@ -708,7 +756,7 @@ mod tests {
                 "{key} must not parse"
             );
         }
-        assert_eq!(EDITABLE_KEYS.len(), 14);
+        assert_eq!(EDITABLE_KEYS.len(), 15);
     }
 
     #[test]
@@ -722,7 +770,7 @@ mod tests {
                 let pool = db.writer_pool().unwrap().clone();
                 async move {
                     sqlx::query_as::<_, (String, String, String)>(
-                        "SELECT key,value,updated_at FROM app_settings WHERE key NOT IN ('shop_name','shop_address','shop_phone','receipt_footer','order_prefix','print_shop_name_on_bill','print_shop_address','print_shop_phone','print_customer_phone','print_received_at','print_ready_by','print_shop_name_on_tags','tag_line','tag_length_mm') ORDER BY key",
+                        "SELECT key,value,updated_at FROM app_settings WHERE key NOT IN ('shop_name','shop_address','shop_phone','receipt_footer','receipt_message','order_prefix','print_shop_name_on_bill','print_shop_address','print_shop_phone','print_customer_phone','print_received_at','print_ready_by','print_shop_name_on_tags','tag_line','tag_length_mm') ORDER BY key",
                     )
                     .fetch_all(&pool)
                     .await
@@ -755,6 +803,7 @@ mod tests {
                     "printShopNameOnTags",
                     "printShopPhone",
                     "receiptFooter",
+                    "receiptMessage",
                     "shopAddress",
                     "shopName",
                     "shopPhone",
@@ -962,6 +1011,7 @@ mod tests {
                 address: "12 MG Road, Pune".into(),
                 phone: "020 5550 1234".into(),
                 footer: "Visit again soon".into(),
+                message: "Your garments, ready when you are".into(),
                 ..BillHeader::default()
             };
             assert_eq!(bill_header_of(&db, &first.order_id).await, expected);
@@ -969,6 +1019,7 @@ mod tests {
             let mut renamed = input();
             renamed.shop_name = "Moonrise Wash".into();
             renamed.receipt_footer = String::new();
+            renamed.receipt_message = "We appreciate your visit".into();
             save_shop_settings(&db, &admin, &renamed).await.unwrap();
 
             assert_eq!(
@@ -994,6 +1045,7 @@ mod tests {
             let later = bill_header_of(&db, &second.order_id).await;
             assert_eq!(later.shop_name, "Moonrise Wash");
             assert_eq!(later.footer, "");
+            assert_eq!(later.message, "We appreciate your visit");
             cleanup(db, path);
         });
     }

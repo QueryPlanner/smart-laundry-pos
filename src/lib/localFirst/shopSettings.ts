@@ -12,6 +12,7 @@ export interface ShopSettings {
   shopAddress: string;
   shopPhone: string;
   receiptFooter: string;
+  receiptMessage: string;
   orderPrefix: string;
   printShopNameOnBill: boolean;
   printShopAddress: boolean;
@@ -26,7 +27,7 @@ export interface ShopSettings {
 
 /** Mirrors the native limits so the form can warn early; the native command is the authority. */
 export const SHOP_SETTINGS_LIMITS = {
-  shopName: 60, shopAddress: 120, shopPhone: 20, receiptFooter: 120, orderPrefix: 6,
+  shopName: 60, shopAddress: 120, shopPhone: 20, receiptFooter: 600, receiptMessage: 120, orderPrefix: 6,
   tagLine: 40, minTagLengthMm: 30, maxTagLengthMm: 200,
 } as const;
 
@@ -39,10 +40,11 @@ export const normalizeOrderPrefix = (value: string): string => value.trim().toUp
 /** A plain-language problem with the form, or null when it can be sent. */
 export const shopSettingsProblem = (settings: ShopSettings): string | null => {
   if (!settings.shopName.trim()) return 'Enter the shop name.';
-  const labels = { shopName: 'Shop name', shopAddress: 'Address', shopPhone: 'Phone', receiptFooter: 'Receipt footer', tagLine: 'Tag line' } as const;
+  const labels = { shopName: 'Shop name', shopAddress: 'Address', shopPhone: 'Phone', receiptFooter: 'Bill footer / terms', receiptMessage: 'Message line', tagLine: 'Tag line' } as const;
   for (const key of Object.keys(labels) as Array<keyof typeof labels>) {
     const text = settings[key].trim();
-    if (hasControlCharacter(text)) return `${labels[key]} cannot contain line breaks.`;
+    const withoutAllowedNewlines = key === 'receiptFooter' ? text.replace(/\n/g, '') : text;
+    if (hasControlCharacter(withoutAllowedNewlines)) return `${labels[key]} cannot contain control characters.`;
     if ([...text].length > SHOP_SETTINGS_LIMITS[key]) return `${labels[key]} must be ${SHOP_SETTINGS_LIMITS[key]} characters or fewer.`;
   }
   if (!PREFIX_PATTERN.test(normalizeOrderPrefix(settings.orderPrefix))) return 'The bill number prefix must be 1 to 6 letters or digits.';

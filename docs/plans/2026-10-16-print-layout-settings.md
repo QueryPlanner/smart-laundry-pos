@@ -9,7 +9,7 @@ Make the customer bill use the full usable width of an A4 landscape sheet, keep 
 - Bills are saved as structured `BillDocument` records. The shop name, address, phone and footer are copied into the saved bill, so bill reprints preserve the original identity.
 - Windows draws the shared `print_layout` output through GDI. It currently uses the printer driver's reported page dimensions and does not request landscape orientation.
 - Linux sends plain text to CUPS, requests A4 or `Custom.50x50mm`, and asks CUPS to fit the text page. It does not request landscape and does not share Windows' font sizing or wrapping. The connected `TSC_TE244_Test` queue reports `PageSize=Custom.50x101.6mm`; the user confirmed the stock is a continuous 50 mm roll and wants the app to choose the tag cut length.
-- Tag layout allows about 6 pt (2.1 mm) at each horizontal edge. The current 50 mm media configuration does not leave a deliberate scissor margin between tag contents.
+- The user physically confirmed text should start 10 mm from the 50 mm roll's left edge, with about 3 mm at the right. A single-tag test confirmed that 10 mm of extra trailing feed leaves adequate cutting room.
 - Admin > Shop settings already saves shop name, address, phone, receipt footer and bill number prefix in the existing key/value settings table.
 
 ## Planned changes
@@ -22,15 +22,15 @@ Make the customer bill use the full usable width of an A4 landscape sheet, keep 
    - Derive usable dimensions from the selected printer/page and keep printer-safe outer margins. Preserve pagination for unusually long bills.
 
 2. **Safer TSC tag layout**
-   - Treat 50 mm as the confirmed continuous-roll width. Add an administrator setting for the per-tag feed/cut length, defaulted to the connected queue's current 101.6 mm. Do not infer that width is also height.
+   - Treat 50 mm as the confirmed continuous-roll width. Add an administrator setting for the per-tag pitch, defaulting to 30 mm for new installations. Preserve 101.6 mm as the fallback for legacy tag documents and keep the pitch in each snapshot.
    - Pass `Custom.50x{configured length}mm` to CUPS and configure matching custom media dimensions in the Windows print request, while leaving the TSC queue on continuous stock.
-   - Use smaller starting type, wrap or reduce text before it reaches the edge, and reserve at least 3 mm at both horizontal edges. Reject a reported printable width that cannot preserve those insets.
-   - Reserve a 4–5 mm blank cutting band at the trailing edge of each tag page, within the configured feed length, and keep a small top inset on the next tag. Verify a multi-tag run leaves a scissor-safe gap at each cut. Do not add barcodes, customer details or dates.
+   - Use smaller type and asymmetric 10 mm left / 3 mm right insets, wrapping or reducing text against the usable width.
+   - Render each batch on one continuous strip with one pitch per piece and exactly one 10 mm extra feed after the physical final tag. Preserve the TSC's reverse delivery order so Piece 1 exits last, and verify this ordering in the multi-tag layout and spool output. Do not add barcodes, customer details or dates.
    - Keep the bill/order reference, garment and service, piece position/count, and internal piece ID visible on every tag.
 
 3. **Admin print-content settings**
-   - Extend Admin > Shop settings with a preview and simple controls for optional bill fields (shop address/phone, customer phone, received timestamp and ready-by time), tag branding (shop name and a short optional tag line), and tag cut length in millimetres.
-   - Keep the shop name and bill footer editable; retain the financial rows and core garment/order identifiers as required fields so a setting cannot make a bill or tag unusable.
+   - Extend Admin > Shop settings with editable laundry name/address/phone, centered bill message, multiline footer/terms, optional bill fields, tag branding and configurable pitch.
+   - Match the supplied sample's centered identity, order/customer/date/ready-by and payment summary, full-width Particulars/Service/Qty/Rate/Amount table and piece/totals/footer using only fields present in the order model.
    - Default new settings to today's printed behavior. Save settings through the existing admin-only, audited `app_settings` path; no SQL migration should be needed.
    - Snapshot the chosen content and tag identity into each new saved print document, preserving old documents and making reprints match the original. Missing fields in old bill JSON must reproduce legacy bill content on reprint; old tag JSON must keep the current internal details and default to no added branding.
 
@@ -53,8 +53,7 @@ Make the customer bill use the full usable width of an A4 landscape sheet, keep 
 
 ## Validation status — 2026-10-16
 
-- Implemented the shared positioned A4 landscape bill layout, Linux Cairo PDF renderer, Windows landscape/custom-media DEVMODE requests, TSC side insets and 5 mm cut band, and admin print-content snapshots. The Windows GDI renderer now honors each positioned line's `x_pt`.
-- `npm run test:desktop`: 410 passed across 30 files. Desktop typecheck and lint passed. `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check` and `git diff --check` passed.
-- `cargo test --manifest-path src-tauri/Cargo.toml --lib`: 230 passed, one timing-sensitive background-backup test failed under concurrent CPU load, and two tests were ignored. Rerunning the one failed test alone passed; all print-layout, printing, and shop-settings tests passed.
-- The Windows GNU check was attempted, but the host lacks `x86_64-w64-mingw32-gcc`, required to build bundled SQLite. The Windows adapter has not run on Windows.
-- `npm run tauri:build:linux-review` completed after the Windows GDI positioned-x fix. The Linux UI run used isolated XDG directories, a synthetic admin/customer, and the connected `LBP2900` and `TSC_TE244_Test` queues. UI-created order `LA-2026-00002` submitted completed jobs `LBP2900-45` and `TSC_TE244_Test-46`. Captures were one A4 landscape bill page (841.89 × 595.28 pt) and three tag pages (141.732 × 288 pt, 50 × 101.6 mm); tags contain only bill reference, garment/service, piece position and ID. The PDFs were rendered and visually inspected. The Shop settings numeric cut-length control was visible, but the AT-SPI/XTest input attempt did not change its default 101.6 mm value; cut-length editing is covered by automated validation/settings tests, but an app-level changed-value print remains unverified. CUPS completion does not prove physical paper alignment. Windows build and physical acceptance remain required.
+- User-confirmed setup: 30 mm default tag pitch and one configurable 10 mm trailing feed; legacy saved tag documents without a pitch retain the 101.6 mm fallback. The user physically confirmed the 10 mm tail on a single-tag test. The physical strip test showed Piece 1 exiting last, so the app lays out Piece 1 last in TSC delivery order and applies the extra feed only at that physical trailing end.
+- Verification passed: full desktop suite (413/413), desktop typecheck, desktop lint, full native Rust library suite (233 passed, 2 ignored), focused print-layout suite (24/24), Rust formatting check, and `git diff --check`. The Windows GNU target check could not complete because the environment lacks `x86_64-w64-mingw32-gcc` and `x86_64-w64-mingw32-windres`.
+- The Linux review package built successfully. Running the built app with isolated config/data, the UI created a synthetic three-piece Shirt order and submitted one A4 landscape bill to `LBP2900` (job 55) and one 50×100 mm continuous TSC strip to `TSC_TE244_Test` (job 56). The captured PDFs were visually inspected and their page dimensions/text/bounds checked; the tag starts at 10 mm, contains only bill reference, garment/service, piece position/count and internal ID, and includes three 30 mm pitches plus one 10 mm tail. Both queues returned idle after accepting the jobs.
+- Paper-level verification remains limited: the single-tag 10 mm tail was physically confirmed by the user, but the current three-tag strip has only been verified through generated PDF and CUPS queue acceptance. Windows physical verification remains outstanding.

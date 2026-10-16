@@ -1,13 +1,14 @@
 import { useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
 import { getShopSettings, normalizeOrderPrefix, saveShopSettings, SHOP_SETTINGS_LIMITS, shopSettingsProblem, type ShopSettings } from '@/lib/localFirst/shopSettings';
 import { FormField, PageHeader } from './ui';
 import type { SectionProps } from './sections';
 
 const same = (a: ShopSettings, b: ShopSettings): boolean =>
   a.shopName === b.shopName && a.shopAddress === b.shopAddress && a.shopPhone === b.shopPhone
-  && a.receiptFooter === b.receiptFooter && a.orderPrefix === b.orderPrefix
+  && a.receiptFooter === b.receiptFooter && a.receiptMessage === b.receiptMessage && a.orderPrefix === b.orderPrefix
   && a.printShopNameOnBill === b.printShopNameOnBill && a.printShopAddress === b.printShopAddress
   && a.printShopPhone === b.printShopPhone && a.printCustomerPhone === b.printCustomerPhone
   && a.printReceivedAt === b.printReceivedAt && a.printReadyBy === b.printReadyBy
@@ -34,7 +35,7 @@ export const ShopSettingsPage = ({ onError, onNotice }: SectionProps) => {
     if (problem) { onError(new Error(problem)); return; }
     setSaving(true);
     try {
-      const stored = await saveShopSettings({ ...form, shopName: form.shopName.trim(), shopAddress: form.shopAddress.trim(), shopPhone: form.shopPhone.trim(), receiptFooter: form.receiptFooter.trim(), tagLine: form.tagLine.trim(), orderPrefix: normalizeOrderPrefix(form.orderPrefix) });
+      const stored = await saveShopSettings({ ...form, shopName: form.shopName.trim(), shopAddress: form.shopAddress.trim(), shopPhone: form.shopPhone.trim(), receiptFooter: form.receiptFooter.trim(), receiptMessage: form.receiptMessage.trim(), tagLine: form.tagLine.trim(), orderPrefix: normalizeOrderPrefix(form.orderPrefix) });
       setSaved(stored);
       setForm(stored);
       onNotice('Shop and print settings saved. New orders use them.');
@@ -44,13 +45,14 @@ export const ShopSettingsPage = ({ onError, onNotice }: SectionProps) => {
   const phone = form.shopPhone.trim();
   return (
     <section className="counter-page">
-      <PageHeader title="Shop settings" subtitle="Set your laundry name, choose what prints, and set the tag cut length." />
+      <PageHeader title="Shop settings" subtitle="Set the centered bill header, message and terms, and TSC strip pitch." />
       <div className="counter-settings-grid">
         <form noValidate className="counter-panel counter-settings-form" onSubmit={event => { event.preventDefault(); void save(); }}>
           <FormField label="Shop name"><Input value={form.shopName} maxLength={SHOP_SETTINGS_LIMITS.shopName} onChange={event => change('shopName', event.target.value)} /></FormField>
           <FormField label="Address" hint="Optional. Printed under the shop name."><Input value={form.shopAddress} maxLength={SHOP_SETTINGS_LIMITS.shopAddress} onChange={event => change('shopAddress', event.target.value)} /></FormField>
           <FormField label="Phone" hint="Optional. Any format, up to 20 characters."><Input value={form.shopPhone} maxLength={SHOP_SETTINGS_LIMITS.shopPhone} onChange={event => change('shopPhone', event.target.value)} /></FormField>
-          <FormField label="Receipt footer" hint="Optional. The last line of the bill; blank prints a plain thank-you."><Input value={form.receiptFooter} maxLength={SHOP_SETTINGS_LIMITS.receiptFooter} onChange={event => change('receiptFooter', event.target.value)} /></FormField>
+          <FormField label="Message line" hint="Optional. Centered below the laundry name and contact details."><Input value={form.receiptMessage} maxLength={SHOP_SETTINGS_LIMITS.receiptMessage} onChange={event => change('receiptMessage', event.target.value)} /></FormField>
+          <FormField label="Bill footer / terms" hint="Optional. Printed at the end of the bill; you can use multiple lines. Blank prints a plain thank-you."><Textarea rows={4} value={form.receiptFooter} maxLength={SHOP_SETTINGS_LIMITS.receiptFooter} onChange={event => change('receiptFooter', event.target.value)} /></FormField>
           <FormField label="Bill number prefix" hint="1 to 6 letters or digits, for example LA.">
             <Input value={form.orderPrefix} maxLength={SHOP_SETTINGS_LIMITS.orderPrefix} onChange={event => change('orderPrefix', event.target.value.toUpperCase())} />
           </FormField>
@@ -70,7 +72,7 @@ export const ShopSettingsPage = ({ onError, onNotice }: SectionProps) => {
             <FormField label="Optional tag line" hint="Up to 40 characters. No customer name or date is printed on tags.">
               <Input value={form.tagLine} maxLength={SHOP_SETTINGS_LIMITS.tagLine} onChange={event => change('tagLine', event.target.value)} />
             </FormField>
-            <FormField label="Tag cut length (mm)" hint="50 mm-wide continuous roll; each tag feeds this length, including a blank cut band.">
+            <FormField label="Tag cut length (mm)" hint="Pitch between tags on the 50 mm continuous strip. The batch adds one 10 mm trailing feed after Piece 1, which exits last.">
               <Input type="number" min={SHOP_SETTINGS_LIMITS.minTagLengthMm} max={SHOP_SETTINGS_LIMITS.maxTagLengthMm} step="0.1" value={form.tagLengthMm} onChange={event => change('tagLengthMm', event.target.value === '' ? Number.NaN : Number(event.target.value))} />
             </FormField>
             <p className="counter-settings-note">Bill number, garment, service, piece count and internal piece ID always stay on the tag. Barcode and customer details are not used.</p>
@@ -86,11 +88,13 @@ export const ShopSettingsPage = ({ onError, onNotice }: SectionProps) => {
           {form.printShopNameOnBill && <strong>{form.shopName.trim() || 'SMART LAUNDRY'}</strong>}
           {form.printShopAddress && form.shopAddress.trim() && <span>{form.shopAddress.trim()}</span>}
           {form.printShopPhone && phone && <span>Tel: {phone}</span>}
+          {form.receiptMessage.trim() && <span>{form.receiptMessage.trim()}</span>}
           <span className="counter-settings-sample">Bill: {normalizeOrderPrefix(form.orderPrefix) || 'LA'}-2026-00001</span>
           <span>Customer: Asha Patil</span>
           {form.printCustomerPhone && <span>Phone: 98765 43210</span>}
           {form.printReceivedAt && <span>Received: 16 Oct 2026</span>}
-          <span>Shirt · Wash + Iron · 2 × ₹25</span>
+          <span>Particulars · Service · Qty · Rate · Amount</span>
+          <span>Shirt · Wash + Iron · 2 · ₹25 · ₹50</span>
           <span className="counter-settings-sample">Subtotal · Total · Paid</span>
           {form.printReadyBy && <span>Ready by: 18 Oct 2026, 5:00 PM</span>}
           <em>{form.receiptFooter.trim() || 'Thank you'}</em>
@@ -99,7 +103,7 @@ export const ShopSettingsPage = ({ onError, onNotice }: SectionProps) => {
             {form.printShopNameOnTags && <strong>{form.shopName.trim() || 'SMART LAUNDRY'}</strong>}
             <span>Bill LA-2026-00001</span><span>Shirt · Wash + Iron</span><span>Piece 3/4</span><span>ID 2600123-3</span>
             {form.tagLine.trim() && <em>{form.tagLine.trim()}</em>}
-            <small>Blank area reserved below for cutting</small>
+            <small>One 10 mm trailing feed follows the last tag out of the printer.</small>
           </div>
           <small>Saved bills and tags keep their original settings so reprints match the first print.</small>
         </aside>

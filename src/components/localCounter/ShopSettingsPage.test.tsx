@@ -11,9 +11,9 @@ vi.mock('@/lib/localFirst/shopSettings', async importOriginal => ({ ...(await im
 
 const admin: CounterAccount = { id: 'a1', fullName: 'Owner', role: 'admin', active: true };
 const stored: ShopSettings = {
-  shopName: 'Sunrise Cleaners', shopAddress: '12 MG Road', shopPhone: '020 5550 1234', receiptFooter: 'Visit again', orderPrefix: 'LA',
+  shopName: 'Sunrise Cleaners', shopAddress: '12 MG Road', shopPhone: '020 5550 1234', receiptFooter: 'Visit again', receiptMessage: 'Your clothes, ready on time', orderPrefix: 'LA',
   printShopNameOnBill: true, printShopAddress: true, printShopPhone: true, printCustomerPhone: true, printReceivedAt: true, printReadyBy: true,
-  printShopNameOnTags: false, tagLine: '', tagLengthMm: 101.6,
+  printShopNameOnTags: false, tagLine: '', tagLengthMm: 30,
 };
 
 const setup = () => {
@@ -38,11 +38,12 @@ describe('ShopSettingsPage', () => {
     await waitFor(() => expect(field('Shop name').value).toBe('Sunrise Cleaners'));
     expect(field('Address').value).toBe('12 MG Road');
     expect(field('Phone').value).toBe('020 5550 1234');
-    expect(field('Receipt footer').value).toBe('Visit again');
+    expect(field('Bill footer / terms').value).toBe('Visit again');
+    expect(field('Message line').value).toBe('Your clothes, ready on time');
     expect(field('Bill number prefix').value).toBe('LA');
     expect((screen.getByRole('checkbox', { name: 'Print laundry name' }) as HTMLInputElement).checked).toBe(true);
-    expect(field('Tag cut length').value).toBe('101.6');
-    expect(screen.getByText(/TSC tag preview/).textContent).toContain('101.6 mm');
+    expect(field('Tag cut length').value).toBe('30');
+    expect(screen.getByText(/TSC tag preview/).textContent).toContain('30.0 mm');
     for (const retired of [/GST/i, /receipt width/i, /completion days/i]) expect(screen.queryByText(retired)).toBeNull();
     expect(screen.getByText(/Changing the bill prefix affects new orders only/)).toBeTruthy();
   });
@@ -78,7 +79,7 @@ describe('ShopSettingsPage', () => {
     fireEvent.click(discard);
     expect(field('Shop name').value).toBe('Sunrise Cleaners');
     expect(saveButton.disabled).toBe(true);
-    for (const [label, value] of [['Address', 'x'], ['Phone', '1'], ['Receipt footer', 'y'], ['Bill number prefix', 'ZZ']] as const) {
+    for (const [label, value] of [['Address', 'x'], ['Phone', '1'], ['Bill footer / terms', 'y'], ['Message line', 'z'], ['Bill number prefix', 'ZZ']] as const) {
       type(label, value);
       expect(saveButton.disabled).toBe(false);
       fireEvent.click(discard);
@@ -95,11 +96,12 @@ describe('ShopSettingsPage', () => {
     type('Shop name', '  Moonrise Wash  ');
     type('Address', ' 5 Hill Rd ');
     type('Phone', ' 99 ');
-    type('Receipt footer', ' See you ');
+    type('Bill footer / terms', ' See you ');
+    type('Message line', '  Ready when you are  ');
     type('Bill number prefix', 'mw1');
     expect(field('Bill number prefix').value).toBe('MW1');
     fireEvent.click(screen.getByRole('button', { name: 'Save settings' }));
-    await waitFor(() => expect(api.saveShopSettings).toHaveBeenCalledWith({ ...stored, shopName: 'Moonrise Wash', shopAddress: '5 Hill Rd', shopPhone: '99', receiptFooter: 'See you', orderPrefix: 'MW1' }));
+    await waitFor(() => expect(api.saveShopSettings).toHaveBeenCalledWith({ ...stored, shopName: 'Moonrise Wash', shopAddress: '5 Hill Rd', shopPhone: '99', receiptFooter: 'See you', receiptMessage: 'Ready when you are', orderPrefix: 'MW1' }));
     await waitFor(() => expect(onNotice).toHaveBeenCalledWith('Shop and print settings saved. New orders use them.'));
     expect(onError).not.toHaveBeenCalled();
     expect((screen.getByRole('button', { name: 'Save settings' }) as HTMLButtonElement).disabled).toBe(true);
@@ -151,7 +153,8 @@ describe('ShopSettingsPage', () => {
     type('Shop name', ' ');
     type('Address', '');
     type('Phone', '');
-    type('Receipt footer', '');
+    type('Bill footer / terms', '');
+    type('Message line', '');
     type('Bill number prefix', '');
     expect(preview.textContent).toContain('SMART LAUNDRY');
     expect(preview.textContent).not.toContain('Tel:');

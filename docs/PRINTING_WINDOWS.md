@@ -20,7 +20,7 @@ The release checklist for real hardware is in [DESKTOP_ACCEPTANCE.md](DESKTOP_AC
 
 The two drop-downs on the Printers tab offer only queues the app considers available; the list underneath shows every queue and its state. On Windows a queue counts as unavailable when its status includes any of: paused, error, pending deletion, paper jam, paper out, paper problem, offline, not available, user intervention or door open, or when the queue is set to "Use Printer Offline". A queue that is only busy or printing counts as available, because it still accepts the next job. Saving the two choices is refused if both are the same queue.
 
-The app reads each queue's current Windows `DEVMODE`, preserves the other driver settings, then asks the driver for landscape A4 for a bill or portrait custom 50 mm × selected length for tags. It verifies the resulting printable area before creating a spool job. Copies and darkness remain driver settings, so keep copies at 1. If the TSC driver refuses the requested custom media, the app fails before spooling.
+The app reads each queue's current Windows `DEVMODE`, preserves the other driver settings, then asks the driver for landscape A4 for a bill or portrait custom 50 mm × batch-strip length for tags. A tag batch uses one continuous strip whose length is the configured pitch multiplied by its piece count, plus one 10 mm feed after the physical final tag. It verifies the resulting printable area before creating a spool job. Copies and darkness remain driver settings, so keep copies at 1. If the TSC driver refuses the requested custom media, the app fails before spooling.
 
 The app finds queues with `EnumPrintersW` (local and connected queues), opens a device context for the chosen queue, and uses `StartDocW`/`StartPage`/`TextOutW`/`EndPage`/`EndDoc`. Text is drawn with the Segoe UI font. Customer text is drawn as text; it is never put into a shell command or printer language. I have not tested how names in scripts that Segoe UI lacks (for example Devanagari) print; the bills and tags are designed for English text.
 
@@ -67,9 +67,9 @@ Retrying an `uncertain` job needs two steps in the app: "Review uncertain job", 
 
 ### Bill (Canon, A4 landscape)
 
-The app requests A4 landscape and uses a 24 pt (about 8.5 mm) safe margin. The shop name, address and phone sit at the upper left; the bill number and received time sit at the upper right. Customer name and optional phone follow at left, with the ready-by time at right. A full-width table uses separate garment/service, quantity, rate and amount columns. Pieces and the payment totals align at the right, followed by the receipt footer. Text is positioned against measured printer-font widths; long values wrap, and totals move to another page when needed.
+The app requests A4 landscape and uses a 24 pt (about 8.5 mm) safe margin. The configurable laundry name, address, phone and optional message are centered above the order details. The bill number and received time share a row; customer and optional phone, ready-by time, payment summary, piece count, and a full-width table with Particulars, Service, Qty, Rate and Amount follow. Totals and configurable multiline footer/terms finish the bill. Text and rules are positioned against measured printer-font widths; long values wrap, and totals move to another page when needed.
 
-Admin > Shop settings lets the admin choose whether the shop name, address, shop phone, customer phone, received time and ready-by time appear. The order number, customer name, garment and service rows, piece count, totals and payment remain on the bill. The configurable shop name, address, phone and footer are copied into each new bill together with the visibility choices, so a reprint retains its original content. Old bills keep the legacy visible fields. A bill saved before shop settings existed prints the built-in title "SMART LAUNDRY" and footer "Thank you". An existing installation starts with "Smart Laundry" and "Thank you for choosing us." until the admin edits them.
+Admin > Shop settings lets the admin choose whether the shop name, address, shop phone, customer phone, received time and ready-by time appear, and set the centered message and multiline footer/terms. The order number, customer name, garment and service rows, piece count, totals and payment remain on the bill. Shop identity, message, footer and visibility choices are copied into each new bill so reprints retain their original content. Old bills keep the legacy visible fields. A bill saved before shop settings existed prints the built-in title "SMART LAUNDRY" and footer "Thank you". An existing installation starts with "Smart Laundry" and "Thank you for choosing us." until the admin edits them.
 
 A bill longer than one page continues on further pages headed "Bill: NUMBER (continued)", up to 50 pages. A bill that would need more fails with an error.
 
@@ -77,7 +77,7 @@ The bill must pass a money check before printing: every line total equals unit p
 
 ### Tags (TSC, 50 mm wide continuous roll)
 
-One page per piece, so a bill with N pieces prints N tags (a pair of shoes is one piece). Each tag shows only:
+One continuous strip contains the tags for a batch, so a bill with N pieces prints N tag positions (a pair of shoes is one piece). The 30 mm default pitch is configurable from 30–200 mm. The batch adds a single 10 mm trailing feed after the piece that physically exits last; the current TSC output order makes Piece 1 exit last. Each tag shows only:
 
 ```
 Bill LA-2026-00123
@@ -87,9 +87,9 @@ Piece 3/5
 ID 2600123-3
 ```
 
-The ID is two digits of the year, the bill's sequence number and the piece position, for example `2600123-3`. Tags show no customer name, phone number, date, barcode or QR code. The admin may add the shop name and a short tag line. The cut length is selected in Admin > Shop settings (30–200 mm, default 101.6 mm) and saved with each new tag document.
+The ID is two digits of the year, the bill's sequence number and the piece position, for example `2600123-3`. Tags show no customer name, phone number, date, barcode or QR code. The admin may add the shop name and a short tag line. Text starts 10 mm from the roll's left edge and keeps about 3 mm clear at the right edge. The configurable pitch and shop branding are saved with each new tag document; old saved tag documents retain their prior 101.6 mm fallback.
 
-The layout uses about 3 mm of horizontal inset, smaller type, and a blank 5 mm band at the bottom of each tag page for scissors. Text wraps or steps down to fit the selected feed length; the piece ID remains at least 8 pt. A page narrower than about 21 mm or shorter than about 11 mm is rejected, and so is one wider than about 4.6 inches. A document holds at most 500 tags.
+The tag layout uses smaller type and checks each piece's text against the configured pitch; the piece ID remains at least 8 pt. It rejects text that cannot fit, a page narrower than about 21 mm, a pitch below the supported range, a strip exceeding the printer's signed page-length limit, and any reported width wider than about 4.6 inches. A document holds at most 500 tags.
 
 ### Linux (development only)
 

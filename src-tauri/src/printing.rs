@@ -9,7 +9,7 @@ use crate::print_layout::format_money;
 #[cfg(any(target_os = "windows", target_os = "linux", test))]
 use crate::print_layout::safe_text;
 #[cfg(any(target_os = "linux", test))]
-use crate::print_layout::{bill_footer, bill_header_lines, bill_title};
+use crate::print_layout::{bill_footer_lines, bill_header_lines, bill_message, bill_title};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 #[cfg(any(target_os = "windows", test))]
@@ -48,6 +48,9 @@ pub struct BillHeader {
     pub address: String,
     #[serde(default)]
     pub phone: String,
+    /// Editable one-line message printed below the centered shop identity.
+    #[serde(default)]
+    pub message: String,
     #[serde(default)]
     pub footer: String,
     /// Visibility choices are copied into the bill at save time. Missing fields in older saved
@@ -76,6 +79,7 @@ impl Default for BillHeader {
             shop_name: String::new(),
             address: String::new(),
             phone: String::new(),
+            message: String::new(),
             footer: String::new(),
             show_shop_name: true,
             show_shop_address: true,
@@ -398,10 +402,11 @@ fn validate_document(document: &PrintDocument) -> Result<(), PrintError> {
                 &header.shop_name,
                 &header.address,
                 &header.phone,
-                &header.footer,
+                &header.message,
             ]
             .iter()
             .any(|field| field.chars().count() > MAX_HEADER_FIELD_CHARS)
+                || header.footer.chars().count() > MAX_HEADER_FIELD_CHARS * 3
             {
                 return Err(PrintError::Invalid("bill header text is too long".into()));
             }
@@ -476,6 +481,7 @@ fn validate_document(document: &PrintDocument) -> Result<(), PrintError> {
                     "a tag document must contain between 1 and {MAX_TAGS_PER_DOCUMENT} pieces"
                 )));
             }
+            crate::print_layout::tag_strip_length_tenths_mm(tags)?;
             let total = tags.pieces[0].total;
             if total == 0 {
                 return Err(PrintError::Invalid(
@@ -515,6 +521,10 @@ fn render_lines(document: &PrintDocument) -> Vec<Vec<String>> {
                 vec![title]
             };
             head.extend(bill_header_lines(&bill.header));
+            let message = bill_message(&bill.header);
+            if !message.is_empty() {
+                head.push(message);
+            }
             let mut lines = vec![head];
             lines[0].push(format!("Bill: {}", safe_text(&bill.order_number)));
             if bill.header.show_received_at {
@@ -559,7 +569,7 @@ fn render_lines(document: &PrintDocument) -> Vec<Vec<String>> {
             if bill.header.show_ready_by {
                 lines[0].push(format!("Ready by: {}", safe_text(&bill.promised_at_ist)));
             }
-            lines[0].push(bill_footer(&bill.header));
+            lines[0].extend(bill_footer_lines(&bill.header));
             lines
         }
         PrintDocument::Tags(tags) => tags
@@ -596,7 +606,7 @@ fn render_lines(document: &PrintDocument) -> Vec<Vec<String>> {
 #[cfg(target_os = "linux")]
 mod linux_adapter {
     use super::*;
-    use crate::print_layout::{layout_document, PageSpec, TextMeter};
+    use crate::print_layout::{layout_document, tag_strip_length_tenths_mm, PageSpec, TextMeter};
     use cairo::{Context, FontSlant, FontWeight, PdfSurface};
     use std::io::Write;
     use std::process::{Command, Stdio};
@@ -622,21 +632,21 @@ mod linux_adapter {
         }
     }
 
-    fn page_spec(document: &PrintDocument) -> PageSpec {
-        match document {
+    fn page_spec(document: &PrintDocument) -> Result<PageSpec, PrintError> {
+        Ok(match document {
             PrintDocument::Bill(_) => PageSpec {
                 width_pt: 841.89,
                 height_pt: 595.28,
             },
             PrintDocument::Tags(tags) => PageSpec {
                 width_pt: 50.0 * 72.0 / 25.4,
-                height_pt: (f32::from(tags.tag_length_tenths_mm) / 10.0) * 72.0 / 25.4,
+                height_pt: f32::from(tag_strip_length_tenths_mm(tags)?) * 72.0 / 254.0,
             },
-        }
+        })
     }
 
     pub(super) fn render_pdf(document: &PrintDocument) -> Result<Vec<u8>, PrintError> {
-        let spec = page_spec(document);
+        let spec = page_spec(document)?;
         let surface = PdfSurface::for_stream(
             f64::from(spec.width_pt),
             f64::from(spec.height_pt),
@@ -649,6 +659,14 @@ mod linux_adapter {
         let meter = CairoMeter(&context);
         let pages = layout_document(document, spec, &meter)?;
         for page in &pages {
+            context.set_line_width(0.5);
+            for rule in &page.rules {
+                context.move_to(f64::from(rule.x1_pt), f64::from(rule.y_pt));
+                context.line_to(f64::from(rule.x2_pt), f64::from(rule.y_pt));
+                context.stroke().map_err(|error| {
+                    PrintError::Adapter(format!("could not draw bill rule: {error}"))
+                })?;
+            }
             for line in &page.lines {
                 context.select_font_face(
                     "Sans",
@@ -719,7 +737,10 @@ mod linux_adapter {
         Ok(printers)
     }
 
-    pub(super) fn lp_arguments(printer_id: &str, document: &PrintDocument) -> Vec<String> {
+    pub(super) fn lp_arguments(
+        printer_id: &str,
+        document: &PrintDocument,
+    ) -> Result<Vec<String>, PrintError> {
         let (media, orientation) = match document {
             PrintDocument::Bill(_) => (
                 "media=A4".to_string(),
@@ -728,12 +749,12 @@ mod linux_adapter {
             PrintDocument::Tags(tags) => (
                 format!(
                     "media=Custom.50x{:.1}mm",
-                    f64::from(tags.tag_length_tenths_mm) / 10.0
+                    f64::from(tag_strip_length_tenths_mm(tags)?) / 10.0
                 ),
                 "orientation-requested=3".to_string(),
             ),
         };
-        vec![
+        Ok(vec![
             "-d".into(),
             printer_id.into(),
             "-o".into(),
@@ -744,7 +765,7 @@ mod linux_adapter {
             orientation,
             "--".into(),
             "-".into(),
-        ]
+        ])
     }
 
     pub(super) fn cups_job_id(output: &str) -> Option<String> {
@@ -766,7 +787,7 @@ mod linux_adapter {
         let body = render_pdf(document)?;
         let mut command = Command::new("lp");
         command
-            .args(lp_arguments(printer_id, document))
+            .args(lp_arguments(printer_id, document)?)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -921,18 +942,18 @@ fn native_utf16z(buffer: &[u8], offset: usize) -> Result<String, PrintError> {
 #[cfg(target_os = "windows")]
 mod windows_adapter {
     use super::*;
-    use crate::print_layout::{layout_document, PageSpec, TextMeter};
+    use crate::print_layout::{layout_document, tag_strip_length_tenths_mm, PageSpec, TextMeter};
     use std::mem::size_of;
     use std::slice;
     use windows::core::{PCWSTR, PWSTR};
     use windows::Win32::Foundation::SIZE;
     use windows::Win32::Graphics::Gdi::{
         CreateDCW, CreateFontW, DeleteDC, DeleteObject, GetDeviceCaps, GetTextExtentPoint32W,
-        SelectObject, TextOutW, CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, DEFAULT_PITCH,
-        DEFAULT_QUALITY, DEVMODEW, DMORIENT_LANDSCAPE, DMORIENT_PORTRAIT, DMPAPER_A4, DMPAPER_USER,
-        DM_IN_BUFFER, DM_ORIENTATION, DM_OUT_BUFFER, DM_PAPERLENGTH, DM_PAPERSIZE, DM_PAPERWIDTH,
-        FF_DONTCARE, FW_BOLD, HDC, HFONT, HORZRES, LOGPIXELSX, LOGPIXELSY, OUT_DEFAULT_PRECIS,
-        VERTRES,
+        LineTo, MoveToEx, SelectObject, TextOutW, CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET,
+        DEFAULT_PITCH, DEFAULT_QUALITY, DEVMODEW, DMORIENT_LANDSCAPE, DMORIENT_PORTRAIT,
+        DMPAPER_A4, DMPAPER_USER, DM_IN_BUFFER, DM_ORIENTATION, DM_OUT_BUFFER, DM_PAPERLENGTH,
+        DM_PAPERSIZE, DM_PAPERWIDTH, FF_DONTCARE, FW_BOLD, HDC, HFONT, HORZRES, LOGPIXELSX,
+        LOGPIXELSY, OUT_DEFAULT_PRECIS, VERTRES,
     };
     use windows::Win32::Graphics::Printing::{
         ClosePrinter, DocumentPropertiesW, EnumPrintersW, OpenPrinterW, PRINTER_ENUM_CONNECTIONS,
@@ -1203,11 +1224,12 @@ mod windows_adapter {
                     devmode.dmFields |= DM_PAPERSIZE;
                 }
                 PrintDocument::Tags(tags) => {
-                    let length = i16::try_from(tags.tag_length_tenths_mm).map_err(|_| {
-                        PrintError::Invalid(
-                            "tag cut length exceeds the Windows driver limit".into(),
-                        )
-                    })?;
+                    let length =
+                        i16::try_from(tag_strip_length_tenths_mm(tags)?).map_err(|_| {
+                            PrintError::Invalid(
+                                "tag cut length exceeds the Windows driver limit".into(),
+                            )
+                        })?;
                     fields.dmOrientation = DMORIENT_PORTRAIT as i16;
                     fields.dmPaperSize = DMPAPER_USER as i16;
                     fields.dmPaperWidth = 500; // 50 mm, in DEVMODE's 1/10 mm units.
@@ -1334,6 +1356,28 @@ mod windows_adapter {
         for (done, page) in pages.iter().enumerate() {
             if unsafe { StartPage(context.0) } <= 0 {
                 return stop(done, "Windows could not start a page", false);
+            }
+            for rule in &page.rules {
+                let moved = unsafe {
+                    MoveToEx(
+                        context.0,
+                        points_to_device(rule.x1_pt, x_dpi),
+                        points_to_device(rule.y_pt, y_dpi),
+                        None,
+                    )
+                }
+                .as_bool();
+                let drawn = unsafe {
+                    LineTo(
+                        context.0,
+                        points_to_device(rule.x2_pt, x_dpi),
+                        points_to_device(rule.y_pt, y_dpi),
+                    )
+                }
+                .as_bool();
+                if !moved || !drawn {
+                    return stop(done, "Windows could not draw a bill rule", false);
+                }
             }
             for line in &page.lines {
                 let font = create_font(line.size_pt, line.bold, y_dpi);
@@ -1497,14 +1541,19 @@ mod tests {
     }
     #[test]
     fn oversized_header_text_is_rejected() {
-        for field in 0..4 {
+        for field in 0..5 {
             let mut header = BillHeader::default();
-            let long = "x".repeat(MAX_HEADER_FIELD_CHARS + 1);
+            let long = "x".repeat(if field == 3 {
+                MAX_HEADER_FIELD_CHARS * 3 + 1
+            } else {
+                MAX_HEADER_FIELD_CHARS + 1
+            });
             match field {
                 0 => header.shop_name = long,
                 1 => header.address = long,
                 2 => header.phone = long,
-                _ => header.footer = long,
+                3 => header.footer = long,
+                _ => header.message = long,
             }
             assert!(validate_document(&PrintDocument::Bill(bill_with_header(header))).is_err());
         }
@@ -1667,7 +1716,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn linux_cups_requests_landscape_a4_and_the_configured_continuous_roll_length() {
-        let args = linux_adapter::lp_arguments("Canon; $(no-shell)", &bill());
+        let args = linux_adapter::lp_arguments("Canon; $(no-shell)", &bill()).unwrap();
         assert!(args
             .windows(2)
             .any(|part| part == ["-d", "Canon; $(no-shell)"]));
@@ -1680,8 +1729,8 @@ mod tests {
             unreachable!()
         };
         tags.tag_length_tenths_mm = 1250;
-        let tags_args = linux_adapter::lp_arguments("TSC-TE244", &tag_document);
-        assert!(tags_args.contains(&"media=Custom.50x125.0mm".into()));
+        let tags_args = linux_adapter::lp_arguments("TSC-TE244", &tag_document).unwrap();
+        assert!(tags_args.contains(&"media=Custom.50x135.0mm".into()));
         assert!(tags_args.contains(&"orientation-requested=3".into()));
         assert!(!tags_args.contains(&"fit-to-page".into()));
     }
@@ -1883,7 +1932,7 @@ mod tests {
             SUBMIT_DEADLINE + EXTRA_DEADLINE_PER_TAG * 50
         );
         assert!(deadline_for(&tags_of(MAX_TAGS_PER_DOCUMENT as u32)) <= MAX_DEADLINE);
-        assert!(validate_document(&tags_of(MAX_TAGS_PER_DOCUMENT as u32)).is_ok());
+        assert!(validate_document(&tags_of(MAX_TAGS_PER_DOCUMENT as u32)).is_err());
         assert!(validate_document(&tags_of(MAX_TAGS_PER_DOCUMENT as u32 + 1)).is_err());
     }
 
