@@ -326,12 +326,12 @@ impl PrinterPageGeometry {
     }
 
     fn use_requested_bill_media(mut self) -> Self {
-        // configured_devmode has already asked DocumentPropertiesW to accept A4 landscape.
+        // configured_devmode has already asked DocumentPropertiesW to accept A5 landscape.
         // Keep the requested paper size for layout; use GetDeviceCaps only for the printable
         // rectangle and DPI because some printer drivers report rounded physical dimensions.
         self.media = PageSpec {
-            width_pt: 297.0 * 72.0 / 25.4,
-            height_pt: 210.0 * 72.0 / 25.4,
+            width_pt: 210.0 * 72.0 / 25.4,
+            height_pt: 148.0 * 72.0 / 25.4,
         };
         self
     }
@@ -897,7 +897,7 @@ mod linux_adapter {
     ) -> Result<Vec<String>, PrintError> {
         let (media, orientation) = match document {
             PrintDocument::Bill(_) => (
-                "media=A4".to_string(),
+                "media=A5".to_string(),
                 "orientation-requested=4".to_string(),
             ),
             PrintDocument::Tags(tags) => (
@@ -1105,7 +1105,7 @@ mod windows_adapter {
         CreateDCW, CreateFontW, DeleteDC, DeleteObject, GetDeviceCaps, GetTextExtentPoint32W,
         LineTo, MoveToEx, SelectObject, TextOutW, CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET,
         DEFAULT_PITCH, DEFAULT_QUALITY, DEVMODEW, DMORIENT_LANDSCAPE, DMORIENT_PORTRAIT,
-        DMPAPER_A4, DMPAPER_USER, DM_IN_BUFFER, DM_ORIENTATION, DM_OUT_BUFFER, DM_PAPERLENGTH,
+        DMPAPER_A5, DMPAPER_USER, DM_IN_BUFFER, DM_ORIENTATION, DM_OUT_BUFFER, DM_PAPERLENGTH,
         DM_PAPERSIZE, DM_PAPERWIDTH, FF_DONTCARE, FW_BOLD, HDC, HFONT, HORZRES, LOGPIXELSX,
         LOGPIXELSY, OUT_DEFAULT_PRECIS, PHYSICALHEIGHT, PHYSICALOFFSETX, PHYSICALOFFSETY,
         PHYSICALWIDTH, VERTRES,
@@ -1371,7 +1371,7 @@ mod windows_adapter {
             match document {
                 PrintDocument::Bill(_) => {
                     fields.dmOrientation = DMORIENT_LANDSCAPE as i16;
-                    fields.dmPaperSize = DMPAPER_A4 as i16;
+                    fields.dmPaperSize = DMPAPER_A5 as i16;
                     devmode.dmFields |= DM_PAPERSIZE;
                 }
                 PrintDocument::Tags(tags) => {
@@ -1693,11 +1693,11 @@ mod tests {
             .all(|line| { geometry.media_point_to_device(line.x_pt, line.y_pt).is_ok() })));
 
         let bill_geometry =
-            PrinterPageGeometry::from_device_caps(3515, 2486, 15, 20, 3478, 2450, 300, 300)
+            PrinterPageGeometry::from_device_caps(2480, 1748, 15, 20, 2450, 1700, 300, 300)
                 .unwrap()
                 .use_requested_bill_media();
-        assert!((bill_geometry.media.width_pt - 297.0 * 72.0 / 25.4).abs() < 0.01);
-        assert!((bill_geometry.media.height_pt - 210.0 * 72.0 / 25.4).abs() < 0.01);
+        assert!((bill_geometry.media.width_pt - 210.0 * 72.0 / 25.4).abs() < 0.01);
+        assert!((bill_geometry.media.height_pt - 148.0 * 72.0 / 25.4).abs() < 0.01);
         let pages = layout_document(&bill(), bill_geometry.media, &TestMeter).unwrap();
         bill_geometry.validate_layout(&pages, &TestMeter).unwrap();
     }
@@ -1981,12 +1981,12 @@ mod tests {
     }
     #[cfg(target_os = "linux")]
     #[test]
-    fn linux_cups_requests_landscape_a4_and_the_configured_continuous_roll_length() {
+    fn linux_cups_requests_landscape_a5_and_the_configured_continuous_roll_length() {
         let args = linux_adapter::lp_arguments("Canon; $(no-shell)", &bill()).unwrap();
         assert!(args
             .windows(2)
             .any(|part| part == ["-d", "Canon; $(no-shell)"]));
-        assert!(args.contains(&"media=A4".into()));
+        assert!(args.contains(&"media=A5".into()));
         assert!(args.contains(&"orientation-requested=4".into()));
         assert!(!args.contains(&"fit-to-page".into()));
 

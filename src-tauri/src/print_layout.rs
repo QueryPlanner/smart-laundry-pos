@@ -355,7 +355,7 @@ fn layout_bill(
         || spec.width_pt <= spec.height_pt
     {
         return Err(PrintError::Invalid(
-            "the bill printer must report a usable A4 landscape page".into(),
+            "the bill printer must report a usable A5 landscape page".into(),
         ));
     }
     let left = BILL_MARGIN_PT;
@@ -767,8 +767,8 @@ mod tests {
             order_number: "LA-2026-00123".into(),
             created_at_ist: "15 Oct 2026 10:30 AM".into(),
             promised_at_ist: "17 Oct 2026 05:00 PM".into(),
-            customer_name: "Asha Patil".into(),
-            customer_phone: "9876543210".into(),
+            customer_name: "Test Customer".into(),
+            customer_phone: "TEST-PHONE".into(),
             items: (0..items)
                 .map(|n| BillItem {
                     garment: format!("Garment {n}"),
@@ -879,18 +879,18 @@ mod tests {
     fn configured_bill_identity_and_message_are_centered_and_rules_stay_inside_a4() {
         let mut document = bill(1);
         document.header = BillHeader {
-            shop_name: "Demo Laundry".into(),
-            address: "1 Demo Lane".into(),
-            phone: "020 0000 0000".into(),
+            shop_name: "Example Laundry".into(),
+            address: "1 Example Lane".into(),
+            phone: "PHONE TEST".into(),
             message: "Ready for pickup".into(),
             ..BillHeader::default()
         };
         let pages = layout_bill(&document, A4, &FakeMeter).unwrap();
         let page = &pages[0];
         for label in [
-            "Demo Laundry",
-            "1 Demo Lane",
-            "Tel: 020 0000 0000",
+            "Example Laundry",
+            "1 Example Lane",
+            "Tel: PHONE TEST",
             "Ready for pickup",
         ] {
             let line = page.lines.iter().find(|line| line.text == label).unwrap();
@@ -1224,9 +1224,9 @@ mod tests {
 
     fn full_header() -> BillHeader {
         BillHeader {
-            shop_name: "Sunrise Cleaners".into(),
-            address: "12 MG Road, Pune".into(),
-            phone: "020 5550 1234".into(),
+            shop_name: "Example Cleaners".into(),
+            address: "12 Example Road, Test City".into(),
+            phone: "PHONE TEST".into(),
             footer: "Visit again soon".into(),
             ..BillHeader::default()
         }
@@ -1241,9 +1241,9 @@ mod tests {
         assert_eq!(
             lines[..4],
             [
-                "Sunrise Cleaners",
-                "12 MG Road, Pune",
-                "Tel: 020 5550 1234",
+                "Example Cleaners",
+                "12 Example Road, Test City",
+                "Tel: PHONE TEST",
                 "Bill: LA-2026-00123"
             ]
         );
@@ -1284,8 +1284,8 @@ mod tests {
         let mut document = bill(1);
         document.header = BillHeader {
             shop_name: "Sunrise Premium Dry Cleaners And Laundry Services".into(),
-            address: "Shop 12, Ground Floor, Mahatma Gandhi Road, Near The Old Market, Pune".into(),
-            phone: "020 5550 1234".into(),
+            address: "Shop 12, Ground Floor, Sample Road, Test City".into(),
+            phone: "PHONE TEST".into(),
             footer: "Thank you for choosing us. Collect within 30 days or items may be donated."
                 .into(),
             ..BillHeader::default()
@@ -1319,11 +1319,11 @@ mod tests {
         let count = |page: &LaidOutPage, needle: &str| {
             page.lines.iter().filter(|l| l.text == needle).count()
         };
-        assert_eq!(count(&pages[0], "Sunrise Cleaners"), 1);
+        assert_eq!(count(&pages[0], "Example Cleaners"), 1);
         assert_eq!(count(&pages[0], "Visit again soon"), 0);
         for page in &pages[1..] {
-            assert_eq!(count(page, "Sunrise Cleaners"), 0);
-            assert_eq!(count(page, "Tel: 020 5550 1234"), 0);
+            assert_eq!(count(page, "Example Cleaners"), 0);
+            assert_eq!(count(page, "Tel: PHONE TEST"), 0);
         }
         let last = pages.last().unwrap();
         assert_eq!(count(last, "Visit again soon"), 1);
