@@ -214,6 +214,7 @@ pub fn bill_message(header: &BillHeader) -> String {
 }
 
 /// The closing line: the shop's receipt footer, or a plain thank-you when none was saved.
+#[cfg(test)]
 pub fn bill_footer(header: &BillHeader) -> String {
     let footer = safe_text(&header.footer);
     if footer.is_empty() {
@@ -702,9 +703,9 @@ fn layout_tag_strip(
             });
         }
     }
-    Err(PrintError::Invalid(format!(
-        "the text for one or more tags does not fit within the configured tag pitch"
-    )))
+    Err(PrintError::Invalid(
+        "the text for one or more tags does not fit within the configured tag pitch".into(),
+    ))
 }
 
 fn tag_blocks<'a>(
@@ -1295,10 +1296,7 @@ mod tests {
             assert_within(page, BILL_SMALL_LANDSCAPE);
         }
         let first = texts(&pages[0]);
-        let name_lines = first
-            .iter()
-            .take_while(|l| !l.starts_with("Shop") && !l.starts_with("Mahatma"))
-            .count();
+        let name_lines = first.iter().take_while(|l| !l.starts_with("Shop")).count();
         assert!(name_lines > 1, "a long shop name wraps: {first:?}");
         let joined = pages
             .iter()
@@ -1307,7 +1305,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join(" ");
         assert!(joined.contains("Collect within 30 days"));
-        assert!(joined.contains("Near The Old Market"));
+        assert!(joined.contains("Sample Road"));
     }
 
     #[test]

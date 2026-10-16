@@ -163,6 +163,9 @@ impl ShopSettings {
         ]
     }
 
+    /// Shop identity copied into a bill document at order-save time. Fields are raw (a blank name
+    /// or footer makes the bill use its built-in title and thank-you line) and clamped so a long
+    /// legacy value can never make the bill fail print validation.
     pub(crate) fn bill_header(&self) -> BillHeader {
         let clamp = |text: &str| text.chars().take(MAX_HEADER_FIELD_CHARS).collect();
         BillHeader {
@@ -397,15 +400,6 @@ pub(crate) async fn order_prefix(
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| DEFAULT_ORDER_PREFIX.to_string()))
-}
-
-/// Shop identity copied into a bill document at order-save time. Fields are raw (a blank name or
-/// footer makes the bill use its built-in title and thank-you line) and clamped so a long legacy
-/// value can never make the bill fail print validation.
-pub(crate) async fn bill_header(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-) -> Result<BillHeader, String> {
-    Ok(load_for_order(tx).await?.bill_header())
 }
 
 /// All print choices are read from the same order transaction and copied into the saved jobs.
@@ -1121,7 +1115,7 @@ mod tests {
                 .await
                 .unwrap();
             let mut tx = db.begin_counter_write().await.unwrap();
-            let header = bill_header(&mut tx).await.unwrap();
+            let header = load_for_order(&mut tx).await.unwrap().bill_header();
             assert_eq!(header.address.chars().count(), MAX_HEADER_FIELD_CHARS);
             drop(tx);
             // The clamped header still passes the printer's validation.
