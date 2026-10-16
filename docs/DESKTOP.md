@@ -15,7 +15,7 @@ The target installation is one Windows laptop in a shop with a Canon laser print
 | Business rules | `src-tauri/src/counter.rs` | Accounts and roles, rate card, discounts, quoting, order save, cancel, pieces, collection, print job state, backup settings, backup restore, PIN reset file. Every command checks the signed-in role here. |
 | Back office | `src-tauri/src/office.rs` | Customers, expenses, inventory and machines: list, create, edit and (admin only) delete, with audit rows. |
 | Insights | `src-tauri/src/insights.rs` | Dashboard overview, sales summary, sales graph series, order list and payment (transaction) list, all read-only. |
-| Shop settings | `src-tauri/src/shop_settings.rs` | The five editable shop settings and the bill header built from them. |
+| Shop settings | `src-tauri/src/shop_settings.rs` | Shop identity, bill/tag content choices and tag cut length; snapshots the print options into each new order. |
 | Storage | `src-tauri/src/storage.rs` | SQLite via `sqlx` (one writer connection, four read-only connections), single-instance lock, schema checks, backup, staged restore. |
 | Printing | `src-tauri/src/printing.rs`, `src-tauri/src/print_layout.rs` | Document model and validation, Windows GDI and Linux CUPS adapters, and the pure page layout. Details in [PRINTING_WINDOWS.md](PRINTING_WINDOWS.md). |
 | Schema | `src-tauri/migrations/001_initial_schema.sql`, `002_counter_domain.sql` | Version 1 is the original local-first schema. Version 2 adds the counter domain and the starter rate card. |
@@ -73,9 +73,9 @@ The office tables (`customers`, `expenses`, `inventory_items`, `inventory_transa
 
 ### Bill header and shop settings
 
-Admin > Shop settings edits five values: shop name, address, phone, receipt footer and the bill number prefix (1 to 6 letters or digits, upper-cased, no hyphen). Only those keys can be read or written through the screen; `device_id` and the backup bookkeeping keys in the same table are not reachable. A save changes only the keys that differ and writes one audit row with the old and new values.
+Admin > Shop settings edits shop name, address, phone, receipt footer and bill number prefix (1 to 6 letters or digits, upper-cased, no hyphen), six optional bill-field toggles, optional tag branding and a 30–200 mm tag cut length. Only the 14 editable keys can be read or written through the screen; `device_id` and backup bookkeeping keys in the same table are not reachable. A save changes only the keys that differ and writes one audit row with the old and new values.
 
-The bill header (shop name, address, phone, footer) is copied from the settings into the bill document when the order is saved, so a reprint matches the original bill even after the settings change. A bill saved before this existed has an empty header and prints the built-in title "SMART LAUNDRY" and the footer "Thank you". Existing installs start with the values the version 1 schema seeded: shop name "Smart Laundry" and footer "Thank you for choosing us." (an install that has never edited them will therefore print those). The Linux plain-text adapter prints the same header and footer text but does not use the layout code.
+The bill header and visible-field choices, plus tag branding and cut length, are copied into each new print document when the order is saved, so reprints match the original. Old bill documents default to their legacy visible fields; old tag documents default to no branding and a 101.6 mm feed length. New bills use an A4 landscape positioned layout. Linux renders that shared layout to PDF for CUPS; Windows requests landscape A4 through the Canon driver. Tags use smaller text, 3 mm side insets and a blank 5 mm cut band on the 50 mm-wide roll.
 
 ## Data on disk
 

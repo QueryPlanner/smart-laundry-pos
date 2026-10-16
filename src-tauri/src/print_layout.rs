@@ -5,8 +5,8 @@
 //! Keeping layout here means overflow, wrapping, pagination and fit are tested on every
 //! platform, and a layout problem is found *before* a spool job exists.
 //!
-//! Only the Windows adapter draws with this layout, so on other platforms most of it is compiled
-//! (and unit-tested) but intentionally unused.
+//! The Windows GDI and Linux Cairo adapters draw with this shared layout. Tests also use a small
+//! stand-in text measurer so wrapping and bounds are deterministic across platforms.
 #![cfg_attr(not(any(target_os = "windows", test)), allow(dead_code))]
 
 use crate::printing::{BillDocument, BillHeader, PrintDocument, PrintError, TagDocument, TagPiece};
@@ -17,19 +17,21 @@ const DEFAULT_BILL_TITLE: &str = "SMART LAUNDRY";
 const DEFAULT_BILL_FOOTER: &str = "Thank you";
 
 const POINTS_PER_LINE_HEIGHT: f32 = 1.3;
-const BILL_MARGIN_PT: f32 = 36.0;
-const TAG_MARGIN_PT: f32 = 6.0;
-const MIN_BILL_WIDTH_PT: f32 = 200.0;
+const BILL_MARGIN_PT: f32 = 24.0;
+/// 3 mm safe inset on the 50 mm continuous TSC roll.
+const TAG_MARGIN_PT: f32 = 8.5;
+/// 5 mm reserved at the end of each tag feed for scissors.
+const TAG_CUT_BAND_PT: f32 = 14.2;
+const MIN_BILL_WIDTH_PT: f32 = 300.0;
 const MIN_TAG_WIDTH_PT: f32 = 60.0;
 const MAX_BILL_PAGES: usize = 50;
 /// (bill number, garment/service/position, piece id) point sizes, tried largest first.
-/// The piece ID is what staff match at pickup, so it never shrinks below 8 pt.
-const TAG_SIZE_STEPS: [(f32, f32, f32); 5] = [
-    (10.0, 12.0, 10.0),
-    (9.0, 10.0, 9.0),
+/// Starting type is smaller than the previous layout; piece IDs remain at least 8 pt.
+const TAG_SIZE_STEPS: [(f32, f32, f32); 4] = [
     (8.0, 9.0, 8.0),
+    (7.5, 8.5, 8.0),
     (7.0, 8.0, 8.0),
-    (6.0, 7.0, 8.0),
+    (6.5, 7.5, 8.0),
 ];
 /// A page wider than this (about 4.6 inches) is not a 50 mm label roll: tags would print one per
 /// large sheet. The TSC driver must be set to the label size.
@@ -52,6 +54,8 @@ pub struct StyledLine {
     pub text: String,
     pub size_pt: f32,
     pub bold: bool,
+    /// Distance from the left edge of the printable area to this line.
+    pub x_pt: f32,
     /// Distance from the top of the printable area to the top of this line.
     pub y_pt: f32,
 }
@@ -60,6 +64,8 @@ pub struct StyledLine {
 pub struct LaidOutPage {
     /// Distance from the left of the printable area to every line.
     pub margin_pt: f32,
+    /// Blank area reserved at the bottom of the page, including the tag scissor band.
+    pub bottom_reserved_pt: f32,
     pub lines: Vec<StyledLine>,
 }
 
@@ -142,6 +148,9 @@ pub fn safe_text(value: &str) -> String {
 
 /// The bill title: the shop name, or the built-in title when none was saved.
 pub fn bill_title(header: &BillHeader) -> String {
+    if !header.show_shop_name {
+        return String::new();
+    }
     let name = safe_text(&header.shop_name);
     if name.is_empty() {
         DEFAULT_BILL_TITLE.into()
@@ -154,11 +163,11 @@ pub fn bill_title(header: &BillHeader) -> String {
 pub fn bill_header_lines(header: &BillHeader) -> Vec<String> {
     let mut lines = Vec::new();
     let address = safe_text(&header.address);
-    if !address.is_empty() {
+    if header.show_shop_address && !address.is_empty() {
         lines.push(address);
     }
     let phone = safe_text(&header.phone);
-    if !phone.is_empty() {
+    if header.show_shop_phone && !phone.is_empty() {
         lines.push(format!("Tel: {phone}"));
     }
     lines
@@ -174,132 +183,6 @@ pub fn bill_footer(header: &BillHeader) -> String {
     }
 }
 
-struct Block {
-    text: String,
-    size_pt: f32,
-    bold: bool,
-    gap_before_pt: f32,
-}
-
-fn block(text: impl Into<String>, size_pt: f32, bold: bool, gap_before_pt: f32) -> Block {
-    Block {
-        text: text.into(),
-        size_pt,
-        bold,
-        gap_before_pt,
-    }
-}
-
-fn bill_blocks(bill: &BillDocument) -> Vec<Block> {
-    let mut blocks = vec![block(bill_title(&bill.header), 18.0, true, 0.0)];
-    for (index, line) in bill_header_lines(&bill.header).into_iter().enumerate() {
-        blocks.push(block(line, 10.0, false, if index == 0 { 2.0 } else { 1.0 }));
-    }
-    blocks.extend([
-        block(
-            format!("Bill: {}", safe_text(&bill.order_number)),
-            12.0,
-            true,
-            6.0,
-        ),
-        block(
-            format!("Date: {}", safe_text(&bill.created_at_ist)),
-            10.0,
-            false,
-            2.0,
-        ),
-        block(
-            format!("Customer: {}", safe_text(&bill.customer_name)),
-            10.0,
-            false,
-            2.0,
-        ),
-    ]);
-    let phone = safe_text(&bill.customer_phone);
-    if !phone.is_empty() {
-        blocks.push(block(format!("Phone: {phone}"), 10.0, false, 2.0));
-    }
-    for (index, item) in bill.items.iter().enumerate() {
-        let gap = if index == 0 { 12.0 } else { 6.0 };
-        blocks.push(block(
-            format!(
-                "{} - {}",
-                safe_text(&item.garment),
-                safe_text(&item.service)
-            ),
-            10.0,
-            true,
-            gap,
-        ));
-        blocks.push(block(
-            format!(
-                "{} x {} = {}",
-                item.quantity,
-                format_money(item.unit_price_minor),
-                format_money(item.line_total_minor)
-            ),
-            10.0,
-            false,
-            1.0,
-        ));
-    }
-    blocks.push(block(
-        format!("Pieces: {}", bill.physical_piece_count),
-        10.0,
-        false,
-        12.0,
-    ));
-    blocks.push(block(
-        format!("Subtotal: {}", format_money(bill.subtotal_minor)),
-        10.0,
-        false,
-        2.0,
-    ));
-    if bill.discount_minor > 0 {
-        blocks.push(block(
-            format!(
-                "Discount ({}%): -{}",
-                format_percent(bill.discount_percent_bp),
-                format_money(bill.discount_minor)
-            ),
-            10.0,
-            false,
-            2.0,
-        ));
-    }
-    blocks.push(block(
-        format!(
-            "Total: {}",
-            format_money(bill.subtotal_minor - bill.discount_minor)
-        ),
-        12.0,
-        true,
-        4.0,
-    ));
-    blocks.push(block(
-        format!("Paid: {}", format_money(bill.paid_minor)),
-        10.0,
-        false,
-        2.0,
-    ));
-    if bill.balance_minor > 0 {
-        blocks.push(block(
-            format!("Balance due: {}", format_money(bill.balance_minor)),
-            10.0,
-            true,
-            2.0,
-        ));
-    }
-    blocks.push(block(
-        format!("Ready by: {}", safe_text(&bill.promised_at_ist)),
-        12.0,
-        true,
-        12.0,
-    ));
-    blocks.push(block(bill_footer(&bill.header), 10.0, false, 8.0));
-    blocks
-}
-
 /// Basis points as a percentage without trailing zeros: 1000 -> "10", 1250 -> "12.5", 5 -> "0.05".
 pub fn format_percent(percent_bp: i64) -> String {
     let whole = percent_bp / 100;
@@ -311,71 +194,334 @@ pub fn format_percent(percent_bp: i64) -> String {
     }
 }
 
+fn add_line(
+    page: &mut LaidOutPage,
+    text: impl Into<String>,
+    size_pt: f32,
+    bold: bool,
+    x_pt: f32,
+    y_pt: f32,
+) {
+    page.lines.push(StyledLine {
+        text: text.into(),
+        size_pt,
+        bold,
+        x_pt,
+        y_pt,
+    });
+}
+
+fn right_x(text: &str, edge_pt: f32, size_pt: f32, bold: bool, meter: &dyn TextMeter) -> f32 {
+    (edge_pt - meter.width_pt(text, size_pt, bold)).max(BILL_MARGIN_PT)
+}
+
+fn bill_page() -> LaidOutPage {
+    LaidOutPage {
+        margin_pt: BILL_MARGIN_PT,
+        bottom_reserved_pt: BILL_MARGIN_PT,
+        lines: Vec::new(),
+    }
+}
+
+fn add_table_heading(page: &mut LaidOutPage, y: f32, right: f32, meter: &dyn TextMeter) {
+    add_line(page, "Garment / service", 10.0, true, BILL_MARGIN_PT, y);
+    for (label, edge) in [
+        ("Qty", right - 150.0),
+        ("Rate", right - 75.0),
+        ("Amount", right),
+    ] {
+        add_line(
+            page,
+            label,
+            9.0,
+            true,
+            right_x(label, edge, 9.0, true, meter),
+            y,
+        );
+    }
+}
+
+fn add_continuation_header(
+    page: &mut LaidOutPage,
+    bill: &BillDocument,
+    right: f32,
+    meter: &dyn TextMeter,
+) -> f32 {
+    let title = format!("Bill: {} (continued)", safe_text(&bill.order_number));
+    add_line(
+        page,
+        title.clone(),
+        11.0,
+        true,
+        BILL_MARGIN_PT,
+        BILL_MARGIN_PT,
+    );
+    let y = BILL_MARGIN_PT + 28.0;
+    add_table_heading(page, y, right, meter);
+    y + 16.0
+}
+
 fn layout_bill(
     bill: &BillDocument,
     spec: PageSpec,
     meter: &dyn TextMeter,
 ) -> Result<Vec<LaidOutPage>, PrintError> {
-    if spec.width_pt < MIN_BILL_WIDTH_PT || spec.height_pt < 2.0 * BILL_MARGIN_PT + 40.0 {
+    if spec.width_pt < MIN_BILL_WIDTH_PT
+        || spec.height_pt < 2.0 * BILL_MARGIN_PT + 40.0
+        || spec.width_pt <= spec.height_pt
+    {
         return Err(PrintError::Invalid(
-            "the selected bill printer page is too small for a bill".into(),
+            "the bill printer must report a usable A4 landscape page".into(),
         ));
     }
-    let content_width = spec.width_pt - 2.0 * BILL_MARGIN_PT;
+    let left = BILL_MARGIN_PT;
+    let right = spec.width_pt - BILL_MARGIN_PT;
     let bottom = spec.height_pt - BILL_MARGIN_PT;
-    let continuation = format!("Bill: {} (continued)", safe_text(&bill.order_number));
-    let mut pages = vec![LaidOutPage {
-        margin_pt: BILL_MARGIN_PT,
-        lines: Vec::new(),
-    }];
-    let mut y = BILL_MARGIN_PT;
-    for block in bill_blocks(bill) {
-        let wrapped = wrap_text(&block.text, content_width, block.size_pt, block.bold, meter);
-        for (index, text) in wrapped.into_iter().enumerate() {
-            let line_height = block.size_pt * POINTS_PER_LINE_HEIGHT;
-            let gap = if index == 0 { block.gap_before_pt } else { 0.0 };
-            let page_is_empty = pages.last().is_some_and(|page| page.lines.is_empty());
-            if !page_is_empty && y + gap + line_height > bottom {
-                if pages.len() >= MAX_BILL_PAGES {
-                    return Err(PrintError::Invalid(
-                        "the bill is too long to print on one document".into(),
-                    ));
-                }
-                pages.push(LaidOutPage {
-                    margin_pt: BILL_MARGIN_PT,
-                    lines: vec![StyledLine {
-                        text: continuation.clone(),
-                        size_pt: 10.0,
-                        bold: true,
-                        y_pt: BILL_MARGIN_PT,
-                    }],
-                });
-                y = BILL_MARGIN_PT + 10.0 * POINTS_PER_LINE_HEIGHT + 6.0;
-                pages
-                    .last_mut()
-                    .expect("a page was just pushed")
-                    .lines
-                    .push(StyledLine {
-                        text,
-                        size_pt: block.size_pt,
-                        bold: block.bold,
-                        y_pt: y,
-                    });
-                y += line_height;
-                continue;
+    let mut pages = vec![bill_page()];
+    let page = pages.last_mut().unwrap();
+
+    let title = bill_title(&bill.header);
+    let left_width = (right - left) * 0.58;
+    let mut left_y = BILL_MARGIN_PT;
+    if !title.is_empty() {
+        for text in wrap_text(&title, left_width, 18.0, true, meter) {
+            add_line(page, text, 18.0, true, left, left_y);
+            left_y += 22.0;
+        }
+    }
+    for text in bill_header_lines(&bill.header) {
+        for wrapped in wrap_text(&text, left_width, 10.0, false, meter) {
+            add_line(page, wrapped, 10.0, false, left, left_y);
+            left_y += 13.0;
+        }
+    }
+
+    let bill_line = format!("Bill: {}", safe_text(&bill.order_number));
+    add_line(
+        page,
+        bill_line.clone(),
+        12.0,
+        true,
+        right_x(&bill_line, right, 12.0, true, meter),
+        BILL_MARGIN_PT,
+    );
+    let mut right_y = BILL_MARGIN_PT + 22.0;
+    if bill.header.show_received_at {
+        let received = format!("Received: {}", safe_text(&bill.created_at_ist));
+        add_line(
+            page,
+            received.clone(),
+            9.0,
+            false,
+            right_x(&received, right, 9.0, false, meter),
+            right_y,
+        );
+        right_y += 14.0;
+    }
+
+    let detail_y = (left_y.max(right_y) + 15.0).max(BILL_MARGIN_PT + 55.0);
+    let customer = format!("Customer: {}", safe_text(&bill.customer_name));
+    let mut detail_bottom = detail_y;
+    for text in wrap_text(&customer, left_width, 12.0, true, meter) {
+        add_line(page, text, 12.0, true, left, detail_bottom);
+        detail_bottom += 15.0;
+    }
+    let phone = safe_text(&bill.customer_phone);
+    detail_bottom += 3.0;
+    if bill.header.show_customer_phone && !phone.is_empty() {
+        add_line(
+            page,
+            format!("Phone: {phone}"),
+            10.0,
+            false,
+            left,
+            detail_bottom,
+        );
+        detail_bottom += 14.0;
+    }
+    if bill.header.show_ready_by {
+        let ready = format!("Ready by: {}", safe_text(&bill.promised_at_ist));
+        add_line(
+            page,
+            ready.clone(),
+            12.0,
+            true,
+            right_x(&ready, right, 12.0, true, meter),
+            detail_y,
+        );
+    }
+
+    let heading_y = detail_bottom + 17.0;
+    add_table_heading(page, heading_y, right, meter);
+    let mut y = heading_y + 17.0;
+    let qty_edge = right - 150.0;
+    let rate_edge = right - 75.0;
+    let description_width = qty_edge - left - 18.0;
+    let last_page_before_totals = || bottom - 122.0;
+    for item in &bill.items {
+        let description = format!(
+            "{} - {}",
+            safe_text(&item.garment),
+            safe_text(&item.service)
+        );
+        let wrapped = wrap_text(&description, description_width, 10.0, true, meter);
+        let row_height = wrapped.len() as f32 * 14.0;
+        if y + row_height > last_page_before_totals() {
+            if pages.len() >= MAX_BILL_PAGES {
+                return Err(PrintError::Invalid(
+                    "the bill is too long to print on one document".into(),
+                ));
             }
-            let top = if page_is_empty { y } else { y + gap };
-            pages
-                .last_mut()
-                .expect("a page always exists")
-                .lines
-                .push(StyledLine {
-                    text,
-                    size_pt: block.size_pt,
-                    bold: block.bold,
-                    y_pt: top,
-                });
-            y = top + line_height;
+            pages.push(bill_page());
+            y = add_continuation_header(pages.last_mut().unwrap(), bill, right, meter);
+        }
+        for (index, text) in wrapped.iter().enumerate() {
+            add_line(
+                pages.last_mut().unwrap(),
+                text.clone(),
+                10.0,
+                true,
+                left,
+                y + index as f32 * 14.0,
+            );
+        }
+        let qty = item.quantity.to_string();
+        let rate = format_money(item.unit_price_minor);
+        let amount = format_money(item.line_total_minor);
+        add_line(
+            pages.last_mut().unwrap(),
+            qty.clone(),
+            10.0,
+            false,
+            right_x(&qty, qty_edge, 10.0, false, meter),
+            y,
+        );
+        add_line(
+            pages.last_mut().unwrap(),
+            rate.clone(),
+            10.0,
+            false,
+            right_x(&rate, rate_edge, 10.0, false, meter),
+            y,
+        );
+        add_line(
+            pages.last_mut().unwrap(),
+            amount.clone(),
+            10.0,
+            false,
+            right_x(&amount, right, 10.0, false, meter),
+            y,
+        );
+        y += row_height + 5.0;
+    }
+
+    let totals_count =
+        4 + usize::from(bill.discount_minor > 0) + usize::from(bill.balance_minor > 0);
+    if y + totals_count as f32 * 15.0 + 44.0 > bottom {
+        if pages.len() >= MAX_BILL_PAGES {
+            return Err(PrintError::Invalid(
+                "the bill is too long to print on one document".into(),
+            ));
+        }
+        pages.push(bill_page());
+        y = add_continuation_header(pages.last_mut().unwrap(), bill, right, meter);
+    }
+    add_line(
+        pages.last_mut().unwrap(),
+        format!("Pieces: {}", bill.physical_piece_count),
+        10.0,
+        false,
+        left,
+        y,
+    );
+    let mut totals = vec![(
+        "Subtotal".to_string(),
+        format_money(bill.subtotal_minor),
+        false,
+    )];
+    if bill.discount_minor > 0 {
+        totals.push((
+            format!("Discount ({}%)", format_percent(bill.discount_percent_bp)),
+            format!("-{}", format_money(bill.discount_minor)),
+            false,
+        ));
+    }
+    totals.push((
+        "Total".into(),
+        format_money(bill.subtotal_minor - bill.discount_minor),
+        true,
+    ));
+    totals.push(("Paid".into(), format_money(bill.paid_minor), false));
+    if bill.balance_minor > 0 {
+        totals.push(("Balance due".into(), format_money(bill.balance_minor), true));
+    }
+    let totals_top = y;
+    for (index, (label, value, bold)) in totals.iter().enumerate() {
+        let line = format!("{label}: {value}");
+        let size = if *bold { 12.0 } else { 10.0 };
+        add_line(
+            pages.last_mut().unwrap(),
+            line.clone(),
+            size,
+            *bold,
+            right_x(&line, right, size, *bold, meter),
+            totals_top + index as f32 * 15.0,
+        );
+    }
+    let footer = wrap_text(&bill_footer(&bill.header), right - left, 10.0, false, meter);
+    let footer_y = totals_top + totals.len() as f32 * 15.0 + 15.0;
+    if footer_y + footer.len() as f32 * 13.0 > bottom {
+        if pages.len() >= MAX_BILL_PAGES {
+            return Err(PrintError::Invalid(
+                "the bill is too long to print on one document".into(),
+            ));
+        }
+        pages.push(bill_page());
+        let last = pages.last_mut().unwrap();
+        let continuation = format!("Bill: {} (continued)", safe_text(&bill.order_number));
+        add_line(last, continuation, 11.0, true, left, BILL_MARGIN_PT);
+        add_line(
+            last,
+            format!("Pieces: {}", bill.physical_piece_count),
+            10.0,
+            false,
+            left,
+            BILL_MARGIN_PT + 30.0,
+        );
+        let mut y = BILL_MARGIN_PT + 30.0;
+        for (label, value, bold) in &totals {
+            let line = format!("{label}: {value}");
+            let size = if *bold { 12.0 } else { 10.0 };
+            add_line(
+                last,
+                line.clone(),
+                size,
+                *bold,
+                right_x(&line, right, size, *bold, meter),
+                y,
+            );
+            y += 15.0;
+        }
+        for (index, line) in footer.into_iter().enumerate() {
+            add_line(
+                last,
+                line,
+                10.0,
+                false,
+                left,
+                y + 12.0 + index as f32 * 13.0,
+            );
+        }
+    } else {
+        for (index, line) in footer.into_iter().enumerate() {
+            add_line(
+                pages.last_mut().unwrap(),
+                line,
+                10.0,
+                false,
+                left,
+                footer_y + index as f32 * 13.0,
+            );
         }
     }
     Ok(pages)
@@ -386,7 +532,7 @@ fn layout_tags(
     spec: PageSpec,
     meter: &dyn TextMeter,
 ) -> Result<Vec<LaidOutPage>, PrintError> {
-    if spec.width_pt < MIN_TAG_WIDTH_PT || spec.height_pt < 2.0 * TAG_MARGIN_PT + 20.0 {
+    if spec.width_pt < MIN_TAG_WIDTH_PT || spec.height_pt < TAG_MARGIN_PT + TAG_CUT_BAND_PT + 20.0 {
         return Err(PrintError::Invalid(
             "the selected tag printer label size is too small for a garment tag".into(),
         ));
@@ -399,21 +545,32 @@ fn layout_tags(
     }
     tags.pieces
         .iter()
-        .map(|piece| layout_one_tag(&tags.order_number, piece, spec, meter))
+        .map(|piece| layout_one_tag(tags, piece, spec, meter))
         .collect()
 }
 
 fn layout_one_tag(
-    order_number: &str,
+    tags: &TagDocument,
     piece: &TagPiece,
     spec: PageSpec,
     meter: &dyn TextMeter,
 ) -> Result<LaidOutPage, PrintError> {
     let content_width = spec.width_pt - 2.0 * TAG_MARGIN_PT;
-    let available_height = spec.height_pt - 2.0 * TAG_MARGIN_PT;
+    let content_bottom = spec.height_pt - TAG_CUT_BAND_PT;
     for (small, large, id_size) in TAG_SIZE_STEPS {
-        let blocks = [
-            (format!("Bill {}", safe_text(order_number)), small, true),
+        let mut blocks = Vec::new();
+        if tags.show_shop_name && !safe_text(&tags.shop_name).is_empty() {
+            blocks.push((safe_text(&tags.shop_name), small, true));
+        }
+        if !safe_text(&tags.tag_line).is_empty() {
+            blocks.push((safe_text(&tags.tag_line), small, false));
+        }
+        blocks.extend([
+            (
+                format!("Bill {}", safe_text(&tags.order_number)),
+                small,
+                true,
+            ),
             (safe_text(&piece.garment), large, true),
             (safe_text(&piece.service), large, false),
             (
@@ -422,7 +579,7 @@ fn layout_one_tag(
                 true,
             ),
             (format!("ID {}", safe_text(&piece.piece_id)), id_size, false),
-        ];
+        ]);
         let mut lines = Vec::new();
         let mut y = TAG_MARGIN_PT;
         for (text, size, bold) in blocks {
@@ -431,14 +588,16 @@ fn layout_one_tag(
                     text: wrapped,
                     size_pt: size,
                     bold,
+                    x_pt: TAG_MARGIN_PT,
                     y_pt: y,
                 });
                 y += size * POINTS_PER_LINE_HEIGHT;
             }
         }
-        if y - TAG_MARGIN_PT <= available_height {
+        if y <= content_bottom {
             return Ok(LaidOutPage {
                 margin_pt: TAG_MARGIN_PT,
+                bottom_reserved_pt: TAG_CUT_BAND_PT,
                 lines,
             });
         }
@@ -463,12 +622,12 @@ mod tests {
     }
 
     const A4: PageSpec = PageSpec {
-        width_pt: 595.0,
-        height_pt: 842.0,
+        width_pt: 842.0,
+        height_pt: 595.0,
     };
     const TAG: PageSpec = PageSpec {
         width_pt: 141.0,
-        height_pt: 141.0,
+        height_pt: 288.0,
     };
 
     fn bill(items: usize) -> BillDocument {
@@ -507,6 +666,7 @@ mod tests {
                 position: 3,
                 total: 4,
             }],
+            ..TagDocument::default()
         }
     }
 
@@ -517,13 +677,19 @@ mod tests {
     fn assert_within(page: &LaidOutPage, spec: PageSpec) {
         for line in &page.lines {
             assert!(
-                FakeMeter.width_pt(&line.text, line.size_pt, line.bold)
-                    <= spec.width_pt - 2.0 * page.margin_pt + 0.01,
+                line.x_pt + 0.01 >= page.margin_pt,
+                "line starts before left margin: {}",
+                line.text
+            );
+            assert!(
+                line.x_pt + FakeMeter.width_pt(&line.text, line.size_pt, line.bold)
+                    <= spec.width_pt - page.margin_pt + 0.01,
                 "line too wide: {}",
                 line.text
             );
             assert!(
-                line.y_pt + line.size_pt <= spec.height_pt,
+                line.y_pt >= page.margin_pt
+                    && line.y_pt + line.size_pt <= spec.height_pt - page.bottom_reserved_pt + 0.01,
                 "line below page: {}",
                 line.text
             );
@@ -554,7 +720,12 @@ mod tests {
         let garments = pages
             .iter()
             .flat_map(|p| p.lines.iter())
-            .filter(|l| l.text.starts_with("Garment "))
+            .filter(|line| {
+                line.text
+                    .strip_prefix("Garment ")
+                    .and_then(|text| text.split_whitespace().next())
+                    .is_some_and(|number| number.parse::<usize>().is_ok())
+            })
             .count();
         assert_eq!(garments, 40);
         assert!(texts(pages.last().unwrap()).contains(&"Thank you"));
@@ -596,7 +767,7 @@ mod tests {
         ));
         let short = PageSpec {
             width_pt: 595.0,
-            height_pt: 100.0,
+            height_pt: 70.0,
         };
         assert!(matches!(
             layout_bill(&bill(1), short, &FakeMeter),
@@ -664,8 +835,12 @@ mod tests {
     #[test]
     fn unfittable_tag_text_fails_cleanly_and_tiny_labels_are_rejected() {
         let hopeless = tag(&"W".repeat(400), "Wash");
+        let short_tag = PageSpec {
+            width_pt: TAG.width_pt,
+            height_pt: 110.0,
+        };
         assert!(matches!(
-            layout_tags(&hopeless, TAG, &FakeMeter),
+            layout_tags(&hopeless, short_tag, &FakeMeter),
             Err(PrintError::Invalid(message)) if message.contains("3/4")
         ));
         let tiny = PageSpec {
@@ -764,9 +939,9 @@ mod tests {
         assert!(!texts(&pages[0]).iter().any(|l| l.starts_with("Phone")));
     }
 
-    const BILL_80MM: PageSpec = PageSpec {
-        width_pt: 226.0,
-        height_pt: 600.0,
+    const BILL_SMALL_LANDSCAPE: PageSpec = PageSpec {
+        width_pt: 566.0,
+        height_pt: 425.0,
     };
 
     fn full_header() -> BillHeader {
@@ -775,6 +950,7 @@ mod tests {
             address: "12 MG Road, Pune".into(),
             phone: "020 5550 1234".into(),
             footer: "Visit again soon".into(),
+            ..BillHeader::default()
         }
     }
 
@@ -808,6 +984,7 @@ mod tests {
             address: "".into(),
             phone: "\n".into(),
             footer: " ".into(),
+            ..BillHeader::default()
         };
         let pages = layout_bill(&document, A4, &FakeMeter).unwrap();
         let lines = texts(&pages[0]);
@@ -825,7 +1002,7 @@ mod tests {
     }
 
     #[test]
-    fn long_shop_name_address_and_footer_wrap_on_an_80mm_bill() {
+    fn long_shop_name_address_and_footer_wrap_on_a_smaller_landscape_page() {
         let mut document = bill(1);
         document.header = BillHeader {
             shop_name: "Sunrise Premium Dry Cleaners And Laundry Services".into(),
@@ -833,10 +1010,11 @@ mod tests {
             phone: "020 5550 1234".into(),
             footer: "Thank you for choosing us. Collect within 30 days or items may be donated."
                 .into(),
+            ..BillHeader::default()
         };
-        let pages = layout_bill(&document, BILL_80MM, &FakeMeter).unwrap();
+        let pages = layout_bill(&document, BILL_SMALL_LANDSCAPE, &FakeMeter).unwrap();
         for page in &pages {
-            assert_within(page, BILL_80MM);
+            assert_within(page, BILL_SMALL_LANDSCAPE);
         }
         let first = texts(&pages[0]);
         let name_lines = first
@@ -885,6 +1063,7 @@ mod tests {
             address: "Line1\nLine2".into(),
             phone: "\u{7}".into(),
             footer: "Bye\r\n".into(),
+            ..BillHeader::default()
         };
         assert_eq!(bill_title(&header), "Shop [0mName");
         assert_eq!(bill_header_lines(&header), vec!["Line1 Line2"]);

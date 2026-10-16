@@ -39,7 +39,7 @@ pub struct BillItem {
 /// a reprint matches the original bill even after the settings change. Every field may be empty
 /// (and all are for bills saved before shop settings existed): an empty shop name falls back to
 /// the built-in title, and empty address, phone and footer lines are simply left out.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct BillHeader {
     #[serde(default)]
@@ -50,6 +50,41 @@ pub struct BillHeader {
     pub phone: String,
     #[serde(default)]
     pub footer: String,
+    /// Visibility choices are copied into the bill at save time. Missing fields in older saved
+    /// bills use `true`, preserving the content those bills printed before these controls existed.
+    #[serde(default = "default_true")]
+    pub show_shop_name: bool,
+    #[serde(default = "default_true")]
+    pub show_shop_address: bool,
+    #[serde(default = "default_true")]
+    pub show_shop_phone: bool,
+    #[serde(default = "default_true")]
+    pub show_customer_phone: bool,
+    #[serde(default = "default_true")]
+    pub show_received_at: bool,
+    #[serde(default = "default_true")]
+    pub show_ready_by: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for BillHeader {
+    fn default() -> Self {
+        Self {
+            shop_name: String::new(),
+            address: String::new(),
+            phone: String::new(),
+            footer: String::new(),
+            show_shop_name: true,
+            show_shop_address: true,
+            show_shop_phone: true,
+            show_customer_phone: true,
+            show_received_at: true,
+            show_ready_by: true,
+        }
+    }
 }
 
 /// Longest header or footer text a bill document may carry; the settings screen allows less.
@@ -93,6 +128,70 @@ pub struct TagPiece {
 pub struct TagDocument {
     pub order_number: String,
     pub pieces: Vec<TagPiece>,
+    /// New tag branding is snapshotted so a reprint matches the original. Old documents omit it.
+    #[serde(default)]
+    pub shop_name: String,
+    #[serde(default)]
+    pub show_shop_name: bool,
+    #[serde(default)]
+    pub tag_line: String,
+    /// Millimetres, serialized as a decimal (for example 101.6). Old documents retain the
+    /// previous queue default of 101.6 mm.
+    #[serde(
+        default = "default_tag_length_tenths_mm",
+        with = "tenths_mm",
+        rename = "tagLengthMm"
+    )]
+    pub tag_length_tenths_mm: u16,
+}
+
+impl Default for TagDocument {
+    fn default() -> Self {
+        Self {
+            order_number: String::new(),
+            pieces: Vec::new(),
+            shop_name: String::new(),
+            show_shop_name: false,
+            tag_line: String::new(),
+            tag_length_tenths_mm: default_tag_length_tenths_mm(),
+        }
+    }
+}
+
+fn default_tag_length_tenths_mm() -> u16 {
+    1016
+}
+
+/// Store tenths internally to keep the persisted model exactly comparable while exposing a
+/// human-friendly decimal millimetre value to the UI and saved JSON.
+pub(crate) mod tenths_mm {
+    use serde::{de::Error, Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S>(value: &u16, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_f64(f64::from(*value) / 10.0)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<u16, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let mm = f64::deserialize(deserializer)?;
+        if !mm.is_finite() || mm < 0.0 || mm > f64::from(u16::MAX) / 10.0 {
+            return Err(D::Error::custom(
+                "tag length must be a finite millimetre value",
+            ));
+        }
+        let tenths = (mm * 10.0).round();
+        if (mm * 10.0 - tenths).abs() > 0.001 {
+            return Err(D::Error::custom(
+                "tag length must use at most one decimal place",
+            ));
+        }
+        Ok(tenths as u16)
+    }
 }
 
 // A bill is built once per order and consumed immediately, so the size gap between the two
@@ -162,6 +261,10 @@ const EXTRA_DEADLINE_PER_TAG: Duration = Duration::from_secs(4);
 const MAX_DEADLINE: Duration = Duration::from_secs(30 * 60);
 /// More tags than this in one order is a data-entry mistake, not a laundry order.
 pub(crate) const MAX_TAGS_PER_DOCUMENT: usize = 500;
+pub(crate) const MIN_TAG_LENGTH_TENTHS_MM: u16 = 300;
+pub(crate) const MAX_TAG_LENGTH_TENTHS_MM: u16 = 2000;
+const MAX_TAG_SHOP_NAME_CHARS: usize = 60;
+const MAX_TAG_LINE_CHARS: usize = 40;
 
 fn deadline_for(document: &PrintDocument) -> Duration {
     match document {
@@ -354,6 +457,20 @@ fn validate_document(document: &PrintDocument) -> Result<(), PrintError> {
         }
         PrintDocument::Tags(tags) => {
             nonempty(&tags.order_number, "order number")?;
+            if !(MIN_TAG_LENGTH_TENTHS_MM..=MAX_TAG_LENGTH_TENTHS_MM)
+                .contains(&tags.tag_length_tenths_mm)
+            {
+                return Err(PrintError::Invalid(
+                    "tag cut length must be between 30 and 200 mm".into(),
+                ));
+            }
+            if tags.shop_name.chars().count() > MAX_TAG_SHOP_NAME_CHARS
+                || tags.tag_line.chars().count() > MAX_TAG_LINE_CHARS
+            {
+                return Err(PrintError::Invalid(
+                    "tag branding is longer than the configured limit".into(),
+                ));
+            }
             if tags.pieces.is_empty() || tags.pieces.len() > MAX_TAGS_PER_DOCUMENT {
                 return Err(PrintError::Invalid(format!(
                     "a tag document must contain between 1 and {MAX_TAGS_PER_DOCUMENT} pieces"
@@ -391,16 +508,23 @@ fn validate_document(document: &PrintDocument) -> Result<(), PrintError> {
 fn render_lines(document: &PrintDocument) -> Vec<Vec<String>> {
     match document {
         PrintDocument::Bill(bill) => {
-            let mut head: Vec<String> = vec![bill_title(&bill.header)];
+            let title = bill_title(&bill.header);
+            let mut head: Vec<String> = if title.is_empty() {
+                Vec::new()
+            } else {
+                vec![title]
+            };
             head.extend(bill_header_lines(&bill.header));
             let mut lines = vec![head];
-            lines[0].extend([
-                format!("Bill: {}", safe_text(&bill.order_number)),
-                format!("Date: {}", safe_text(&bill.created_at_ist)),
-                format!("Customer: {}", safe_text(&bill.customer_name)),
-                format!("Phone: {}", safe_text(&bill.customer_phone)),
-                "----------------------------------------".into(),
-            ]);
+            lines[0].push(format!("Bill: {}", safe_text(&bill.order_number)));
+            if bill.header.show_received_at {
+                lines[0].push(format!("Received: {}", safe_text(&bill.created_at_ist)));
+            }
+            lines[0].push(format!("Customer: {}", safe_text(&bill.customer_name)));
+            if bill.header.show_customer_phone && !bill.customer_phone.trim().is_empty() {
+                lines[0].push(format!("Phone: {}", safe_text(&bill.customer_phone)));
+            }
+            lines[0].push("----------------------------------------".into());
             for item in &bill.items {
                 lines[0].push(format!(
                     "{} / {}  x{}",
@@ -418,23 +542,38 @@ fn render_lines(document: &PrintDocument) -> Vec<Vec<String>> {
                 "----------------------------------------".into(),
                 format!("Pieces: {}", bill.physical_piece_count),
                 format!("Subtotal: {}", format_money(bill.subtotal_minor)),
-                format!("Discount: -{}", format_money(bill.discount_minor)),
+            ]);
+            if bill.discount_minor > 0 {
+                lines[0].push(format!("Discount: -{}", format_money(bill.discount_minor)));
+            }
+            lines[0].extend([
                 format!(
                     "Total: {}",
                     format_money(bill.subtotal_minor - bill.discount_minor)
                 ),
                 format!("Paid: {}", format_money(bill.paid_minor)),
-                format!("Balance: {}", format_money(bill.balance_minor)),
-                format!("Ready by: {}", safe_text(&bill.promised_at_ist)),
-                bill_footer(&bill.header),
             ]);
+            if bill.balance_minor > 0 {
+                lines[0].push(format!("Balance: {}", format_money(bill.balance_minor)));
+            }
+            if bill.header.show_ready_by {
+                lines[0].push(format!("Ready by: {}", safe_text(&bill.promised_at_ist)));
+            }
+            lines[0].push(bill_footer(&bill.header));
             lines
         }
         PrintDocument::Tags(tags) => tags
             .pieces
             .iter()
             .map(|piece| {
-                vec![
+                let mut lines = Vec::new();
+                if tags.show_shop_name && !tags.shop_name.trim().is_empty() {
+                    lines.push(safe_text(&tags.shop_name));
+                }
+                if !tags.tag_line.trim().is_empty() {
+                    lines.push(safe_text(&tags.tag_line));
+                }
+                lines.extend([
                     format!("Bill {}", safe_text(&tags.order_number)),
                     format!(
                         "{} / {}",
@@ -447,7 +586,8 @@ fn render_lines(document: &PrintDocument) -> Vec<Vec<String>> {
                         piece.position,
                         piece.total
                     ),
-                ]
+                ]);
+                lines
             })
             .collect(),
     }
@@ -456,8 +596,91 @@ fn render_lines(document: &PrintDocument) -> Vec<Vec<String>> {
 #[cfg(target_os = "linux")]
 mod linux_adapter {
     use super::*;
+    use crate::print_layout::{layout_document, PageSpec, TextMeter};
+    use cairo::{Context, FontSlant, FontWeight, PdfSurface};
     use std::io::Write;
     use std::process::{Command, Stdio};
+
+    struct CairoMeter<'a>(&'a Context);
+
+    impl TextMeter for CairoMeter<'_> {
+        fn width_pt(&self, text: &str, size_pt: f32, bold: bool) -> f32 {
+            self.0.select_font_face(
+                "Sans",
+                FontSlant::Normal,
+                if bold {
+                    FontWeight::Bold
+                } else {
+                    FontWeight::Normal
+                },
+            );
+            self.0.set_font_size(f64::from(size_pt));
+            self.0
+                .text_extents(text)
+                .map(|extent| extent.x_advance() as f32)
+                .unwrap_or(f32::MAX)
+        }
+    }
+
+    fn page_spec(document: &PrintDocument) -> PageSpec {
+        match document {
+            PrintDocument::Bill(_) => PageSpec {
+                width_pt: 841.89,
+                height_pt: 595.28,
+            },
+            PrintDocument::Tags(tags) => PageSpec {
+                width_pt: 50.0 * 72.0 / 25.4,
+                height_pt: (f32::from(tags.tag_length_tenths_mm) / 10.0) * 72.0 / 25.4,
+            },
+        }
+    }
+
+    pub(super) fn render_pdf(document: &PrintDocument) -> Result<Vec<u8>, PrintError> {
+        let spec = page_spec(document);
+        let surface = PdfSurface::for_stream(
+            f64::from(spec.width_pt),
+            f64::from(spec.height_pt),
+            Vec::<u8>::new(),
+        )
+        .map_err(|error| PrintError::Adapter(format!("could not create the print PDF: {error}")))?;
+        let context = Context::new(&surface).map_err(|error| {
+            PrintError::Adapter(format!("could not create the PDF drawing context: {error}"))
+        })?;
+        let meter = CairoMeter(&context);
+        let pages = layout_document(document, spec, &meter)?;
+        for page in &pages {
+            for line in &page.lines {
+                context.select_font_face(
+                    "Sans",
+                    FontSlant::Normal,
+                    if line.bold {
+                        FontWeight::Bold
+                    } else {
+                        FontWeight::Normal
+                    },
+                );
+                context.set_font_size(f64::from(line.size_pt));
+                context.move_to(f64::from(line.x_pt), f64::from(line.y_pt + line.size_pt));
+                context.show_text(&line.text).map_err(|error| {
+                    PrintError::Adapter(format!("could not draw bill or tag text: {error}"))
+                })?;
+            }
+            context.show_page().map_err(|error| {
+                PrintError::Adapter(format!("could not finish a bill or tag page: {error}"))
+            })?;
+        }
+        drop(context);
+        surface
+            .finish_output_stream()
+            .map_err(|error| {
+                PrintError::Adapter(format!("could not finish the print PDF: {error}"))
+            })?
+            .downcast::<Vec<u8>>()
+            .map(|bytes| *bytes)
+            .map_err(|_| {
+                PrintError::Adapter("Cairo returned the print PDF in an unknown format".into())
+            })
+    }
 
     pub(super) fn list() -> Result<Vec<PrinterInfo>, PrintError> {
         let output = Command::new("lpstat")
@@ -496,11 +719,19 @@ mod linux_adapter {
         Ok(printers)
     }
 
-    pub(super) fn lp_arguments(printer_id: &str, is_tag: bool) -> Vec<String> {
-        let media = if is_tag {
-            "media=Custom.50x50mm"
-        } else {
-            "media=A4"
+    pub(super) fn lp_arguments(printer_id: &str, document: &PrintDocument) -> Vec<String> {
+        let (media, orientation) = match document {
+            PrintDocument::Bill(_) => (
+                "media=A4".to_string(),
+                "orientation-requested=4".to_string(),
+            ),
+            PrintDocument::Tags(tags) => (
+                format!(
+                    "media=Custom.50x{:.1}mm",
+                    f64::from(tags.tag_length_tenths_mm) / 10.0
+                ),
+                "orientation-requested=3".to_string(),
+            ),
         };
         vec![
             "-d".into(),
@@ -510,7 +741,7 @@ mod linux_adapter {
             "-o".into(),
             media.into(),
             "-o".into(),
-            "fit-to-page".into(),
+            orientation,
             "--".into(),
             "-".into(),
         ]
@@ -532,10 +763,10 @@ mod linux_adapter {
         printer_id: &str,
         document: &PrintDocument,
     ) -> Result<SubmissionReceipt, PrintError> {
-        let tag = matches!(document, PrintDocument::Tags(_));
+        let body = render_pdf(document)?;
         let mut command = Command::new("lp");
         command
-            .args(lp_arguments(printer_id, tag))
+            .args(lp_arguments(printer_id, document))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -547,12 +778,7 @@ mod linux_adapter {
                 "CUPS stdin was not available after starting the print process".into(),
             )
         })?;
-        let body = render_lines(document)
-            .iter()
-            .map(|page| page.join("\n"))
-            .collect::<Vec<_>>()
-            .join("\x0c");
-        if let Err(error) = input.write_all(body.as_bytes()) {
+        if let Err(error) = input.write_all(&body) {
             drop(input);
             let _ = child.wait_with_output();
             return Err(PrintError::Uncertain(format!(
@@ -703,11 +929,14 @@ mod windows_adapter {
     use windows::Win32::Graphics::Gdi::{
         CreateDCW, CreateFontW, DeleteDC, DeleteObject, GetDeviceCaps, GetTextExtentPoint32W,
         SelectObject, TextOutW, CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, DEFAULT_PITCH,
-        DEFAULT_QUALITY, FF_DONTCARE, FW_BOLD, HDC, HFONT, HORZRES, LOGPIXELSX, LOGPIXELSY,
-        OUT_DEFAULT_PRECIS, VERTRES,
+        DEFAULT_QUALITY, DEVMODEW, DMORIENT_LANDSCAPE, DMORIENT_PORTRAIT, DMPAPER_A4, DMPAPER_USER,
+        DM_IN_BUFFER, DM_ORIENTATION, DM_OUT_BUFFER, DM_PAPERLENGTH, DM_PAPERSIZE, DM_PAPERWIDTH,
+        FF_DONTCARE, FW_BOLD, HDC, HFONT, HORZRES, LOGPIXELSX, LOGPIXELSY, OUT_DEFAULT_PRECIS,
+        VERTRES,
     };
     use windows::Win32::Graphics::Printing::{
-        EnumPrintersW, PRINTER_ENUM_CONNECTIONS, PRINTER_ENUM_LOCAL, PRINTER_INFO_2W,
+        ClosePrinter, DocumentPropertiesW, EnumPrintersW, OpenPrinterW, PRINTER_ENUM_CONNECTIONS,
+        PRINTER_ENUM_LOCAL, PRINTER_HANDLE, PRINTER_INFO_2W,
     };
     use windows::Win32::Storage::Xps::{AbortDoc, EndDoc, EndPage, StartDocW, StartPage, DOCINFOW};
 
@@ -916,12 +1145,112 @@ mod windows_adapter {
         (points * dpi as f32 / 72.0).round() as i32
     }
 
+    struct PrinterHandle(PRINTER_HANDLE);
+    impl Drop for PrinterHandle {
+        fn drop(&mut self) {
+            unsafe {
+                let _ = ClosePrinter(self.0);
+            }
+        }
+    }
+
+    /// Read the driver's current settings, change only orientation and requested media, then let
+    /// the driver validate the updated DEVMODE before a DC or spool job is created.
+    fn configured_devmode(
+        printer_name: &[u16],
+        document: &PrintDocument,
+    ) -> Result<Vec<usize>, PrintError> {
+        let mut raw_handle = PRINTER_HANDLE::default();
+        unsafe { OpenPrinterW(PCWSTR(printer_name.as_ptr()), &mut raw_handle, None) }.map_err(
+            |error| {
+                PrintError::PrinterUnavailable(format!("could not open printer settings: {error}"))
+            },
+        )?;
+        let handle = PrinterHandle(raw_handle);
+        let device_name = PCWSTR(printer_name.as_ptr());
+        let bytes = unsafe { DocumentPropertiesW(None, handle.0, device_name, None, None, 0) };
+        if bytes < size_of::<DEVMODEW>() as i32 {
+            return Err(PrintError::Adapter(
+                "the printer driver returned an invalid DEVMODE size".into(),
+            ));
+        }
+        let words = (bytes as usize).div_ceil(size_of::<usize>());
+        let mut defaults = vec![0usize; words];
+        let defaults_ptr = defaults.as_mut_ptr().cast::<DEVMODEW>();
+        let result = unsafe {
+            DocumentPropertiesW(
+                None,
+                handle.0,
+                device_name,
+                Some(defaults_ptr),
+                None,
+                DM_OUT_BUFFER.0,
+            )
+        };
+        if result <= 0 {
+            return Err(PrintError::Adapter(
+                "the printer driver could not return its current print settings".into(),
+            ));
+        }
+        unsafe {
+            let devmode = &mut *defaults_ptr;
+            let fields = &mut devmode.Anonymous1.Anonymous1;
+            devmode.dmFields |= DM_ORIENTATION;
+            match document {
+                PrintDocument::Bill(_) => {
+                    fields.dmOrientation = DMORIENT_LANDSCAPE as i16;
+                    fields.dmPaperSize = DMPAPER_A4 as i16;
+                    devmode.dmFields |= DM_PAPERSIZE;
+                }
+                PrintDocument::Tags(tags) => {
+                    let length = i16::try_from(tags.tag_length_tenths_mm).map_err(|_| {
+                        PrintError::Invalid(
+                            "tag cut length exceeds the Windows driver limit".into(),
+                        )
+                    })?;
+                    fields.dmOrientation = DMORIENT_PORTRAIT as i16;
+                    fields.dmPaperSize = DMPAPER_USER as i16;
+                    fields.dmPaperWidth = 500; // 50 mm, in DEVMODE's 1/10 mm units.
+                    fields.dmPaperLength = length;
+                    devmode.dmFields |= DM_PAPERSIZE | DM_PAPERWIDTH | DM_PAPERLENGTH;
+                }
+            }
+        }
+        let mut configured = defaults.clone();
+        let configured_ptr = configured.as_mut_ptr().cast::<DEVMODEW>();
+        let result = unsafe {
+            DocumentPropertiesW(
+                None,
+                handle.0,
+                device_name,
+                Some(configured_ptr),
+                Some(defaults_ptr),
+                DM_IN_BUFFER.0 | DM_OUT_BUFFER.0,
+            )
+        };
+        if result <= 0 {
+            return Err(PrintError::Adapter(
+                "the printer driver refused the requested paper size or orientation".into(),
+            ));
+        }
+        Ok(configured)
+    }
+
     pub(super) fn submit(
         printer_name: &str,
         document: &PrintDocument,
     ) -> Result<SubmissionReceipt, PrintError> {
         let name: Vec<u16> = printer_name.encode_utf16().chain([0]).collect();
-        let hdc = unsafe { CreateDCW(PCWSTR::null(), PCWSTR(name.as_ptr()), PCWSTR::null(), None) };
+        let devmode = configured_devmode(&name, document)?;
+        let devmode_ptr = devmode.as_ptr().cast::<DEVMODEW>();
+        let hdc = unsafe {
+            CreateDCW(
+                PCWSTR::null(),
+                PCWSTR(name.as_ptr()),
+                PCWSTR::null(),
+                Some(devmode_ptr),
+            )
+        };
         if hdc.0.is_null() {
             return Err(PrintError::PrinterUnavailable(format!(
                 "could not create a printer device context for {printer_name}"
@@ -945,6 +1274,11 @@ mod windows_adapter {
             width_pt: page_width_px as f32 * 72.0 / x_dpi as f32,
             height_pt: page_height_px as f32 * 72.0 / y_dpi as f32,
         };
+        if matches!(document, PrintDocument::Bill(_)) && spec.width_pt <= spec.height_pt {
+            return Err(PrintError::Adapter(
+                "the Canon driver did not accept A4 landscape orientation".into(),
+            ));
+        }
         // Everything that can be wrong with the content is found here, before a spool job exists,
         // so such failures are certain (nothing printed) rather than "uncertain".
         let meter = GdiMeter {
@@ -1001,14 +1335,19 @@ mod windows_adapter {
             if unsafe { StartPage(context.0) } <= 0 {
                 return stop(done, "Windows could not start a page", false);
             }
-            let x = points_to_device(page.margin_pt, x_dpi);
             for line in &page.lines {
                 let font = create_font(line.size_pt, line.bold, y_dpi);
                 let previous = unsafe { SelectObject(context.0, font.into()) };
                 let wide: Vec<u16> = line.text.encode_utf16().collect();
-                let drawn =
-                    unsafe { TextOutW(context.0, x, points_to_device(line.y_pt, y_dpi), &wide) }
-                        .as_bool();
+                let drawn = unsafe {
+                    TextOutW(
+                        context.0,
+                        points_to_device(line.x_pt, x_dpi),
+                        points_to_device(line.y_pt, y_dpi),
+                        &wide,
+                    )
+                }
+                .as_bool();
                 unsafe {
                     let _ = SelectObject(context.0, previous);
                     let _ = DeleteObject(font.into());
@@ -1054,6 +1393,7 @@ mod tests {
                 position: 1,
                 total: 1,
             }],
+            ..TagDocument::default()
         })
     }
     fn bill() -> PrintDocument {
@@ -1114,6 +1454,7 @@ mod tests {
             address: "12 MG Road".into(),
             phone: "020 5550 1234".into(),
             footer: "Visit again".into(),
+            ..BillHeader::default()
         }));
         validate_document(&document).unwrap();
         let lines = render_lines(&document).concat();
@@ -1142,6 +1483,17 @@ mod tests {
         let partial: BillHeader = serde_json::from_str(r#"{"shopName":"Only Name"}"#).unwrap();
         assert_eq!(partial.shop_name, "Only Name");
         assert!(partial.footer.is_empty());
+        assert!(partial.show_customer_phone && partial.show_received_at && partial.show_ready_by);
+        let old_tags: TagDocument =
+            serde_json::from_str(r#"{"orderNumber":"SL-1","pieces":[]}"#).unwrap();
+        assert_eq!(old_tags.tag_length_tenths_mm, 1016);
+        assert!(!old_tags.show_shop_name);
+        assert!(
+            serde_json::to_value(old_tags).unwrap()["tagLengthMm"]
+                .as_f64()
+                .unwrap()
+                == 101.6
+        );
     }
     #[test]
     fn oversized_header_text_is_rejected() {
@@ -1172,6 +1524,18 @@ mod tests {
     }
 
     #[test]
+    fn tag_length_outside_supported_range_is_refused_before_printing() {
+        let PrintDocument::Tags(mut value) = tags() else {
+            unreachable!()
+        };
+        value.tag_length_tenths_mm = 299;
+        assert!(matches!(
+            validate_document(&PrintDocument::Tags(value)),
+            Err(PrintError::Invalid(message)) if message.contains("cut length")
+        ));
+    }
+
+    #[test]
     fn selected_tag_subset_preserves_original_order_positions_and_total() {
         let document = PrintDocument::Tags(TagDocument {
             order_number: "SL-104".into(),
@@ -1191,6 +1555,7 @@ mod tests {
                     total: 4,
                 },
             ],
+            ..TagDocument::default()
         });
         validate_document(&document).unwrap();
         let rendered = render_lines(&document).concat().join(" ");
@@ -1206,6 +1571,7 @@ mod tests {
                 position: 3,
                 total: 4,
             }],
+            ..TagDocument::default()
         });
         validate_document(&single_piece).unwrap();
         assert!(render_lines(&single_piece)
@@ -1231,6 +1597,7 @@ mod tests {
                     total: 4,
                 },
             ],
+            ..TagDocument::default()
         });
         validate_document(&first_and_fourth).unwrap();
         let rendered = render_lines(&first_and_fourth).concat().join(" ");
@@ -1258,6 +1625,7 @@ mod tests {
                     total: 4,
                 },
             ],
+            ..TagDocument::default()
         });
         assert!(validate_document(&duplicate_positions).is_err());
 
@@ -1279,6 +1647,7 @@ mod tests {
                     total: 4,
                 },
             ],
+            ..TagDocument::default()
         });
         assert!(validate_document(&duplicate_ids).is_err());
 
@@ -1291,30 +1660,58 @@ mod tests {
                 position: 5,
                 total: 4,
             }],
+            ..TagDocument::default()
         });
         assert!(validate_document(&out_of_range).is_err());
     }
     #[cfg(target_os = "linux")]
     #[test]
-    fn linux_destination_and_media_are_explicit_and_queue_text_is_one_argument() {
-        let args = linux_adapter::lp_arguments("Canon; $(no-shell)", false);
-        assert_eq!(
-            args,
-            [
-                "-d",
-                "Canon; $(no-shell)",
-                "-o",
-                "sides=one-sided",
-                "-o",
-                "media=A4",
-                "-o",
-                "fit-to-page",
-                "--",
-                "-"
-            ]
-        );
-        let tags = linux_adapter::lp_arguments("TSC-TE244", true);
-        assert!(tags.contains(&"media=Custom.50x50mm".into()));
+    fn linux_cups_requests_landscape_a4_and_the_configured_continuous_roll_length() {
+        let args = linux_adapter::lp_arguments("Canon; $(no-shell)", &bill());
+        assert!(args
+            .windows(2)
+            .any(|part| part == ["-d", "Canon; $(no-shell)"]));
+        assert!(args.contains(&"media=A4".into()));
+        assert!(args.contains(&"orientation-requested=4".into()));
+        assert!(!args.contains(&"fit-to-page".into()));
+
+        let mut tag_document = tags();
+        let PrintDocument::Tags(tags) = &mut tag_document else {
+            unreachable!()
+        };
+        tags.tag_length_tenths_mm = 1250;
+        let tags_args = linux_adapter::lp_arguments("TSC-TE244", &tag_document);
+        assert!(tags_args.contains(&"media=Custom.50x125.0mm".into()));
+        assert!(tags_args.contains(&"orientation-requested=3".into()));
+        assert!(!tags_args.contains(&"fit-to-page".into()));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_renderer_builds_a_structured_multi_page_pdf() {
+        let mut document = bill();
+        let PrintDocument::Bill(bill) = &mut document else {
+            unreachable!()
+        };
+        bill.items = (0..40)
+            .map(|index| BillItem {
+                garment: format!("Garment {index}"),
+                service: "Wash + Iron".into(),
+                quantity: 2,
+                unit_price_minor: 2500,
+                line_total_minor: 5000,
+            })
+            .collect();
+        bill.subtotal_minor = 200_000;
+        bill.physical_piece_count = 80;
+        bill.paid_minor = 200_000;
+        bill.balance_minor = 0;
+        let pdf = linux_adapter::render_pdf(&document).unwrap();
+        assert!(pdf.starts_with(b"%PDF-"));
+        assert!(pdf.len() > 1_000);
+
+        let tags_pdf = linux_adapter::render_pdf(&tags()).unwrap();
+        assert!(tags_pdf.starts_with(b"%PDF-"));
     }
 
     #[cfg(target_os = "linux")]
@@ -1474,6 +1871,7 @@ mod tests {
                         total: count,
                     })
                     .collect(),
+                ..TagDocument::default()
             })
         };
         assert_eq!(

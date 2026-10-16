@@ -4,12 +4,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { ShopSettingsPage } from './ShopSettingsPage';
 import type { CounterAccount } from '@/lib/localFirst/counter';
+import type { ShopSettings } from '@/lib/localFirst/shopSettings';
 
 const api = vi.hoisted(() => ({ getShopSettings: vi.fn(), saveShopSettings: vi.fn() }));
 vi.mock('@/lib/localFirst/shopSettings', async importOriginal => ({ ...(await importOriginal<typeof import('@/lib/localFirst/shopSettings')>()), ...api }));
 
 const admin: CounterAccount = { id: 'a1', fullName: 'Owner', role: 'admin', active: true };
-const stored = { shopName: 'Sunrise Cleaners', shopAddress: '12 MG Road', shopPhone: '020 5550 1234', receiptFooter: 'Visit again', orderPrefix: 'LA' };
+const stored: ShopSettings = {
+  shopName: 'Sunrise Cleaners', shopAddress: '12 MG Road', shopPhone: '020 5550 1234', receiptFooter: 'Visit again', orderPrefix: 'LA',
+  printShopNameOnBill: true, printShopAddress: true, printShopPhone: true, printCustomerPhone: true, printReceivedAt: true, printReadyBy: true,
+  printShopNameOnTags: false, tagLine: '', tagLengthMm: 101.6,
+};
 
 const setup = () => {
   const onError = vi.fn(); const onNotice = vi.fn(); const onOpenOrder = vi.fn();
@@ -35,8 +40,11 @@ describe('ShopSettingsPage', () => {
     expect(field('Phone').value).toBe('020 5550 1234');
     expect(field('Receipt footer').value).toBe('Visit again');
     expect(field('Bill number prefix').value).toBe('LA');
+    expect((screen.getByRole('checkbox', { name: 'Print laundry name' }) as HTMLInputElement).checked).toBe(true);
+    expect(field('Tag cut length').value).toBe('101.6');
+    expect(screen.getByText(/TSC tag preview/).textContent).toContain('101.6 mm');
     for (const retired of [/GST/i, /receipt width/i, /completion days/i]) expect(screen.queryByText(retired)).toBeNull();
-    expect(screen.getByText(/Changing the prefix affects new orders only/)).toBeTruthy();
+    expect(screen.getByText(/Changing the bill prefix affects new orders only/)).toBeTruthy();
   });
 
   it('renders an empty page header until the settings load, and reports a load failure', async () => {
@@ -75,6 +83,10 @@ describe('ShopSettingsPage', () => {
       expect(saveButton.disabled).toBe(false);
       fireEvent.click(discard);
     }
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Print ready-by time' }));
+    expect(saveButton.disabled).toBe(false);
+    fireEvent.click(discard);
+    expect((screen.getByRole('checkbox', { name: 'Print ready-by time' }) as HTMLInputElement).checked).toBe(true);
   });
 
   it('saves trimmed values with an upper-cased prefix and confirms', async () => {
@@ -87,8 +99,8 @@ describe('ShopSettingsPage', () => {
     type('Bill number prefix', 'mw1');
     expect(field('Bill number prefix').value).toBe('MW1');
     fireEvent.click(screen.getByRole('button', { name: 'Save settings' }));
-    await waitFor(() => expect(api.saveShopSettings).toHaveBeenCalledWith({ shopName: 'Moonrise Wash', shopAddress: '5 Hill Rd', shopPhone: '99', receiptFooter: 'See you', orderPrefix: 'MW1' }));
-    await waitFor(() => expect(onNotice).toHaveBeenCalledWith('Shop settings saved. New bills use them.'));
+    await waitFor(() => expect(api.saveShopSettings).toHaveBeenCalledWith({ ...stored, shopName: 'Moonrise Wash', shopAddress: '5 Hill Rd', shopPhone: '99', receiptFooter: 'See you', orderPrefix: 'MW1' }));
+    await waitFor(() => expect(onNotice).toHaveBeenCalledWith('Shop and print settings saved. New orders use them.'));
     expect(onError).not.toHaveBeenCalled();
     expect((screen.getByRole('button', { name: 'Save settings' }) as HTMLButtonElement).disabled).toBe(true);
     expect(field('Shop name').value).toBe('Moonrise Wash');
@@ -100,6 +112,19 @@ describe('ShopSettingsPage', () => {
     type('Shop name', '  ');
     fireEvent.click(screen.getByRole('button', { name: 'Save settings' }));
     expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'Enter the shop name.' }));
+    expect(api.saveShopSettings).not.toHaveBeenCalled();
+  });
+
+  it('validates the tag cut length and previews configurable tag branding', async () => {
+    const { onError } = setup();
+    await screen.findByLabelText(/^Shop name/);
+    type('Optional tag line', 'Keep together');
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Print laundry name on tags' }));
+    type('Tag cut length', '201');
+    expect(screen.getByLabelText('Bill header preview').textContent).toContain('Sunrise Cleaners');
+    expect(screen.getByLabelText('Bill header preview').textContent).toContain('Keep together');
+    fireEvent.click(screen.getByRole('button', { name: 'Save settings' }));
+    expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'Tag cut length must be between 30 and 200 mm.' }));
     expect(api.saveShopSettings).not.toHaveBeenCalled();
   });
 

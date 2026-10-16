@@ -9,16 +9,28 @@ use serde::{Deserialize, Serialize};
 use sqlx::Row;
 
 use crate::counter::{audit_details, db_err, require_actor, require_admin_in_tx, CounterSession};
-use crate::printing::{BillHeader, MAX_HEADER_FIELD_CHARS};
+use crate::printing::{
+    tenths_mm, BillHeader, MAX_HEADER_FIELD_CHARS, MAX_TAG_LENGTH_TENTHS_MM,
+    MIN_TAG_LENGTH_TENTHS_MM,
+};
 use crate::storage::DatabaseState;
 
 /// The only `app_settings` keys this module reads for the screen or writes.
-pub const EDITABLE_KEYS: [&str; 5] = [
+pub const EDITABLE_KEYS: [&str; 14] = [
     "shop_name",
     "shop_address",
     "shop_phone",
     "receipt_footer",
     "order_prefix",
+    "print_shop_name_on_bill",
+    "print_shop_address",
+    "print_shop_phone",
+    "print_customer_phone",
+    "print_received_at",
+    "print_ready_by",
+    "print_shop_name_on_tags",
+    "tag_line",
+    "tag_length_mm",
 ];
 
 const DEFAULT_SHOP_NAME: &str = "Smart Laundry";
@@ -28,6 +40,8 @@ const MAX_ADDRESS_CHARS: usize = 120;
 const MAX_PHONE_CHARS: usize = 20;
 const MAX_FOOTER_CHARS: usize = 120;
 const MAX_PREFIX_CHARS: usize = 6;
+const MAX_TAG_LINE_CHARS: usize = 40;
+const DEFAULT_TAG_LENGTH_TENTHS_MM: u16 = 1016;
 
 /// What the settings screen shows and saves. `deny_unknown_fields` is the whitelist: a request
 /// naming any other setting (for example `deviceId`) fails to parse and writes nothing.
@@ -39,6 +53,28 @@ pub struct ShopSettings {
     pub shop_phone: String,
     pub receipt_footer: String,
     pub order_prefix: String,
+    #[serde(default = "default_true")]
+    pub print_shop_name_on_bill: bool,
+    #[serde(default = "default_true")]
+    pub print_shop_address: bool,
+    #[serde(default = "default_true")]
+    pub print_shop_phone: bool,
+    #[serde(default = "default_true")]
+    pub print_customer_phone: bool,
+    #[serde(default = "default_true")]
+    pub print_received_at: bool,
+    #[serde(default = "default_true")]
+    pub print_ready_by: bool,
+    #[serde(default)]
+    pub print_shop_name_on_tags: bool,
+    #[serde(default)]
+    pub tag_line: String,
+    #[serde(
+        default = "default_tag_length_tenths_mm",
+        with = "tenths_mm",
+        rename = "tagLengthMm"
+    )]
+    pub tag_length_tenths_mm: u16,
 }
 
 impl ShopSettings {
@@ -57,26 +93,93 @@ impl ShopSettings {
                 text
             }
         };
+        let flag = |key: &str, default: bool| {
+            let stored = value(key);
+            if stored.is_empty() {
+                default
+            } else {
+                stored == "true" || stored == "1"
+            }
+        };
+        let tag_length_tenths_mm = value("tag_length_mm")
+            .parse::<f64>()
+            .ok()
+            .filter(|mm| mm.is_finite() && (30.0..=200.0).contains(mm))
+            .map(|mm| (mm * 10.0).round() as u16)
+            .unwrap_or(DEFAULT_TAG_LENGTH_TENTHS_MM);
         Self {
             shop_name: or_default(value("shop_name"), DEFAULT_SHOP_NAME),
             shop_address: value("shop_address"),
             shop_phone: value("shop_phone"),
             receipt_footer: value("receipt_footer"),
             order_prefix: or_default(value("order_prefix"), DEFAULT_ORDER_PREFIX),
+            print_shop_name_on_bill: flag("print_shop_name_on_bill", true),
+            print_shop_address: flag("print_shop_address", true),
+            print_shop_phone: flag("print_shop_phone", true),
+            print_customer_phone: flag("print_customer_phone", true),
+            print_received_at: flag("print_received_at", true),
+            print_ready_by: flag("print_ready_by", true),
+            print_shop_name_on_tags: flag("print_shop_name_on_tags", false),
+            tag_line: value("tag_line"),
+            tag_length_tenths_mm,
         }
     }
 
     /// Values in the same order as [`EDITABLE_KEYS`].
-    fn entries(&self) -> [(&'static str, &str); 5] {
-        let values = [
-            &self.shop_name,
-            &self.shop_address,
-            &self.shop_phone,
-            &self.receipt_footer,
-            &self.order_prefix,
-        ];
-        std::array::from_fn(|i| (EDITABLE_KEYS[i], values[i].as_str()))
+    fn entries(&self) -> Vec<(&'static str, String)> {
+        vec![
+            ("shop_name", self.shop_name.clone()),
+            ("shop_address", self.shop_address.clone()),
+            ("shop_phone", self.shop_phone.clone()),
+            ("receipt_footer", self.receipt_footer.clone()),
+            ("order_prefix", self.order_prefix.clone()),
+            (
+                "print_shop_name_on_bill",
+                self.print_shop_name_on_bill.to_string(),
+            ),
+            ("print_shop_address", self.print_shop_address.to_string()),
+            ("print_shop_phone", self.print_shop_phone.to_string()),
+            (
+                "print_customer_phone",
+                self.print_customer_phone.to_string(),
+            ),
+            ("print_received_at", self.print_received_at.to_string()),
+            ("print_ready_by", self.print_ready_by.to_string()),
+            (
+                "print_shop_name_on_tags",
+                self.print_shop_name_on_tags.to_string(),
+            ),
+            ("tag_line", self.tag_line.clone()),
+            (
+                "tag_length_mm",
+                format!("{:.1}", f64::from(self.tag_length_tenths_mm) / 10.0),
+            ),
+        ]
     }
+
+    pub(crate) fn bill_header(&self) -> BillHeader {
+        let clamp = |text: &str| text.chars().take(MAX_HEADER_FIELD_CHARS).collect();
+        BillHeader {
+            shop_name: clamp(&self.shop_name),
+            address: clamp(&self.shop_address),
+            phone: clamp(&self.shop_phone),
+            footer: clamp(&self.receipt_footer),
+            show_shop_name: self.print_shop_name_on_bill,
+            show_shop_address: self.print_shop_address,
+            show_shop_phone: self.print_shop_phone,
+            show_customer_phone: self.print_customer_phone,
+            show_received_at: self.print_received_at,
+            show_ready_by: self.print_ready_by,
+        }
+    }
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_tag_length_tenths_mm() -> u16 {
+    DEFAULT_TAG_LENGTH_TENTHS_MM
 }
 
 /// Trim, refuse control characters (a newline would break a printed line) and cap the length.
@@ -115,6 +218,10 @@ fn clean_prefix(raw: &str) -> Result<String, String> {
 }
 
 fn validate(input: &ShopSettings) -> Result<ShopSettings, String> {
+    if !(MIN_TAG_LENGTH_TENTHS_MM..=MAX_TAG_LENGTH_TENTHS_MM).contains(&input.tag_length_tenths_mm)
+    {
+        return Err("Tag cut length must be between 30 and 200 mm.".into());
+    }
     Ok(ShopSettings {
         shop_name: clean_text("Shop name", &input.shop_name, MAX_NAME_CHARS, true)?,
         shop_address: clean_text("Address", &input.shop_address, MAX_ADDRESS_CHARS, false)?,
@@ -126,10 +233,20 @@ fn validate(input: &ShopSettings) -> Result<ShopSettings, String> {
             false,
         )?,
         order_prefix: clean_prefix(&input.order_prefix)?,
+        print_shop_name_on_bill: input.print_shop_name_on_bill,
+        print_shop_address: input.print_shop_address,
+        print_shop_phone: input.print_shop_phone,
+        print_customer_phone: input.print_customer_phone,
+        print_received_at: input.print_received_at,
+        print_ready_by: input.print_ready_by,
+        print_shop_name_on_tags: input.print_shop_name_on_tags,
+        tag_line: clean_text("Tag line", &input.tag_line, MAX_TAG_LINE_CHARS, false)?,
+        tag_length_tenths_mm: input.tag_length_tenths_mm,
     })
 }
 
-const SELECT_EDITABLE: &str = "SELECT key,value FROM app_settings WHERE key IN (?,?,?,?,?)";
+const SELECT_EDITABLE: &str =
+    "SELECT key,value FROM app_settings WHERE key IN (?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
 
 fn pairs_from(rows: &[sqlx::sqlite::SqliteRow]) -> Result<Vec<(String, String)>, String> {
     rows.iter()
@@ -186,7 +303,7 @@ pub async fn save_shop_settings(
         }
         sqlx::query("INSERT INTO app_settings(key,value,updated_at) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at")
             .bind(key)
-            .bind(new_value)
+            .bind(&new_value)
             .bind(&now)
             .execute(&mut *tx)
             .await
@@ -252,20 +369,14 @@ pub(crate) async fn order_prefix(
 pub(crate) async fn bill_header(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
 ) -> Result<BillHeader, String> {
-    let pairs = read_pairs(tx).await?;
-    let value = |key: &str| {
-        pairs
-            .iter()
-            .find(|(k, _)| k == key)
-            .map(|(_, v)| v.trim().chars().take(MAX_HEADER_FIELD_CHARS).collect())
-            .unwrap_or_default()
-    };
-    Ok(BillHeader {
-        shop_name: value("shop_name"),
-        address: value("shop_address"),
-        phone: value("shop_phone"),
-        footer: value("receipt_footer"),
-    })
+    Ok(load_for_order(tx).await?.bill_header())
+}
+
+/// All print choices are read from the same order transaction and copied into the saved jobs.
+pub(crate) async fn load_for_order(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+) -> Result<ShopSettings, String> {
+    Ok(ShopSettings::from_pairs(&read_pairs(tx).await?))
 }
 
 #[cfg(test)]
@@ -334,6 +445,15 @@ mod tests {
             shop_phone: "020 5550 1234".into(),
             receipt_footer: "Visit again soon".into(),
             order_prefix: "sr".into(),
+            print_shop_name_on_bill: true,
+            print_shop_address: true,
+            print_shop_phone: true,
+            print_customer_phone: true,
+            print_received_at: true,
+            print_ready_by: true,
+            print_shop_name_on_tags: false,
+            tag_line: String::new(),
+            tag_length_tenths_mm: DEFAULT_TAG_LENGTH_TENTHS_MM,
         }
     }
 
@@ -556,6 +676,7 @@ mod tests {
                 shop_phone: "+91 98765 43210 x12 ".trim().into(),
                 receipt_footer: "f".repeat(120),
                 order_prefix: "ab12cd".into(),
+                ..input()
             };
             let saved = save_shop_settings(&db, &admin, &edge).await.unwrap();
             assert_eq!(saved.order_prefix, "AB12CD");
@@ -587,7 +708,7 @@ mod tests {
                 "{key} must not parse"
             );
         }
-        assert_eq!(EDITABLE_KEYS.len(), 5);
+        assert_eq!(EDITABLE_KEYS.len(), 14);
     }
 
     #[test]
@@ -601,7 +722,7 @@ mod tests {
                 let pool = db.writer_pool().unwrap().clone();
                 async move {
                     sqlx::query_as::<_, (String, String, String)>(
-                        "SELECT key,value,updated_at FROM app_settings WHERE key NOT IN ('shop_name','shop_address','shop_phone','receipt_footer','order_prefix') ORDER BY key",
+                        "SELECT key,value,updated_at FROM app_settings WHERE key NOT IN ('shop_name','shop_address','shop_phone','receipt_footer','order_prefix','print_shop_name_on_bill','print_shop_address','print_shop_phone','print_customer_phone','print_received_at','print_ready_by','print_shop_name_on_tags','tag_line','tag_length_mm') ORDER BY key",
                     )
                     .fetch_all(&pool)
                     .await
@@ -626,10 +747,19 @@ mod tests {
                 keys,
                 [
                     "orderPrefix",
+                    "printCustomerPhone",
+                    "printReadyBy",
+                    "printReceivedAt",
+                    "printShopAddress",
+                    "printShopNameOnBill",
+                    "printShopNameOnTags",
+                    "printShopPhone",
                     "receiptFooter",
                     "shopAddress",
                     "shopName",
-                    "shopPhone"
+                    "shopPhone",
+                    "tagLengthMm",
+                    "tagLine"
                 ]
             );
             cleanup(db, path);
@@ -740,6 +870,20 @@ mod tests {
         }
     }
 
+    async fn tag_document_of(db: &DatabaseState, order_id: &str) -> crate::printing::TagDocument {
+        let payload: String = sqlx::query_scalar(
+            "SELECT payload_json FROM print_jobs WHERE order_id=? AND kind='tags' AND source_job_id IS NULL",
+        )
+        .bind(order_id)
+        .fetch_one(db.writer_pool().unwrap())
+        .await
+        .unwrap();
+        match serde_json::from_str::<PrintDocument>(&payload).unwrap() {
+            PrintDocument::Tags(tags) => tags,
+            PrintDocument::Bill(_) => unreachable!("tag job"),
+        }
+    }
+
     #[test]
     fn changing_the_prefix_mid_year_never_repeats_or_skips_a_bill_number() {
         tauri::async_runtime::block_on(async {
@@ -818,6 +962,7 @@ mod tests {
                 address: "12 MG Road, Pune".into(),
                 phone: "020 5550 1234".into(),
                 footer: "Visit again soon".into(),
+                ..BillHeader::default()
             };
             assert_eq!(bill_header_of(&db, &first.order_id).await, expected);
 
@@ -849,6 +994,67 @@ mod tests {
             let later = bill_header_of(&db, &second.order_id).await;
             assert_eq!(later.shop_name, "Moonrise Wash");
             assert_eq!(later.footer, "");
+            cleanup(db, path);
+        });
+    }
+
+    #[test]
+    fn print_visibility_branding_and_tag_length_are_snapshotted_and_reprinted() {
+        tauri::async_runtime::block_on(async {
+            let (db, path) = open().await;
+            let admin = session("admin-1", "admin");
+            let staff = session("staff-1", "staff");
+            let mut first_settings = input();
+            first_settings.print_shop_name_on_bill = false;
+            first_settings.print_customer_phone = false;
+            first_settings.print_received_at = false;
+            first_settings.print_shop_name_on_tags = true;
+            first_settings.tag_line = "Sort carefully".into();
+            first_settings.tag_length_tenths_mm = 1234;
+            save_shop_settings(&db, &admin, &first_settings)
+                .await
+                .unwrap();
+            let first = save(&db, &staff, "tag-snapshot-1").await;
+            let original_bill = bill_header_of(&db, &first.order_id).await;
+            assert!(!original_bill.show_shop_name);
+            assert!(!original_bill.show_customer_phone);
+            assert!(!original_bill.show_received_at);
+            let original_tags = tag_document_of(&db, &first.order_id).await;
+            assert!(original_tags.show_shop_name);
+            assert_eq!(original_tags.shop_name, "Sunrise Cleaners");
+            assert_eq!(original_tags.tag_line, "Sort carefully");
+            assert_eq!(original_tags.tag_length_tenths_mm, 1234);
+
+            let mut changed = first_settings;
+            changed.print_shop_name_on_tags = false;
+            changed.tag_line = "Updated line".into();
+            changed.tag_length_tenths_mm = 800;
+            save_shop_settings(&db, &admin, &changed).await.unwrap();
+            assert_eq!(tag_document_of(&db, &first.order_id).await, original_tags);
+
+            let reprint = reprint_output(
+                &db,
+                &staff,
+                &first.order_id,
+                "tags",
+                vec![first.pieces[0].short_id.clone()],
+                "tag-snapshot-reprint",
+            )
+            .await
+            .unwrap();
+            let payload: String =
+                sqlx::query_scalar("SELECT payload_json FROM print_jobs WHERE id=?")
+                    .bind(&reprint.id)
+                    .fetch_one(db.writer_pool().unwrap())
+                    .await
+                    .unwrap();
+            let PrintDocument::Tags(reprinted) = serde_json::from_str(&payload).unwrap() else {
+                unreachable!("tag reprint")
+            };
+            assert!(reprinted.show_shop_name);
+            assert_eq!(reprinted.tag_line, "Sort carefully");
+            assert_eq!(reprinted.tag_length_tenths_mm, 1234);
+            assert_eq!(reprinted.pieces.len(), 1);
             cleanup(db, path);
         });
     }

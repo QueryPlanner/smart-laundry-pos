@@ -9,7 +9,11 @@ vi.mock('./runtime', () => ({ isTauriRuntime: mocks.isTauriRuntime }));
 
 import * as shop from './shopSettings';
 
-const valid: shop.ShopSettings = { shopName: 'Sunrise', shopAddress: '12 MG Road', shopPhone: '020 5550 1234', receiptFooter: 'Thanks', orderPrefix: 'sr' };
+const valid: shop.ShopSettings = {
+  shopName: 'Sunrise', shopAddress: '12 MG Road', shopPhone: '020 5550 1234', receiptFooter: 'Thanks', orderPrefix: 'sr',
+  printShopNameOnBill: true, printShopAddress: true, printShopPhone: true, printCustomerPhone: true,
+  printReceivedAt: true, printReadyBy: true, printShopNameOnTags: false, tagLine: '', tagLengthMm: 101.6,
+};
 
 /** [wrapper, native command, exact arguments sent]. Every exported function wrapper appears once. */
 const table: Array<[string, () => Promise<unknown>, string, Record<string, unknown> | undefined]> = [
@@ -49,6 +53,7 @@ describe('shop settings form checks', () => {
     ['long address', { shopAddress: 'a'.repeat(121) }, 'Address must be 120 characters or fewer.'],
     ['long phone', { shopPhone: '1'.repeat(21) }, 'Phone must be 20 characters or fewer.'],
     ['long footer', { receiptFooter: 'f'.repeat(121) }, 'Receipt footer must be 120 characters or fewer.'],
+    ['long tag line', { tagLine: 't'.repeat(41) }, 'Tag line must be 40 characters or fewer.'],
     ['name line break', { shopName: 'a\nb' }, 'Shop name cannot contain line breaks.'],
     ['footer control character', { receiptFooter: 'a\u0007b' }, 'Receipt footer cannot contain line breaks.'],
     ['blank prefix', { orderPrefix: ' ' }, 'The bill number prefix must be 1 to 6 letters or digits.'],

@@ -1520,7 +1520,8 @@ pub async fn save_order(
             .map_err(db_err)?;
     }
     // The shop identity is copied into the document now, so a reprint matches this bill.
-    let header = crate::shop_settings::bill_header(&mut tx).await?;
+    let print_settings = crate::shop_settings::load_for_order(&mut tx).await?;
+    let header = print_settings.bill_header();
     let bill = crate::printing::BillDocument {
         header,
         order_number: order_no.clone(),
@@ -1562,6 +1563,10 @@ pub async fn save_order(
                 total: x.total,
             })
             .collect(),
+        shop_name: print_settings.shop_name.clone(),
+        show_shop_name: print_settings.print_shop_name_on_tags,
+        tag_line: print_settings.tag_line.clone(),
+        tag_length_tenths_mm: print_settings.tag_length_tenths_mm,
     };
     for (kind, doc) in [
         ("bill", crate::printing::PrintDocument::Bill(bill)),
