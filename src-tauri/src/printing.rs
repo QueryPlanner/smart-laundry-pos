@@ -16,6 +16,7 @@ use std::fmt;
 use std::mem::{align_of, size_of};
 use std::time::Duration;
 
+#[cfg(any(target_os = "windows", test))]
 use crate::print_layout::{LaidOutPage, PageSpec, TextMeter};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -244,6 +245,7 @@ pub enum PrintError {
 /// Windows reports the physical medium and the drawable rectangle separately. Layout uses
 /// physical-media coordinates so custom tag lengths are validated against the requested stock;
 /// GDI coordinates are then translated to the printable-area origin reported by the driver.
+#[cfg(any(target_os = "windows", test))]
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct PrinterPageGeometry {
     media: PageSpec,
@@ -255,6 +257,7 @@ struct PrinterPageGeometry {
     y_dpi: i32,
 }
 
+#[cfg(any(target_os = "windows", test))]
 impl PrinterPageGeometry {
     #[allow(clippy::too_many_arguments)]
     fn from_device_caps(
@@ -1096,7 +1099,7 @@ fn native_utf16z(buffer: &[u8], offset: usize) -> Result<String, PrintError> {
 #[cfg(target_os = "windows")]
 mod windows_adapter {
     use super::*;
-    use crate::print_layout::{layout_document, tag_strip_length_tenths_mm, PageSpec, TextMeter};
+    use crate::print_layout::{layout_document, tag_strip_length_tenths_mm, TextMeter};
     use std::mem::size_of;
     use std::slice;
     use windows::core::{PCWSTR, PWSTR};

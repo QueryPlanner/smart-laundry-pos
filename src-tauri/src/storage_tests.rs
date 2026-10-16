@@ -118,6 +118,12 @@ async fn create_schema_file(path: &Path, version: i64) {
             .await
             .expect("v2 migration should add counter data");
     }
+    if version >= 3 {
+        sqlx::raw_sql(MIGRATION_V3_SQL)
+            .execute(&mut *connection)
+            .await
+            .expect("v3 migration should add the default rate card");
+    }
     sqlx::query(&format!("PRAGMA user_version = {version}"))
         .execute(&mut *connection)
         .await
@@ -139,6 +145,12 @@ async fn create_schema_file_from_sql(path: &Path, schema: &str, version: i64) {
             .execute(&pool)
             .await
             .expect("v2 fixture migration should execute");
+    }
+    if version >= 3 {
+        sqlx::raw_sql(MIGRATION_V3_SQL)
+            .execute(&pool)
+            .await
+            .expect("v3 fixture migration should execute");
     }
     sqlx::query(&format!("PRAGMA user_version = {version}"))
         .execute(&pool)
@@ -339,7 +351,12 @@ fn version_zero_complete_legacy_database_migrates_without_losing_rows() {
 }
 
 fn pre_upgrade_copies(directory: &Path) -> Vec<PathBuf> {
+    pre_upgrade_copies_for(directory, 1)
+}
+
+fn pre_upgrade_copies_for(directory: &Path, version: u32) -> Vec<PathBuf> {
     let backups = directory.join("backups");
+    let prefix = format!("pre-upgrade-v{version}-");
     let Ok(entries) = fs::read_dir(backups) else {
         return Vec::new();
     };
@@ -348,9 +365,48 @@ fn pre_upgrade_copies(directory: &Path) -> Vec<PathBuf> {
         .map(|entry| entry.path())
         .filter(|path| {
             path.file_name()
-                .is_some_and(|name| name.to_string_lossy().starts_with("pre-upgrade-v1-"))
+                .is_some_and(|name| name.to_string_lossy().starts_with(&prefix))
         })
         .collect()
+}
+
+/// Price, configured flag and version of one rate cell. `price_minor` is nullable in the schema.
+async fn rate_cell(
+    pool: &SqlitePool,
+    garment_id: &str,
+    service_id: &str,
+) -> (Option<i64>, i64, i64) {
+    sqlx::query_as::<_, (Option<i64>, i64, i64)>(
+        "SELECT price_minor, configured, version FROM garment_service_rates WHERE garment_id = ? AND service_id = ?",
+    )
+    .bind(garment_id)
+    .bind(service_id)
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+async fn rate_card_snapshot(pool: &SqlitePool) -> Vec<(String, String, Option<i64>, i64, i64)> {
+    sqlx::query_as::<_, (String, String, Option<i64>, i64, i64)>(
+        "SELECT garment_id, service_id, price_minor, configured, version FROM garment_service_rates ORDER BY garment_id, service_id",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap()
+}
+
+async fn garment_count(pool: &SqlitePool) -> i64 {
+    sqlx::query_scalar("SELECT COUNT(*) FROM garments")
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+async fn user_version(pool: &SqlitePool) -> i64 {
+    sqlx::query_scalar("PRAGMA user_version")
+        .fetch_one(pool)
+        .await
+        .unwrap()
 }
 
 async fn v1_database_with_marker(path: &Path) {
@@ -450,6 +506,230 @@ fn an_upgrade_is_refused_and_the_database_untouched_if_the_safety_copy_cannot_be
                 .await
                 .unwrap();
         assert_eq!(tables, 0, "no upgrade happened without a safety copy");
+    });
+}
+
+async fn v2_database_with_marker(path: &Path) {
+    create_schema_file(path, 2).await;
+    let pool = connect_writer_pool(path, false, 1).await.unwrap();
+    sqlx::query("INSERT INTO app_settings(key,value,updated_at) VALUES('v2-shop-marker','kept',CURRENT_TIMESTAMP)")
+        .execute(&pool)
+        .await
+        .unwrap();
+    pool.close().await;
+}
+
+#[test]
+fn upgrading_a_v2_database_keeps_a_verified_v2_copy_and_adds_the_default_rate_card() {
+    tauri::async_runtime::block_on(async {
+        let temporary = TempDatabase::new();
+        v2_database_with_marker(&temporary.path).await;
+
+        let upgraded = open(&temporary.path).await;
+        assert_eq!(upgraded.info().error, None);
+        let pool = &upgraded.pools().unwrap().writer;
+        assert_eq!(user_version(pool).await, SCHEMA_VERSION);
+
+        let copies = pre_upgrade_copies_for(&temporary.directory, 2);
+        assert_eq!(
+            copies.len(),
+            1,
+            "exactly one v2 safety copy before the upgrade"
+        );
+        let copy = connect_reader_pool(&copies[0], 1).await.unwrap();
+        assert_eq!(
+            user_version(&copy).await,
+            2,
+            "the copy is the untouched v2 database"
+        );
+        assert_eq!(garment_count(&copy).await, 19);
+        assert_eq!(rate_cell(&copy, "g-shirt", "svc-wash").await.0, Some(1500));
+        let copy_marker: String =
+            sqlx::query_scalar("SELECT value FROM app_settings WHERE key='v2-shop-marker'")
+                .fetch_one(&copy)
+                .await
+                .unwrap();
+        assert_eq!(copy_marker, "kept");
+        copy.close().await;
+
+        assert_eq!(garment_count(pool).await, 21);
+        assert_eq!(
+            rate_cell(pool, "g-shirt", "svc-wash").await,
+            (Some(5000), 1, 2)
+        );
+        assert_eq!(
+            rate_cell(pool, "g-coat", "svc-iron").await,
+            (Some(2500), 1, 2)
+        );
+        assert_eq!(
+            marker_value(&upgraded, "v2-shop-marker").await.as_deref(),
+            Some("kept")
+        );
+        drop(upgraded);
+
+        // Reopening an already-upgraded database makes no further copy.
+        let reopened = open(&temporary.path).await;
+        assert_eq!(reopened.info().error, None);
+        assert_eq!(pre_upgrade_copies_for(&temporary.directory, 2).len(), 1);
+    });
+}
+
+#[test]
+fn a_brand_new_database_has_the_default_rate_card_and_no_upgrade_copy() {
+    tauri::async_runtime::block_on(async {
+        let temporary = TempDatabase::new();
+        let fresh = open(&temporary.path).await;
+        assert_eq!(fresh.info().error, None);
+        let pool = &fresh.pools().unwrap().writer;
+
+        assert_eq!(garment_count(pool).await, 21);
+        assert_eq!(
+            rate_cell(pool, "g-shirt", "svc-wash-iron").await.0,
+            Some(6000)
+        );
+        assert_eq!(
+            rate_cell(pool, "g-saree", "svc-dry-clean").await.0,
+            Some(15000)
+        );
+        assert_eq!(rate_cell(pool, "g-sweater", "svc-wash").await.0, Some(9900));
+        assert_eq!(rate_cell(pool, "g-dhoti", "svc-iron").await.0, Some(2000));
+        // Shoes are not on the shop's price list and keep their v2 estimates.
+        assert_eq!(rate_cell(pool, "g-shoes", "svc-wash").await.0, Some(15000));
+        assert_eq!(
+            rate_cell(pool, "g-shoes", "svc-dry-clean").await.0,
+            Some(35000)
+        );
+
+        for version in 1..=SCHEMA_VERSION as u32 {
+            assert!(
+                pre_upgrade_copies_for(&temporary.directory, version).is_empty(),
+                "a new database needs no pre-upgrade-v{version} copy"
+            );
+        }
+    });
+}
+
+#[test]
+fn owner_edited_rates_survive_the_default_rate_card_upgrade() {
+    tauri::async_runtime::block_on(async {
+        let temporary = TempDatabase::new();
+        create_schema_file(&temporary.path, 2).await;
+        let setup = connect_writer_pool(&temporary.path, false, 1)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO counter_accounts (id, full_name, pin_hash, pin_salt, role, active, created_at, updated_at) VALUES ('owner-1', 'Owner', 'x', 'x', 'admin', 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+        )
+        .execute(&setup)
+        .await
+        .unwrap();
+        // The same write an Admin > Rate card save makes: a price, a bumped version and updated_by.
+        sqlx::query(
+            "UPDATE garment_service_rates SET price_minor = 2222, version = version + 1, updated_by = 'owner-1' WHERE garment_id = 'g-shirt' AND service_id = 'svc-wash'",
+        )
+        .execute(&setup)
+        .await
+        .unwrap();
+        setup.close().await;
+
+        let upgraded = open(&temporary.path).await;
+        assert_eq!(upgraded.info().error, None);
+        let pool = &upgraded.pools().unwrap().writer;
+
+        assert_eq!(
+            rate_cell(pool, "g-shirt", "svc-wash").await,
+            (Some(2222), 1, 2),
+            "the owner's price and version are kept"
+        );
+        // g-shirt svc-dry-clean is untouched by the owner and held the v2 estimate 8000, so the
+        // default 5000 replaces it and its version is bumped.
+        assert_eq!(
+            rate_cell(pool, "g-shirt", "svc-dry-clean").await,
+            (Some(5000), 1, 2)
+        );
+        // g-shirt svc-iron already held the default 1000 and is configured, so the migration does
+        // not touch it and its version stays at 1.
+        assert_eq!(
+            rate_cell(pool, "g-shirt", "svc-iron").await,
+            (Some(1000), 1, 1)
+        );
+    });
+}
+
+#[test]
+fn the_default_rate_card_migration_is_safe_to_run_twice() {
+    tauri::async_runtime::block_on(async {
+        let temporary = TempDatabase::new();
+        let fresh = open(&temporary.path).await;
+        assert_eq!(fresh.info().error, None);
+        let pool = &fresh.pools().unwrap().writer;
+
+        let before = rate_card_snapshot(pool).await;
+        assert!(
+            before.iter().any(|row| row.0 == "g-coat"),
+            "the snapshot covers the rate card rows the migration writes"
+        );
+        sqlx::raw_sql(MIGRATION_V3_SQL)
+            .execute(pool)
+            .await
+            .expect("running the v3 migration again should succeed");
+        assert_eq!(rate_card_snapshot(pool).await, before);
+    });
+}
+
+#[test]
+fn a_v2_upgrade_is_refused_and_untouched_if_the_safety_copy_cannot_be_made() {
+    tauri::async_runtime::block_on(async {
+        let temporary = TempDatabase::new();
+        create_schema_file(&temporary.path, 2).await;
+        // A file where the backups folder must be makes the safety copy impossible.
+        fs::write(temporary.directory.join("backups"), b"in the way").unwrap();
+
+        let refused = open(&temporary.path).await;
+        let error = refused.info().error.expect("the upgrade must be refused");
+        assert!(error.contains("safely copied before upgrading"), "{error}");
+        drop(refused);
+
+        let pool = connect_reader_pool(&temporary.path, 1).await.unwrap();
+        assert_eq!(user_version(&pool).await, 2, "the database stays at v2");
+        let coat_rows: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM garments WHERE id = 'g-coat'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(coat_rows, 0, "the default rate card was not applied");
+        pool.close().await;
+    });
+}
+
+#[test]
+fn a_database_with_counter_tables_but_no_recorded_version_is_upgraded_and_copied() {
+    tauri::async_runtime::block_on(async {
+        let temporary = TempDatabase::new();
+        create_schema_file(&temporary.path, 2).await;
+        let setup = connect_writer_pool(&temporary.path, false, 1)
+            .await
+            .unwrap();
+        sqlx::query("PRAGMA user_version = 0")
+            .execute(&setup)
+            .await
+            .unwrap();
+        setup.close().await;
+
+        let upgraded = open(&temporary.path).await;
+        assert_eq!(upgraded.info().error, None);
+        let pool = &upgraded.pools().unwrap().writer;
+        assert_eq!(user_version(pool).await, SCHEMA_VERSION);
+        assert_eq!(garment_count(pool).await, 21);
+
+        // The counter tables identify this as v2 even though no version was recorded, so the copy
+        // is named for v2 and keeps the recorded version it had (0).
+        let copies = pre_upgrade_copies_for(&temporary.directory, 2);
+        assert_eq!(copies.len(), 1, "exactly one v2 safety copy");
+        let copy = connect_reader_pool(&copies[0], 1).await.unwrap();
+        assert_eq!(user_version(&copy).await, 0);
+        assert_eq!(garment_count(&copy).await, 19);
+        copy.close().await;
     });
 }
 

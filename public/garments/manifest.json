@@ -20,6 +20,8 @@
     {"key":"dress","file":"dress-transparent.png","labelEn":"Dress / frock"},
     {"key":"jacket","file":"jacket-transparent.png","labelEn":"Jacket"},
     {"key":"sweater","file":"sweater-transparent.png","labelEn":"Sweater"},
-    {"key":"shoes","file":"shoes-transparent.png","labelEn":"Shoes, billed by pair"}
+    {"key":"shoes","file":"shoes-transparent.png","labelEn":"Shoes, billed by pair"},
+    {"key":"coat","file":"coat-transparent.png","labelEn":"Coat / Blazer"},
+    {"key":"kurta-pyjama","file":"kurta-pyjama-transparent.png","labelEn":"Gents Kurta Pyjama"}
   ]
 }
