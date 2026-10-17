@@ -1757,3 +1757,440 @@ fn insights_at_scale() {
         timed("dashboard", t);
     });
 }
+
+// ---------------------------------------------------------------------------------------------
+// Advance and balance
+// ---------------------------------------------------------------------------------------------
+
+impl Shop {
+    /// A payment of the given kind: `pay` writes the default (`settlement`), so set `advance` after.
+    #[allow(clippy::too_many_arguments)] // a test helper that mirrors the columns it writes
+    async fn pay_kind(
+        &self,
+        id: &str,
+        order_id: &str,
+        minor: i64,
+        method: &str,
+        at: &str,
+        by: &str,
+        kind: &str,
+    ) {
+        self.pay(id, order_id, minor, method, at, by).await;
+        sqlx::query("UPDATE payments SET kind=? WHERE id=?")
+            .bind(kind)
+            .bind(id)
+            .execute(self.db.writer_pool().unwrap())
+            .await
+            .unwrap();
+    }
+
+    /// A ₹100 order booked on 10 March with a ₹30 cash advance and a ₹70 UPI balance on 12 March.
+    async fn advance_story(&self) {
+        self.add(order("a1", &z("2026-03-10T10:00")).status("collected"))
+            .await;
+        self.pay_kind(
+            "adv",
+            "a1",
+            3_000,
+            "cash",
+            &z("2026-03-10T10:00"),
+            "staff-1",
+            "advance",
+        )
+        .await;
+        self.pay_kind(
+            "bal",
+            "a1",
+            7_000,
+            "upi",
+            &plus("2026-03-12T15:00"),
+            "staff-2",
+            "settlement",
+        )
+        .await;
+    }
+}
+
+fn march(from_day: u32, to_day: u32) -> SalesFilter {
+    filter(
+        &format!("2026-03-{from_day:02}T00:00"),
+        &format!("2026-03-{to_day:02}T00:00"),
+    )
+}
+
+#[test]
+fn collected_money_splits_into_advance_and_balance_by_the_day_each_was_taken() {
+    block_on(async {
+        let shop = Shop::new().await;
+        shop.advance_story().await;
+
+        let booked = summary(&shop, &march(10, 11)).await;
+        assert_eq!(
+            (
+                booked.advance_collected_minor,
+                booked.balance_collected_minor
+            ),
+            (3_000, 0)
+        );
+        assert_eq!(booked.collected_minor, 3_000);
+
+        let settled = summary(&shop, &march(12, 13)).await;
+        assert_eq!(
+            (
+                settled.advance_collected_minor,
+                settled.balance_collected_minor
+            ),
+            (0, 7_000)
+        );
+
+        let whole = summary(&shop, &march(10, 13)).await;
+        assert_eq!(
+            (whole.advance_collected_minor, whole.balance_collected_minor),
+            (3_000, 7_000)
+        );
+        assert_eq!(
+            whole.collected_minor,
+            whole.advance_collected_minor + whole.balance_collected_minor
+        );
+        assert_eq!(whole.refunded_minor, 0);
+        assert_eq!(
+            (whole.advance_refunded_minor, whole.balance_refunded_minor),
+            (0, 0)
+        );
+    });
+}
+
+#[test]
+fn series_points_carry_the_split_and_add_up_to_collected() {
+    block_on(async {
+        let shop = Shop::new().await;
+        shop.advance_story().await;
+        let series = sales_series(&shop.db, &admin(), &march(10, 13), "day")
+            .await
+            .unwrap();
+        let point = |day: &str| {
+            series
+                .points
+                .iter()
+                .find(|p| p.bucket == day)
+                .unwrap_or_else(|| panic!("no bucket {day}"))
+        };
+        let tenth = point("2026-03-10");
+        assert_eq!(
+            (tenth.advance_collected_minor, tenth.balance_collected_minor),
+            (3_000, 0)
+        );
+        assert_eq!(tenth.collected_minor, 3_000);
+        let twelfth = point("2026-03-12");
+        assert_eq!(
+            (
+                twelfth.advance_collected_minor,
+                twelfth.balance_collected_minor
+            ),
+            (0, 7_000)
+        );
+        assert_eq!(twelfth.collected_minor, 7_000);
+        let eleventh = point("2026-03-11");
+        assert_eq!(
+            (
+                eleventh.advance_collected_minor,
+                eleventh.balance_collected_minor,
+                eleventh.collected_minor
+            ),
+            (0, 0, 0)
+        );
+        for p in &series.points {
+            assert_eq!(
+                p.collected_minor,
+                p.advance_collected_minor + p.balance_collected_minor
+            );
+            assert_eq!(
+                p.refunded_minor,
+                p.advance_refunded_minor + p.balance_refunded_minor
+            );
+        }
+    });
+}
+
+#[test]
+fn a_refund_is_attributed_to_the_kind_of_the_payment_handed_back() {
+    block_on(async {
+        let shop = Shop::new().await;
+        shop.advance_story().await;
+        // The order is cancelled on 14 March and both payments are handed back that day.
+        shop.run("UPDATE orders SET status='cancelled' WHERE id='a1'")
+            .await;
+        shop.void("adv", &plus("2026-03-14T09:00")).await;
+        shop.void("bal", &plus("2026-03-14T09:00")).await;
+
+        let day = summary(&shop, &march(14, 15)).await;
+        assert_eq!(
+            (day.advance_collected_minor, day.balance_collected_minor),
+            (0, 0)
+        );
+        assert_eq!(
+            (day.advance_refunded_minor, day.balance_refunded_minor),
+            (3_000, 7_000)
+        );
+        assert_eq!(day.refunded_minor, 10_000);
+
+        // Money taken earlier still counts when it was taken; the UI nets it per kind.
+        let earlier = summary(&shop, &march(10, 13)).await;
+        assert_eq!(
+            (
+                earlier.advance_collected_minor,
+                earlier.balance_collected_minor
+            ),
+            (3_000, 7_000)
+        );
+        let series = sales_series(&shop.db, &admin(), &march(14, 15), "day")
+            .await
+            .unwrap();
+        let point = series
+            .points
+            .iter()
+            .find(|p| p.bucket == "2026-03-14")
+            .unwrap();
+        assert_eq!(
+            (point.advance_refunded_minor, point.balance_refunded_minor),
+            (3_000, 7_000)
+        );
+    });
+}
+
+#[test]
+fn the_split_follows_the_same_filters_as_collected() {
+    block_on(async {
+        let shop = Shop::new().await;
+        shop.advance_story().await;
+
+        let mut upi = march(10, 13);
+        upi.payment_methods = vec!["upi".into()];
+        let by_method = summary(&shop, &upi).await;
+        assert_eq!(
+            (
+                by_method.advance_collected_minor,
+                by_method.balance_collected_minor
+            ),
+            (0, 7_000)
+        );
+        assert_eq!(by_method.collected_minor, 7_000);
+
+        let mut ravi = march(10, 13);
+        ravi.staff_id = Some("staff-2".into());
+        let by_staff = summary(&shop, &ravi).await;
+        assert_eq!(
+            (
+                by_staff.advance_collected_minor,
+                by_staff.balance_collected_minor
+            ),
+            (0, 7_000)
+        );
+        assert_eq!(by_staff.collected_minor, 7_000);
+
+        let mut asha = march(10, 13);
+        asha.staff_id = Some("staff-1".into());
+        let by_other = summary(&shop, &asha).await;
+        assert_eq!(
+            (
+                by_other.advance_collected_minor,
+                by_other.balance_collected_minor
+            ),
+            (3_000, 0)
+        );
+    });
+}
+
+#[test]
+fn the_dashboard_carries_the_split_for_today_and_the_month() {
+    block_on(async {
+        let shop = Shop::new().await;
+        shop.advance_story().await;
+        // 12 March, 4 pm IST: the balance came in today, the advance earlier this month.
+        let now = DateTime::parse_from_rfc3339("2026-03-12T10:30:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let overview = dashboard_overview_at(&shop.db, &admin(), now)
+            .await
+            .unwrap();
+        assert_eq!(
+            (
+                overview.today.advance_collected_minor,
+                overview.today.balance_collected_minor
+            ),
+            (0, 7_000)
+        );
+        assert_eq!(
+            (
+                overview.month_to_date.advance_collected_minor,
+                overview.month_to_date.balance_collected_minor
+            ),
+            (3_000, 7_000)
+        );
+    });
+}
+
+#[test]
+fn receivable_counts_what_open_orders_still_owe() {
+    block_on(async {
+        let shop = Shop::new().await;
+        // Owes 70: ready, ₹100 order with a ₹30 advance.
+        shop.add(order("r1", &z("2026-03-10T10:00")).status("ready"))
+            .await;
+        shop.pay_kind(
+            "r1p",
+            "r1",
+            3_000,
+            "cash",
+            &z("2026-03-10T10:00"),
+            "staff-1",
+            "advance",
+        )
+        .await;
+        // Owes 50: in process, nothing paid yet.
+        shop.add(
+            order("r2", &z("2026-03-10T11:00"))
+                .status("washing")
+                .money(5_000, 0),
+        )
+        .await;
+        // Not owed: fully paid, cancelled, collected, and a legacy order that has no pieces.
+        shop.add(order("r3", &z("2026-03-10T12:00")).status("ready"))
+            .await;
+        shop.pay_kind(
+            "r3p",
+            "r3",
+            10_000,
+            "cash",
+            &z("2026-03-10T12:00"),
+            "staff-1",
+            "advance",
+        )
+        .await;
+        shop.add(order("r4", &z("2026-03-10T13:00")).status("cancelled"))
+            .await;
+        shop.add(order("r5", &z("2026-03-10T14:00")).status("collected"))
+            .await;
+        shop.add(
+            order("r6", &z("2026-03-10T15:00"))
+                .status("ready")
+                .pieces(0),
+        )
+        .await;
+        // A voided payment does not count as money received.
+        shop.add(
+            order("r7", &z("2026-03-10T16:00"))
+                .status("received")
+                .money(2_000, 0),
+        )
+        .await;
+        shop.pay_kind(
+            "r7p",
+            "r7",
+            2_000,
+            "cash",
+            &z("2026-03-10T16:00"),
+            "staff-1",
+            "advance",
+        )
+        .await;
+        shop.void("r7p", &plus("2026-03-10T17:00")).await;
+
+        let now = DateTime::parse_from_rfc3339("2026-03-12T10:30:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let overview = dashboard_overview_at(&shop.db, &admin(), now)
+            .await
+            .unwrap();
+        assert_eq!(overview.receivable.orders, 3, "r1, r2 and r7 owe money");
+        assert_eq!(overview.receivable.minor, 7_000 + 5_000 + 2_000);
+    });
+}
+
+#[test]
+fn receivable_is_zero_when_nothing_is_owed_and_rounds_each_order_on_its_own() {
+    block_on(async {
+        let shop = Shop::new().await;
+        let now = DateTime::parse_from_rfc3339("2026-03-12T10:30:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let empty = dashboard_overview_at(&shop.db, &admin(), now)
+            .await
+            .unwrap();
+        assert_eq!((empty.receivable.orders, empty.receivable.minor), (0, 0));
+
+        // ₹66.66 paid as two payments of ₹33.33 leaves nothing owed, with no float drift.
+        shop.add(
+            order("p1", &z("2026-03-10T10:00"))
+                .status("ready")
+                .money(6_666, 0),
+        )
+        .await;
+        shop.pay_kind(
+            "p1a",
+            "p1",
+            3_333,
+            "cash",
+            &z("2026-03-10T10:00"),
+            "staff-1",
+            "advance",
+        )
+        .await;
+        shop.pay_kind(
+            "p1b",
+            "p1",
+            3_333,
+            "cash",
+            &plus("2026-03-11T10:00"),
+            "staff-1",
+            "settlement",
+        )
+        .await;
+        let settled = dashboard_overview_at(&shop.db, &admin(), now)
+            .await
+            .unwrap();
+        assert_eq!(
+            (settled.receivable.orders, settled.receivable.minor),
+            (0, 0)
+        );
+    });
+}
+
+#[test]
+fn the_new_figures_use_the_names_the_interface_reads() {
+    block_on(async {
+        let shop = Shop::new().await;
+        shop.advance_story().await;
+        let now = DateTime::parse_from_rfc3339("2026-03-12T10:30:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let overview = serde_json::to_value(
+            dashboard_overview_at(&shop.db, &admin(), now)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let series = serde_json::to_value(
+            sales_series(&shop.db, &admin(), &march(10, 13), "day")
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let keys = [
+            "advanceCollectedMinor",
+            "balanceCollectedMinor",
+            "advanceRefundedMinor",
+            "balanceRefundedMinor",
+        ];
+        for key in keys {
+            assert!(overview["today"][key].is_i64(), "summary lacks {key}");
+            assert!(overview["monthToDate"][key].is_i64(), "month lacks {key}");
+            assert!(
+                series["points"][0][key].is_i64(),
+                "series point lacks {key}"
+            );
+        }
+        assert!(overview["receivable"]["orders"].is_i64());
+        assert!(overview["receivable"]["minor"].is_i64());
+    });
+}
