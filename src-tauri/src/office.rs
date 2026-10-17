@@ -338,7 +338,10 @@ pub async fn get_customer(
     let rows = sqlx::query(
         "SELECT o.id,o.order_number,o.customer_name,o.customer_phone,o.status,o.received_at,o.expected_ready_at,o.total_amount,\
          COALESCE((SELECT SUM(p.amount) FROM payments p WHERE p.order_id=o.id AND p.voided_at IS NULL),0.0) AS paid,\
-         COALESCE((SELECT COUNT(*) FROM order_pieces p WHERE p.order_id=o.id),0) AS pieces \
+         COALESCE((SELECT COUNT(*) FROM order_pieces p WHERE p.order_id=o.id),0) AS pieces,\
+         COALESCE((SELECT COUNT(*) FROM order_pieces p WHERE p.order_id=o.id AND p.tagged=0),0) AS untagged,\
+         o.payment_status,\
+         CASE WHEN o.status IN ('received','washing','drying','ironing','quality_check','packing') AND CAST(strftime('%s',o.expected_ready_at) AS INTEGER) < CAST(strftime('%s','now') AS INTEGER) THEN 1 ELSE 0 END AS overdue \
          FROM orders o WHERE o.customer_id=?1 OR (o.customer_id IS NULL AND o.customer_phone=?2) \
          ORDER BY o.created_at DESC LIMIT ?3",
     )
@@ -367,6 +370,10 @@ pub async fn get_customer(
                 balance_minor: total - paid,
                 piece_count: u32::try_from(r.try_get::<i64, _>("pieces").map_err(db_err)?)
                     .unwrap_or(0),
+                payment_status: r.try_get("payment_status").map_err(db_err)?,
+                overdue: r.try_get::<i64, _>("overdue").map_err(db_err)? == 1,
+                untagged_count: r.try_get("untagged").map_err(db_err)?,
+                match_reason: None,
             })
         })
         .collect::<Result<Vec<_>, String>>()?;

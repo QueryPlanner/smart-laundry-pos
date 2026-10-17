@@ -492,6 +492,13 @@ pub struct SalesSummary {
     pub average_order_minor: i64,
     pub collected_minor: i64,
     pub refunded_minor: i64,
+    /// `collected_minor` split by payment kind: advance (taken when the order was booked) and balance
+    /// (taken later). The two always add up to `collected_minor`.
+    pub advance_collected_minor: i64,
+    pub balance_collected_minor: i64,
+    /// `refunded_minor` split by the kind of the payment that was handed back.
+    pub advance_refunded_minor: i64,
+    pub balance_refunded_minor: i64,
     pub net_collected_minor: i64,
     pub cancelled_count: i64,
     pub cancelled_minor: i64,
@@ -516,6 +523,10 @@ pub struct SeriesPoint {
     pub net_billed_minor: i64,
     pub collected_minor: i64,
     pub refunded_minor: i64,
+    pub advance_collected_minor: i64,
+    pub balance_collected_minor: i64,
+    pub advance_refunded_minor: i64,
+    pub balance_refunded_minor: i64,
 }
 
 impl SeriesPoint {
@@ -529,6 +540,10 @@ impl SeriesPoint {
             net_billed_minor: 0,
             collected_minor: 0,
             refunded_minor: 0,
+            advance_collected_minor: 0,
+            balance_collected_minor: 0,
+            advance_refunded_minor: 0,
+            balance_refunded_minor: 0,
         }
     }
 }
@@ -632,6 +647,14 @@ pub struct AttentionList {
     pub orders: Vec<AttentionOrder>,
 }
 
+/// Money still owed on open orders, as of now: orders not cancelled or collected, with a balance.
+#[derive(Debug, Serialize, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Receivable {
+    pub orders: i64,
+    pub minor: i64,
+}
+
 #[derive(Debug, Serialize, Clone, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct DashboardOverview {
@@ -642,6 +665,7 @@ pub struct DashboardOverview {
     pub today: SalesSummary,
     pub month_to_date: SalesSummary,
     pub queue: QueueCounts,
+    pub receivable: Receivable,
     pub ready_waiting: AttentionList,
     pub in_process: AttentionList,
     pub low_stock_count: i64,
@@ -704,6 +728,34 @@ async fn money_rows(
             ))
         })
         .collect()
+}
+
+/// Collected or refunded money split by the kind of the payment: `(advance, balance)` in paise.
+/// It reads through the same filter as `money_rows`, so the two parts always add up to its total.
+async fn kind_totals(
+    conn: &mut SqliteConnection,
+    scope: &Scope,
+    event_column: &str,
+) -> Result<(i64, i64), String> {
+    let sql = format!(
+        "SELECT p.kind AS kind, COALESCE(SUM({AMOUNT}), 0) AS amount \
+         FROM payments p JOIN orders o ON o.id = p.order_id WHERE {} GROUP BY p.kind",
+        scope.payment_where(event_column)
+    );
+    let rows = bind_scope(sqlx::query(&sql), scope)
+        .fetch_all(conn)
+        .await
+        .map_err(db_err)?;
+    let (mut advance, mut balance) = (0, 0);
+    for row in &rows {
+        // `settlement` is the money taken after the order was booked: the balance.
+        if text(row, "kind")? == "advance" {
+            advance += int(row, "amount")?;
+        } else {
+            balance += int(row, "amount")?;
+        }
+    }
+    Ok((advance, balance))
 }
 
 /// A single-number query that uses the shared filter binds.
@@ -816,6 +868,8 @@ async fn summary_inner(
 
     let collected = money_rows(conn, scope, "p.recorded_at").await?;
     let refunded = money_rows(conn, scope, "p.voided_at").await?;
+    let (advance_collected, balance_collected) = kind_totals(conn, scope, "p.recorded_at").await?;
+    let (advance_refunded, balance_refunded) = kind_totals(conn, scope, "p.voided_at").await?;
 
     let mut methods: BTreeMap<String, MethodBreakdown> = BTreeMap::new();
     let mut staff: BTreeMap<String, StaffBreakdown> = BTreeMap::new();
@@ -925,6 +979,10 @@ async fn summary_inner(
         },
         collected_minor: collected_total,
         refunded_minor: refunded_total,
+        advance_collected_minor: advance_collected,
+        balance_collected_minor: balance_collected,
+        advance_refunded_minor: advance_refunded,
+        balance_refunded_minor: balance_refunded,
         net_collected_minor: net_collected,
         cancelled_count,
         cancelled_minor,
@@ -1013,8 +1071,8 @@ async fn series_inner(
     }
     for (column, refunds) in [("p.recorded_at", false), ("p.voided_at", true)] {
         let sql = format!(
-            "SELECT {} AS b, COALESCE(SUM({AMOUNT}), 0) AS amount \
-             FROM payments p JOIN orders o ON o.id = p.order_id WHERE {} GROUP BY b",
+            "SELECT {} AS b, p.kind AS kind, COALESCE(SUM({AMOUNT}), 0) AS amount \
+             FROM payments p JOIN orders o ON o.id = p.order_id WHERE {} GROUP BY b, p.kind",
             bucket.key_sql(column),
             scope.payment_where(column)
         );
@@ -1023,12 +1081,21 @@ async fn series_inner(
             .await
             .map_err(db_err)?;
         for row in &rows {
-            if let Some(point) = points.get_mut(&text(row, "b")?) {
-                if refunds {
-                    point.refunded_minor = int(row, "amount")?;
-                } else {
-                    point.collected_minor = int(row, "amount")?;
-                }
+            let Some(point) = points.get_mut(&text(row, "b")?) else {
+                continue;
+            };
+            let amount = int(row, "amount")?;
+            let advance = text(row, "kind")? == "advance";
+            match (refunds, advance) {
+                (false, true) => point.advance_collected_minor += amount,
+                (false, false) => point.balance_collected_minor += amount,
+                (true, true) => point.advance_refunded_minor += amount,
+                (true, false) => point.balance_refunded_minor += amount,
+            }
+            if refunds {
+                point.refunded_minor += amount;
+            } else {
+                point.collected_minor += amount;
             }
         }
     }
@@ -1334,6 +1401,22 @@ async fn overview_inner(
             _ => queue.in_process += n,
         }
     }
+    // Orders that can never be collected (no piece rows, from the old workspace) are left out, as in
+    // the queue counts above. Each balance is rounded per order, so no float total is ever rounded.
+    let owed = sqlx::query(&format!(
+        "SELECT COUNT(*) AS n, COALESCE(SUM(bal), 0) AS minor \
+         FROM (SELECT {NET} - {PAID} AS bal FROM orders o \
+               WHERE o.status NOT IN ('cancelled', 'collected') \
+                 AND EXISTS (SELECT 1 FROM order_pieces op WHERE op.order_id = o.id)) \
+         WHERE bal > 0"
+    ))
+    .fetch_one(&mut *conn)
+    .await
+    .map_err(db_err)?;
+    let receivable = Receivable {
+        orders: int(&owed, "n")?,
+        minor: int(&owed, "minor")?,
+    };
     let now_seconds = now.timestamp();
     let ready_waiting = attention(conn, true, now_seconds).await?;
     let in_process = attention(conn, false, now_seconds).await?;
@@ -1351,6 +1434,7 @@ async fn overview_inner(
         today: today_summary,
         month_to_date: month_summary,
         queue,
+        receivable,
         ready_waiting,
         in_process,
         low_stock_count,

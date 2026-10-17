@@ -1,23 +1,27 @@
 import { useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import {
-  getDashboardOverview, getSalesSeries, type AttentionOrder, type DashboardOverview, type SalesSeries,
+  getDashboardOverview, getSalesSeries, netByKind, type AttentionOrder, type DashboardOverview, type SalesSeries,
 } from '@/lib/localFirst/insights';
 import { formatDay, formatShopDateTime, lastDaysRange } from '@/lib/localFirst/salesRange';
-import { EmptyState, PageHeader, StatCard, money } from './ui';
+import { EmptyState, PageHeader, StatCard, count, money } from './ui';
 import { OrderLink, StatusBadge } from './InsightParts';
 import { SalesChart } from './SalesChart';
 import type { SectionProps } from './sections';
 
 const GRAPH_DAYS = 14;
 const dayText = (days: number): string => (days === 1 ? '1 day' : `${days} days`);
+/** What is still owed on an order: the balance in rupees, or "Paid". Text, so it never relies on colour. */
+const toPayText = (order: AttentionOrder): string => (order.balanceMinor > 0 ? money(order.balanceMinor) : 'Paid');
 
 const AttentionTable = ({ orders, onOpenOrder, ready }: { orders: AttentionOrder[]; onOpenOrder: (id: string) => void; ready: boolean }) => (
   <div className="counter-table-wrap">
     <table className="counter-table">
       <thead>
         <tr>
-          <th>Bill</th><th>Customer</th><th>{ready ? 'Waiting' : 'Stage'}</th><th>{ready ? 'To pay' : 'Promised'}</th>
+          <th>Bill</th><th>Customer</th><th>{ready ? 'Waiting' : 'Stage'}</th>
+          {!ready && <th>Promised</th>}
+          <th className="num">To pay</th>
         </tr>
       </thead>
       <tbody>
@@ -26,11 +30,10 @@ const AttentionTable = ({ orders, onOpenOrder, ready }: { orders: AttentionOrder
             <td><OrderLink id={order.id} number={order.orderNumber} onOpen={onOpenOrder} /></td>
             <td>{order.customerName}<span className="counter-cell-note">{order.pieceCount} pieces</span></td>
             <td>{ready ? dayText(order.daysWaiting) : <StatusBadge status={order.status} />}</td>
-            <td className={ready ? 'num' : ''}>
-              {ready
-                ? (order.balanceMinor > 0 ? money(order.balanceMinor) : 'Paid')
-                : <>{formatShopDateTime(order.promisedAt)}{order.overdue && <span className="counter-badge bad counter-inline-badge">Overdue</span>}</>}
-            </td>
+            {!ready && (
+              <td>{formatShopDateTime(order.promisedAt)}{order.overdue && <span className="counter-badge bad counter-inline-badge">Overdue</span>}</td>
+            )}
+            <td className="num">{toPayText(order)}</td>
           </tr>
         ))}
       </tbody>
@@ -56,8 +59,11 @@ export const DashboardPage = ({ onError, onOpenOrder }: SectionProps) => {
 
   if (!overview || !series) return <section className="counter-page"><PageHeader title="Dashboard" subtitle="Loading..." /></section>;
 
-  const { today, monthToDate, queue, readyWaiting, inProcess } = overview;
+  const { today, monthToDate, queue, receivable, readyWaiting, inProcess } = overview;
   const profit = monthToDate.profitMinor ?? monthToDate.netCollectedMinor - monthToDate.expensesMinor;
+  const todayKinds = netByKind(today);
+  const monthKinds = netByKind(monthToDate);
+  const owed = receivable.minor > 0;
   return (
     <section className="counter-page">
       <PageHeader
@@ -70,7 +76,15 @@ export const DashboardPage = ({ onError, onOpenOrder }: SectionProps) => {
       <div className="counter-stats">
         <StatCard label="Orders" value={today.orders} hint={`${today.pieces} pieces`} />
         <StatCard label="Billed" value={money(today.netBilledMinor)} hint={today.discountMinor > 0 ? `${money(today.discountMinor)} discount given` : undefined} />
+        <StatCard label="Advance collected" value={money(todayKinds.advanceMinor)} hint="Taken when the order was booked" />
+        <StatCard label="Balance received" value={money(todayKinds.balanceMinor)} hint="Taken at or after pickup" />
         <StatCard label="Collected" value={money(today.netCollectedMinor)} hint={today.refundedMinor > 0 ? `After ${money(today.refundedMinor)} refunded` : undefined} tone="good" />
+        <StatCard
+          label="To collect"
+          value={money(receivable.minor)}
+          hint={owed ? `${count(receivable.orders, 'order')} with a balance` : 'Nothing owed'}
+          tone={owed ? 'warn' : 'neutral'}
+        />
         <StatCard label="Ready to collect" value={queue.ready} hint="Waiting at the counter" tone={queue.ready > 0 ? 'good' : 'neutral'} />
         <StatCard label="In process" value={queue.received + queue.inProcess} hint={`${queue.received} not started`} />
         <StatCard label="Low stock" value={overview.lowStockCount} hint="Inventory items at or below minimum" tone={overview.lowStockCount > 0 ? 'warn' : 'neutral'} />
@@ -80,6 +94,8 @@ export const DashboardPage = ({ onError, onOpenOrder }: SectionProps) => {
       <div className="counter-stats">
         <StatCard label="Orders" value={monthToDate.orders} hint={`${monthToDate.pieces} pieces`} />
         <StatCard label="Billed" value={money(monthToDate.netBilledMinor)} />
+        <StatCard label="Advance collected" value={money(monthKinds.advanceMinor)} />
+        <StatCard label="Balance received" value={money(monthKinds.balanceMinor)} />
         <StatCard label="Collected" value={money(monthToDate.netCollectedMinor)} tone="good" />
         <StatCard label="Expenses" value={money(monthToDate.expensesMinor)} />
         <StatCard

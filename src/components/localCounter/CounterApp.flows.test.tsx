@@ -3,11 +3,12 @@ import React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { CounterApp } from './CounterApp';
+import { ADVANCE_ABOVE_TOTAL, ADVANCE_NOT_AMOUNT } from '@/lib/localFirst/payment';
 import type { CounterAccount, CounterCatalogue, CounterOrderInput, CounterOrderSummary, CounterPiece, CounterPrintJob, CounterSavedOrder } from '@/lib/localFirst/counter';
 
 const api = vi.hoisted(() => ({
   cancelCounterOrder: vi.fn(), collectCounterOrder: vi.fn(), createCounterStaff: vi.fn(), dispatchPrintJob: vi.fn(), dispatchPrintJobs: vi.fn(), enumeratePrinters: vi.fn(),
-  getCounterBootstrap: vi.fn(), getCounterCatalogue: vi.fn(), getCounterOrder: vi.fn(), getOrderPieces: vi.fn(), getPrinterProfiles: vi.fn(),
+  getCounterBootstrap: vi.fn(), getCounterCatalogue: vi.fn(), getCounterOrder: vi.fn(), getCounterOrderQueueCounts: vi.fn(), getOrderPieces: vi.fn(), getPrinterProfiles: vi.fn(),
   listCounterStaff: vi.fn(), listPrintJobs: vi.fn(), lockCounter: vi.fn(), loginCounter: vi.fn(), matchOrderPieces: vi.fn(), quoteCounterOrder: vi.fn(),
   recordCounterPayment: vi.fn(), reprintCounterOutput: vi.fn(), resetCounterStaffPin: vi.fn(), retryPrintJob: vi.fn(), saveCounterOrder: vi.fn(),
   searchCounterCustomers: vi.fn(), searchCounterOrders: vi.fn(), setCounterRate: vi.fn(), setCounterStaffActive: vi.fn(), setPrinterProfiles: vi.fn(),
@@ -28,11 +29,11 @@ const catalogue: CounterCatalogue = {
 };
 const job = (kind: 'bill' | 'tags', state: CounterPrintJob['state'] = 'pending', orderId = 'o-1'): CounterPrintJob => ({ id: `${kind}-job`, kind, state, printerId: null, osJobId: null, lastError: state === 'failed' ? 'Queue unavailable' : null, orderId, orderNumber: 'SL-1' });
 const pieces: CounterPiece[] = [
-  { id: 'p-1', shortId: '2600001-1', garmentId: 'shirt', garment: 'Shirt', service: 'Wash + Iron', position: 1, total: 2, matched: false, packingMatched: false, collectionMatched: false },
-  { id: 'p-2', shortId: '2600001-2', garmentId: 'shirt', garment: 'Shirt', service: 'Wash + Iron', position: 2, total: 2, matched: false, packingMatched: false, collectionMatched: false },
+  { id: 'p-1', shortId: '2600001-1', garmentId: 'shirt', garment: 'Shirt', service: 'Wash + Iron', position: 1, total: 2, matched: false, packingMatched: false, collectionMatched: false, tagged: true },
+  { id: 'p-2', shortId: '2600001-2', garmentId: 'shirt', garment: 'Shirt', service: 'Wash + Iron', position: 2, total: 2, matched: false, packingMatched: false, collectionMatched: false, tagged: true },
 ];
-const savedOrder = (over: Partial<CounterSavedOrder> = {}): CounterSavedOrder => ({ orderId: 'o-1', orderNumber: 'SL-1', receivedAt: '2026-10-15T06:00:00Z', promisedAt: '2026-10-17T11:30:00Z', status: 'ready', totalMinor: 4000, paidMinor: 0, balanceMinor: 4000, pieces, printJobs: [job('bill'), job('tags')], ...over });
-const summary = (n: number): CounterOrderSummary => ({ id: `o-${n}`, orderNumber: `SL-${n}`, customerName: `Customer ${n}`, customerPhone: '9876543210', status: 'ready', receivedAt: '2026-10-15T06:00:00Z', promisedAt: '2026-10-17T11:30:00Z', totalMinor: 4000, paidMinor: 0, balanceMinor: 4000, pieceCount: 2 });
+const savedOrder = (over: Partial<CounterSavedOrder> = {}): CounterSavedOrder => ({ orderId: 'o-1', orderNumber: 'SL-1', customerName: 'Customer 1', customerPhone: '9876543210', receivedAt: '2026-10-15T06:00:00Z', promisedAt: '2026-10-17T11:30:00Z', status: 'ready', totalMinor: 4000, paidMinor: 0, balanceMinor: 4000, paymentStatus: 'unpaid', collectedAt: null, refundDueMinor: 0, payments: [], pieces, printJobs: [job('bill'), job('tags')], ...over });
+const summary = (n: number, over: Partial<CounterOrderSummary> = {}): CounterOrderSummary => ({ id: `o-${n}`, orderNumber: `SL-${n}`, customerName: `Customer ${n}`, customerPhone: '9876543210', status: 'ready', receivedAt: '2026-10-15T06:00:00Z', promisedAt: '2026-10-17T11:30:00Z', totalMinor: 4000, paidMinor: 0, balanceMinor: 4000, pieceCount: 2, paymentStatus: 'unpaid', overdue: false, untaggedCount: 0, matchReason: null, ...over });
 const quoteFor = (input: CounterOrderInput, total?: number) => {
   const pieceCount = input.items.reduce((n, x) => n + x.quantity, 0);
   const subtotal = 2000 * pieceCount;
@@ -53,13 +54,23 @@ const signIn = async (account: CounterAccount = staff) => {
   await screen.findByText('Choose service');
 };
 const nav = (name: string) => fireEvent.click(screen.getByRole('button', { name }));
-const openOrdersAndFirstOrder = async (results = [summary(1)]) => {
+/** Opens the Orders / Pickup list and the detail page of its first order (an order still being washed, so it opens as detail). */
+const openOrdersAndFirstOrder = async (results = [summary(1, { status: 'washing' })]) => {
   api.searchCounterOrders.mockResolvedValue(results);
   nav('Orders / Pickup');
   await screen.findByText(results[0].orderNumber);
-  fireEvent.click(screen.getAllByRole('button', { name: 'Open order' })[0]);
-  await screen.findByText(`${results[0].orderNumber} · Order details`);
+  fireEvent.click(screen.getAllByRole('button', { name: 'Open' })[0]);
+  await screen.findByRole('heading', { name: results[0].orderNumber });
 };
+/** From an order's detail page to its print progress, through More actions. */
+const openPrintProgress = async () => {
+  fireEvent.click(screen.getByRole('button', { name: 'More actions' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Print status' }));
+  await screen.findByText(/· Print progress/);
+};
+const saveButton = () => screen.getByRole('button', { name: 'Save & Print' }) as HTMLButtonElement;
+const advanceInput = () => screen.getByLabelText('Advance received now') as HTMLInputElement;
+const saveNow = () => fireEvent.click(screen.getByRole('button', { name: 'Save & Print' }));
 const startOrder = async () => {
   fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Rita Joshi' } });
   fireEvent.click(screen.getByRole('button', { name: 'Add Shirt' }));
@@ -72,6 +83,7 @@ beforeEach(() => {
   api.quoteCounterOrder.mockImplementation(async (input: CounterOrderInput) => quoteFor(input));
   api.searchCounterCustomers.mockResolvedValue([]);
   api.searchCounterOrders.mockResolvedValue([]);
+  api.getCounterOrderQueueCounts.mockResolvedValue({ ready: 1, balanceDue: 1, overdue: 0, inProcess: 0, today: 1, all: 1, balanceDueMinor: 4000 });
   api.listPrintJobs.mockResolvedValue([]);
   api.lockCounter.mockResolvedValue(undefined);
   api.saveCounterOrder.mockResolvedValue(savedOrder({ status: 'received', paidMinor: 2000, balanceMinor: 0, totalMinor: 2000 }));
@@ -223,26 +235,76 @@ describe('taking and saving an order', () => {
     expect(screen.getAllByText('Waiting to print').length).toBe(2);
   });
 
-  it('collects the full discounted amount and sends no payment when nothing is due', async () => {
+  it('sends no payment when nothing is paid now, including after an advance was typed and cleared', async () => {
+    await signIn();
+    await startOrder();
+    fireEvent.change(advanceInput(), { target: { value: '50' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Nothing now' }));
+    expect(advanceInput().value).toBe('');
+    saveNow();
+    await waitFor(() => expect(api.saveCounterOrder).toHaveBeenCalledTimes(1));
+    expect(api.saveCounterOrder.mock.calls[0][0]).not.toHaveProperty('payment');
+  });
+
+  it('sends the advance in rupees as paise with the method chosen, and nothing else', async () => {
+    await signIn();
+    api.quoteCounterOrder.mockImplementation(async (input: CounterOrderInput) => quoteFor(input, 20000));
+    await startOrder();
+    fireEvent.change(advanceInput(), { target: { value: '100.50' } });
+    fireEvent.click(screen.getByRole('button', { name: 'UPI' }));
+    expect(screen.getByText('Balance to pay at pickup ₹99.50')).toBeTruthy();
+    saveNow();
+    await waitFor(() => expect(api.saveCounterOrder).toHaveBeenCalledTimes(1));
+    expect(api.saveCounterOrder.mock.calls[0][0].payment).toEqual({ amountMinor: 10050, method: 'upi' });
+  });
+
+  it('fills the advance with half of the total when Half is chosen, then saves that amount', async () => {
     await signIn();
     api.quoteCounterOrder.mockImplementation(async (input: CounterOrderInput) => quoteFor(input, 1800));
     await startOrder();
-    fireEvent.change(screen.getByLabelText('Paid by'), { target: { value: 'upi' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Save & Print' }));
-    await waitFor(() => expect(api.saveCounterOrder).toHaveBeenCalledWith(expect.objectContaining({ payment: { amountMinor: 1800, method: 'upi' } })));
-    cleanup();
-    vi.clearAllMocks();
-    api.getCounterCatalogue.mockResolvedValue(catalogue);
-    api.searchCounterCustomers.mockResolvedValue([]);
-    api.listPrintJobs.mockResolvedValue([]);
-    api.dispatchPrintJobs.mockResolvedValue([]);
-    api.saveCounterOrder.mockResolvedValue(savedOrder({ totalMinor: 0, paidMinor: 0, balanceMinor: 0 }));
-    api.quoteCounterOrder.mockImplementation(async (input: CounterOrderInput) => quoteFor(input, 0));
+    fireEvent.click(screen.getByRole('button', { name: 'Half' }));
+    expect(advanceInput().value).toBe('9.00');
+    saveNow();
+    await waitFor(() => expect(api.saveCounterOrder).toHaveBeenCalledTimes(1));
+    expect(api.saveCounterOrder.mock.calls[0][0].payment).toEqual({ amountMinor: 900, method: 'cash' });
+  });
+
+  it('fills the advance with the whole total when Full is chosen, then saves that amount', async () => {
+    await signIn();
+    api.quoteCounterOrder.mockImplementation(async (input: CounterOrderInput) => quoteFor(input, 1800));
+    await startOrder();
+    fireEvent.click(screen.getByRole('button', { name: 'Full' }));
+    expect(advanceInput().value).toBe('18.00');
+    saveNow();
+    await waitFor(() => expect(api.saveCounterOrder).toHaveBeenCalledTimes(1));
+    expect(api.saveCounterOrder.mock.calls[0][0].payment).toEqual({ amountMinor: 1800, method: 'cash' });
+  });
+
+  it('blocks Save while the advance is not an amount or is more than the amount to collect', async () => {
     await signIn();
     await startOrder();
-    fireEvent.click(screen.getByRole('button', { name: 'Save & Print' }));
+    fireEvent.change(advanceInput(), { target: { value: '12.345' } });
+    expect(screen.getByRole('alert').textContent).toBe(ADVANCE_NOT_AMOUNT);
+    expect(saveButton().disabled).toBe(true);
+    fireEvent.change(advanceInput(), { target: { value: '25' } });
+    expect(screen.getByRole('alert').textContent).toBe(ADVANCE_ABOVE_TOTAL);
+    expect(saveButton().disabled).toBe(true);
+    fireEvent.change(advanceInput(), { target: { value: '20' } });
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(saveButton().disabled).toBe(false);
+  });
+
+  it('sends no payment for an order with nothing to pay, even if an advance was typed before its total dropped to zero', async () => {
+    await signIn();
+    api.quoteCounterOrder.mockImplementation(async (input: CounterOrderInput) => quoteFor(input, 0));
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Rita Joshi' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add Shirt' }));
+    fireEvent.change(advanceInput(), { target: { value: '5' } });
+    await screen.findByText('No payment due');
+    await waitFor(() => expect(saveButton().disabled).toBe(false));
+    saveNow();
     await waitFor(() => expect(api.saveCounterOrder).toHaveBeenCalledTimes(1));
-    expect(api.saveCounterOrder.mock.calls[0][0].payment).toBeUndefined();
+    expect(api.saveCounterOrder.mock.calls[0][0]).not.toHaveProperty('payment');
   });
 
   it('shows a quote problem instead of an amount, and recovers when the draft changes', async () => {
@@ -294,171 +356,6 @@ describe('small order-screen behaviours', () => {
     await screen.findByText('Choose service');
   });
 
-  it('reaches the print progress of the order just saved from the navigation bar', async () => {
-    await signIn();
-    await startOrder();
-    fireEvent.click(screen.getByRole('button', { name: 'Save & Print' }));
-    await screen.findByText(/Order SL-1 saved/);
-    nav('New order');
-    nav('Orders / Pickup');
-    api.searchCounterOrders.mockResolvedValue([summary(1)]);
-    fireEvent.click(await screen.findByRole('button', { name: 'Open order' }));
-    await screen.findByText('SL-1 · Order details');
-    nav('Print progress');
-    await screen.findByText('SL-1 · Print progress');
-  });
-});
-
-describe('finding orders and pickup', () => {
-  it('searches by what is typed and pages through long result lists', async () => {
-    await signIn();
-    const first = Array.from({ length: 50 }, (_, i) => summary(i + 1));
-    api.searchCounterOrders.mockResolvedValue(first);
-    nav('Orders / Pickup');
-    await screen.findByText('SL-50');
-    fireEvent.change(screen.getByLabelText(/Search bill number/), { target: { value: '98765' } });
-    await waitFor(() => expect(api.searchCounterOrders).toHaveBeenCalledWith('98765', 0, 50));
-    api.searchCounterOrders.mockResolvedValue([summary(51)]);
-    fireEvent.click(await screen.findByRole('button', { name: 'Load more' }));
-    await screen.findByText('SL-51');
-    expect(api.searchCounterOrders).toHaveBeenLastCalledWith('98765', 50, 50);
-    expect(screen.queryByRole('button', { name: 'Load more' })).toBeNull();
-    expect(screen.getByText('SL-1')).toBeTruthy();
-  });
-
-  it('keeps the list and reports an error when loading more fails, and when searching fails', async () => {
-    await signIn();
-    api.searchCounterOrders.mockResolvedValue(Array.from({ length: 50 }, (_, i) => summary(i + 1)));
-    nav('Orders / Pickup');
-    await screen.findByText('SL-50');
-    api.searchCounterOrders.mockRejectedValueOnce(new Error('search failed'));
-    fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
-    expect((await screen.findByRole('alert')).textContent).toBe('search failed');
-    expect(screen.getByText('SL-1')).toBeTruthy();
-    api.searchCounterOrders.mockRejectedValueOnce(new Error('typing search failed'));
-    fireEvent.change(screen.getByLabelText(/Search bill number/), { target: { value: 'zzz' } });
-    await waitFor(() => expect(screen.getByRole('alert').textContent).toBe('typing search failed'));
-  });
-
-  it('says so when nothing matches', async () => {
-    await signIn();
-    nav('Orders / Pickup');
-    await screen.findByText('No matching saved orders.');
-  });
-
-  it('explains an order that has gone missing', async () => {
-    await signIn();
-    api.getCounterOrder.mockResolvedValue(null);
-    api.searchCounterOrders.mockResolvedValue([summary(1)]);
-    nav('Orders / Pickup');
-    await screen.findByText('SL-1');
-    fireEvent.click(screen.getByRole('button', { name: 'Open order' }));
-    expect((await screen.findByRole('alert')).textContent).toBe('This order is no longer available.');
-  });
-
-  it('moves an order through processing steps and shows a refused step', async () => {
-    await signIn();
-    await openOrdersAndFirstOrder();
-    const status = screen.getByLabelText('Processing status') as HTMLSelectElement;
-    expect((within(status).getByRole('option', { name: 'Received' }) as HTMLOptionElement).disabled).toBe(true);
-    expect((within(status).getByRole('option', { name: /Collected/ }) as HTMLOptionElement).disabled).toBe(true);
-    fireEvent.change(status, { target: { value: 'ironing' } });
-    await screen.findByText('Order SL-1 moved to ironing.');
-    api.updateCounterOrderStatus.mockRejectedValueOnce(new Error('Order cannot move from ironing to washing.'));
-    fireEvent.change(status, { target: { value: 'washing' } });
-    expect((await screen.findByRole('alert')).textContent).toBe('Order cannot move from ironing to washing.');
-  });
-
-  it('records a later payment on an old order, with every input checked', async () => {
-    await signIn();
-    await openOrdersAndFirstOrder();
-    const record = () => fireEvent.click(screen.getByRole('button', { name: 'Save payment' }));
-    record();
-    expect((await screen.findByRole('alert')).textContent).toContain('greater than zero');
-    fireEvent.change(screen.getByLabelText('Amount received'), { target: { value: '9999' } });
-    record();
-    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('cannot exceed the remaining balance'));
-    fireEvent.change(screen.getByLabelText('Amount received'), { target: { value: '19.99' } });
-    fireEvent.change(screen.getByLabelText('Method'), { target: { value: 'upi' } });
-    fireEvent.change(screen.getByLabelText(/Reference/), { target: { value: ' UTR 42 ' } });
-    api.recordCounterPayment.mockRejectedValueOnce(new Error('Payment cannot exceed the outstanding balance.'));
-    record();
-    await waitFor(() => expect(screen.getByRole('alert').textContent).toBe('Payment cannot exceed the outstanding balance.'));
-    const firstKey = api.recordCounterPayment.mock.calls[0][1].idempotencyKey;
-    record();
-    await screen.findByText('Payment saved to this order.');
-    expect(api.recordCounterPayment).toHaveBeenLastCalledWith('o-1', expect.objectContaining({ amountMinor: 1999, method: 'upi', reference: 'UTR 42', idempotencyKey: firstKey }));
-    expect((screen.getByLabelText('Amount received') as HTMLInputElement).value).toBe('');
-  });
-
-  it('goes from the order to its packing checklist and to its print progress', async () => {
-    await signIn();
-    await openOrdersAndFirstOrder();
-    fireEvent.click(screen.getByRole('button', { name: 'Packing checklist' }));
-    await screen.findByText(/Check the physical pieces as they are packed/);
-    nav('Orders / Pickup');
-    fireEvent.click(screen.getAllByRole('button', { name: 'Open order' })[0]);
-    await screen.findByText('SL-1 · Order details');
-    fireEvent.click(screen.getByRole('button', { name: 'Print progress / reprints' }));
-    await screen.findByText('SL-1 · Print progress');
-  });
-});
-
-describe('packing and pickup checks', () => {
-  const goToChecklist = async (stage: 'Packing checklist' | 'Verify pickup collection') => {
-    await signIn();
-    await openOrdersAndFirstOrder();
-    fireEvent.click(screen.getByRole('button', { name: stage }));
-    await screen.findByText(stage === 'Packing checklist' ? /Check the physical pieces as they are packed/ : /Check each printed piece ID with the customer/);
-  };
-
-  it('lets a piece be unchecked again and says how many are still missing', async () => {
-    await goToChecklist('Packing checklist');
-    const boxes = screen.getAllByRole('checkbox');
-    fireEvent.click(boxes[0]); fireEvent.click(boxes[1]); fireEvent.click(boxes[1]);
-    api.matchOrderPieces.mockResolvedValue({ matchedCount: 1, expectedCount: 2, missingIds: ['2600001-2'], duplicateIds: [], wrongOrderIds: [], complete: false });
-    fireEvent.click(screen.getByRole('button', { name: 'Save packing checklist' }));
-    await screen.findByText('1 of 2 pieces checked for packing. Missing pieces must be checked.');
-    expect(api.matchOrderPieces).toHaveBeenCalledWith('o-1', 'packing', ['p-1']);
-  });
-
-  it('keeps the pickup button off until every piece is ticked, then collects once', async () => {
-    await goToChecklist('Verify pickup collection');
-    const submit = screen.getByRole('button', { name: 'Verify and complete collection' }) as HTMLButtonElement;
-    expect(submit.disabled).toBe(true);
-    for (const box of screen.getAllByRole('checkbox')) fireEvent.click(box);
-    expect(submit.disabled).toBe(false);
-    fireEvent.click(submit);
-    await screen.findByText('All pieces collected.');
-    expect(api.collectCounterOrder).toHaveBeenCalledWith('o-1', ['p-1', 'p-2'], expect.any(String));
-  });
-
-  it('reports a rejected pickup check without marking anything collected', async () => {
-    await goToChecklist('Verify pickup collection');
-    for (const box of screen.getAllByRole('checkbox')) fireEvent.click(box);
-    api.matchOrderPieces.mockRejectedValueOnce(new Error('A restore is staged. Close and reopen the app before writing.'));
-    fireEvent.click(screen.getByRole('button', { name: 'Verify and complete collection' }));
-    expect((await screen.findByRole('alert')).textContent).toContain('restore is staged');
-    expect(api.collectCounterOrder).not.toHaveBeenCalled();
-    expect(screen.queryByText('All pieces collected.')).toBeNull();
-  });
-
-  it('shows what is still outstanding when a complete-looking pickup is refused natively', async () => {
-    await goToChecklist('Verify pickup collection');
-    for (const box of screen.getAllByRole('checkbox')) fireEvent.click(box);
-    api.collectCounterOrder.mockRejectedValueOnce(new Error('This order still has ₹40.00 to pay.'));
-    fireEvent.click(screen.getByRole('button', { name: 'Verify and complete collection' }));
-    expect((await screen.findByRole('alert')).textContent).toBe('This order still has ₹40.00 to pay.');
-  });
-
-  it('reports a failure to load the pieces when opening the checklist', async () => {
-    await signIn();
-    await openOrdersAndFirstOrder();
-    api.getOrderPieces.mockRejectedValueOnce(new Error('pieces unavailable'));
-    fireEvent.click(screen.getByRole('button', { name: 'Packing checklist' }));
-    expect((await screen.findByRole('alert')).textContent).toBe('pieces unavailable');
-    expect(screen.queryByText(/Check the physical pieces as they are packed/)).toBeNull();
-  });
 });
 
 describe('print queue and recovery', () => {
@@ -481,7 +378,7 @@ describe('print queue and recovery', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Retry this job' }));
     await waitFor(() => expect(api.retryPrintJob).toHaveBeenCalledWith('tags-job', false));
     fireEvent.click(screen.getAllByRole('button', { name: 'Open order' })[0]);
-    await screen.findByText('SL-1 · Order details');
+    await screen.findByRole('heading', { name: 'SL-1' });
   });
 
   it('needs a second, explicit step before an uncertain job can be sent again, and can be cancelled', async () => {
@@ -515,7 +412,7 @@ describe('print queue and recovery', () => {
     api.getCounterOrder.mockResolvedValue(savedOrder({ printJobs: [job('bill', 'failed'), job('tags', 'failed')] }));
     api.listPrintJobs.mockResolvedValue([job('bill', 'failed'), job('tags', 'failed')]);
     await openOrdersAndFirstOrder();
-    fireEvent.click(screen.getByRole('button', { name: 'Print progress / reprints' }));
+    await openPrintProgress();
     fireEvent.click(await screen.findByRole('button', { name: 'Retry bill' }));
     await waitFor(() => expect(api.retryPrintJob).toHaveBeenCalledWith('bill-job', false));
     fireEvent.click(screen.getByRole('button', { name: 'Retry tags' }));
@@ -527,7 +424,7 @@ describe('print queue and recovery', () => {
     api.getCounterOrder.mockResolvedValue(savedOrder({ printJobs: [job('bill', 'pending'), job('tags', 'uncertain')] }));
     api.listPrintJobs.mockResolvedValue([job('bill', 'pending'), job('tags', 'uncertain')]);
     await openOrdersAndFirstOrder();
-    fireEvent.click(screen.getByRole('button', { name: 'Print progress / reprints' }));
+    await openPrintProgress();
     await screen.findByText('SL-1 · Print progress');
     fireEvent.click(screen.getByRole('button', { name: 'Resume bill' }));
     await waitFor(() => expect(api.dispatchPrintJob).toHaveBeenCalledWith('bill-job'));
@@ -539,7 +436,7 @@ describe('print queue and recovery', () => {
   it('reprints selected tags and a bill, and reports a reprint that could not be queued', async () => {
     await signIn();
     await openOrdersAndFirstOrder();
-    fireEvent.click(screen.getByRole('button', { name: 'Print progress / reprints' }));
+    await openPrintProgress();
     await screen.findByText('SL-1 · Print progress');
     const first = screen.getByRole('checkbox', { name: /2600001-1/ });
     fireEvent.click(first);
@@ -751,7 +648,7 @@ describe('saving failures that need a clear next step', () => {
     await waitFor(() => expect((screen.getByRole('button', { name: 'Save & Print' }) as HTMLButtonElement).disabled).toBe(false));
     await saveAndWaitForPrints();
     expect(api.saveCounterOrder.mock.calls[1][0].reviewedQuote.totalMinor).toBe(2400);
-    expect(api.saveCounterOrder.mock.calls[1][0].payment.amountMinor).toBe(2400);
+    expect(api.saveCounterOrder.mock.calls[1][0]).not.toHaveProperty('payment');
   });
 
   it('keeps a save error visible when the quote itself is fine, and shows quote and save problems separately', async () => {
@@ -764,6 +661,100 @@ describe('saving failures that need a clear next step', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Add Shirt' }));
     await waitFor(() => expect(screen.getAllByRole('alert').length).toBe(2));
     expect(screen.getByText('The price could not be worked out. See the message above.')).toBeTruthy();
+  });
+});
+
+describe('the advance and the request key of a new order', () => {
+  type RequestKey = ReturnType<typeof crypto.randomUUID>;
+  let uuidSpy: { mockRestore: () => void } | null = null;
+  // Until issueFreshKeys is called every key is 'stale-key', so a test can see whether a key was replaced.
+  // Renders also call randomUUID, which is why the test does not count calls.
+  let fresh = false;
+  const stubRequestKeys = () => {
+    let issued = 0;
+    fresh = false;
+    uuidSpy = vi.spyOn(crypto, 'randomUUID').mockImplementation(() => (fresh ? `key-${++issued}` : 'stale-key') as RequestKey);
+  };
+  const issueFreshKeys = () => { fresh = true; };
+  afterEach(() => {
+    uuidSpy?.mockRestore();
+    uuidSpy = null;
+  });
+
+  it('keeps the request key from sign-in when nothing about the payment is changed before saving', async () => {
+    stubRequestKeys();
+    await signIn();
+    await startOrder();
+    saveNow();
+    await waitFor(() => expect(api.saveCounterOrder).toHaveBeenCalledTimes(1));
+    expect(api.saveCounterOrder.mock.calls[0][0].idempotencyKey).toBe('stale-key');
+  });
+
+  it('issues a new request key when the advance changes before any save', async () => {
+    stubRequestKeys();
+    await signIn();
+    await startOrder();
+    issueFreshKeys();
+    fireEvent.change(advanceInput(), { target: { value: '5' } });
+    saveNow();
+    await waitFor(() => expect(api.saveCounterOrder).toHaveBeenCalledTimes(1));
+    expect(api.saveCounterOrder.mock.calls[0][0].idempotencyKey).not.toBe('stale-key');
+  });
+
+  it('issues a new request key when the method changes before any save', async () => {
+    stubRequestKeys();
+    await signIn();
+    await startOrder();
+    issueFreshKeys();
+    fireEvent.change(advanceInput(), { target: { value: '5' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Card' }));
+    saveNow();
+    await waitFor(() => expect(api.saveCounterOrder).toHaveBeenCalledTimes(1));
+    expect(api.saveCounterOrder.mock.calls[0][0].payment).toEqual({ amountMinor: 500, method: 'card' });
+    expect(api.saveCounterOrder.mock.calls[0][0].idempotencyKey).not.toBe('stale-key');
+  });
+
+  it('keeps the request key after a failed save, so a changed advance is sent with the same key and reported as possibly saved', async () => {
+    stubRequestKeys();
+    await signIn();
+    await startOrder();
+    issueFreshKeys();
+    fireEvent.change(advanceInput(), { target: { value: '5' } });
+    api.saveCounterOrder.mockRejectedValueOnce(new Error('This request key was already used for a different order draft.'));
+    saveNow();
+    expect((await screen.findByRole('alert')).textContent).toBe(SAVED_BUT_QUIET);
+    fireEvent.change(advanceInput(), { target: { value: '6' } });
+    api.saveCounterOrder.mockRejectedValueOnce(new Error('This request key was already used for a different order draft.'));
+    saveNow();
+    await waitFor(() => expect(api.saveCounterOrder).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toBe(SAVED_BUT_QUIET));
+    const [first, second] = api.saveCounterOrder.mock.calls.map(call => call[0]);
+    expect(second.idempotencyKey).toBe(first.idempotencyKey);
+    expect(first.payment).toEqual({ amountMinor: 500, method: 'cash' });
+    expect(second.payment).toEqual({ amountMinor: 600, method: 'cash' });
+  });
+
+  it('clears the advance and the method after a successful save, and starts the next order with no advance', async () => {
+    stubRequestKeys();
+    await signIn();
+    await startOrder();
+    issueFreshKeys();
+    fireEvent.change(advanceInput(), { target: { value: '5' } });
+    fireEvent.click(screen.getByRole('button', { name: 'UPI' }));
+    saveNow();
+    await screen.findByText(/Order SL-1 saved/);
+    nav('New order');
+    await screen.findByText('Choose service');
+    expect(advanceInput().value).toBe('');
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Asha Rao' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add Shirt' }));
+    await waitFor(() => expect(saveButton().disabled).toBe(false));
+    expect(advanceInput().value).toBe('');
+    expect(screen.queryByRole('group', { name: 'Payment method' })).toBeNull();
+    saveNow();
+    await waitFor(() => expect(api.saveCounterOrder).toHaveBeenCalledTimes(2));
+    expect(api.saveCounterOrder.mock.calls[1][0]).not.toHaveProperty('payment');
+    expect(api.saveCounterOrder.mock.calls[1][0].idempotencyKey).not.toBe(api.saveCounterOrder.mock.calls[0][0].idempotencyKey);
   });
 });
 
@@ -783,122 +774,23 @@ describe('quotes that arrive late', () => {
   });
 });
 
-describe('the Orders / Pickup page', () => {
-  it('lists recent orders as soon as it opens, asking the native side for the empty query', async () => {
-    await signIn();
-    api.searchCounterOrders.mockResolvedValue([summary(1), summary(2)]);
-    nav('Orders / Pickup');
-    await screen.findByText('SL-2');
-    expect(api.searchCounterOrders).toHaveBeenCalledWith('', 0, 50);
-    expect(screen.queryByText('No matching saved orders.')).toBeNull();
-  });
-
-  it('does not claim "No matching saved orders" before the first search has come back', async () => {
-    await signIn();
-    let finish: (rows: CounterOrderSummary[]) => void = () => undefined;
-    api.searchCounterOrders.mockReturnValue(new Promise<CounterOrderSummary[]>(resolve => { finish = resolve; }));
-    nav('Orders / Pickup');
-    expect(screen.queryByText('No matching saved orders.')).toBeNull();
-    expect(screen.getByText('Searching saved orders…')).toBeTruthy();
-    finish([summary(1)]);
-    await screen.findByText('SL-1');
-  });
-
-  it('asks for two characters when one is typed, and says "No matching" only for a real empty result', async () => {
-    await signIn();
-    nav('Orders / Pickup');
-    await screen.findByText('No matching saved orders.');
-    fireEvent.change(screen.getByLabelText(/Search bill number/), { target: { value: '9' } });
-    await screen.findByText('Type at least 2 characters of the bill number or mobile number.');
-    await waitFor(() => expect(api.searchCounterOrders).toHaveBeenLastCalledWith('9', 0, 50));
-    expect(screen.queryByText('No matching saved orders.')).toBeNull();
-    fireEvent.change(screen.getByLabelText(/Search bill number/), { target: { value: '98' } });
-    await screen.findByText('No matching saved orders.');
-    expect(screen.queryByText(/Type at least 2 characters/)).toBeNull();
-  });
-
-  it('shows an error when refreshing the list after a status change fails', async () => {
-    await signIn();
-    await openOrdersAndFirstOrder();
-    api.searchCounterOrders.mockRejectedValueOnce(new Error('list refresh failed'));
-    fireEvent.change(screen.getByLabelText('Processing status'), { target: { value: 'packing' } });
-    await screen.findByText('Order SL-1 moved to packing.');
-    await waitFor(() => expect(screen.getByRole('alert').textContent).toBe('list refresh failed'));
-  });
-});
-
 describe('opening one order after another', () => {
-  it('starts every newly opened order with an empty payment form and fresh request keys', async () => {
-    await signIn();
-    const orders = [summary(1), summary(2)];
-    api.searchCounterOrders.mockResolvedValue(orders);
-    api.getCounterOrder.mockImplementation(async (id: string) => savedOrder({ orderId: id, orderNumber: id === 'o-1' ? 'SL-1' : 'SL-2' }));
-    nav('Orders / Pickup');
-    await screen.findByText('SL-2');
-    fireEvent.click(screen.getAllByRole('button', { name: 'Open order' })[0]);
-    await screen.findByText('SL-1 · Order details');
-    fireEvent.change(screen.getByLabelText('Amount received'), { target: { value: '5' } });
-    fireEvent.change(screen.getByLabelText('Method'), { target: { value: 'card' } });
-    fireEvent.change(screen.getByLabelText(/Reference/), { target: { value: 'TXN 9' } });
-    api.recordCounterPayment.mockRejectedValueOnce(new Error('database is busy'));
-    fireEvent.click(screen.getByRole('button', { name: 'Save payment' }));
-    await screen.findByText('database is busy');
-    const firstKey = api.recordCounterPayment.mock.calls[0][1].idempotencyKey;
-
-    // Coming back to the same order keeps what was typed and the same key, so a retry stays safe.
-    nav('Orders / Pickup');
-    fireEvent.click((await screen.findAllByRole('button', { name: 'Open order' }))[0]);
-    await screen.findByText('SL-1 · Order details');
-    expect((screen.getByLabelText('Amount received') as HTMLInputElement).value).toBe('5');
-
-    nav('Orders / Pickup');
-    fireEvent.click((await screen.findAllByRole('button', { name: 'Open order' }))[1]);
-    await screen.findByText('SL-2 · Order details');
-    expect((screen.getByLabelText('Amount received') as HTMLInputElement).value).toBe('');
-    expect((screen.getByLabelText('Method') as HTMLSelectElement).value).toBe('cash');
-    expect((screen.getByLabelText(/Reference/) as HTMLInputElement).value).toBe('');
-    expect(screen.queryByText('database is busy')).toBeNull();
-    fireEvent.change(screen.getByLabelText('Amount received'), { target: { value: '7' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Save payment' }));
-    await screen.findByText('Payment saved to this order.');
-    expect(api.recordCounterPayment.mock.calls[1][0]).toBe('o-2');
-    expect(api.recordCounterPayment.mock.calls[1][1].idempotencyKey).not.toBe(firstKey);
-  });
-
   it('drops the reprint selection of the previous order', async () => {
     await signIn();
-    api.searchCounterOrders.mockResolvedValue([summary(1), summary(2)]);
+    api.searchCounterOrders.mockResolvedValue([summary(1, { status: 'washing' }), summary(2, { status: 'washing' })]);
     api.getCounterOrder.mockImplementation(async (id: string) => savedOrder({ orderId: id, orderNumber: id === 'o-1' ? 'SL-1' : 'SL-2' }));
     nav('Orders / Pickup');
     await screen.findByText('SL-2');
-    fireEvent.click(screen.getAllByRole('button', { name: 'Open order' })[0]);
-    await screen.findByText('SL-1 · Order details');
-    fireEvent.click(screen.getByRole('button', { name: 'Print progress / reprints' }));
+    fireEvent.click(screen.getAllByRole('button', { name: 'Open' })[0]);
+    await screen.findByRole('heading', { name: 'SL-1' });
+    await openPrintProgress();
     fireEvent.click(await screen.findByRole('checkbox', { name: /2600001-1/ }));
     expect(screen.getByRole('button', { name: 'Reprint selected tags (1)' })).toBeTruthy();
     nav('Orders / Pickup');
-    fireEvent.click((await screen.findAllByRole('button', { name: 'Open order' }))[1]);
-    await screen.findByText('SL-2 · Order details');
-    fireEvent.click(screen.getByRole('button', { name: 'Print progress / reprints' }));
+    fireEvent.click((await screen.findAllByRole('button', { name: 'Open' }))[1]);
+    await screen.findByRole('heading', { name: 'SL-2' });
+    await openPrintProgress();
     expect(await screen.findByRole('button', { name: 'Reprint selected tags (0)' })).toBeTruthy();
-  });
-
-  it('shows no order tabs from an earlier session after signing in again', async () => {
-    await signIn();
-    await startOrder();
-    await saveAndWaitForPrints();
-    expect(screen.getByRole('button', { name: 'Print progress' })).toBeTruthy();
-    api.getCounterBootstrap.mockResolvedValue(unauthenticated());
-    fireEvent.click(screen.getByRole('button', { name: /Lock/ }));
-    await screen.findByText('Choose your name and enter your PIN.');
-    api.loginCounter.mockResolvedValue(admin);
-    fireEvent.click(screen.getByRole('button', { name: 'Admin' }));
-    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'admin-1' } });
-    fireEvent.change(screen.getByLabelText('PIN'), { target: { value: '1234' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
-    await screen.findByText('Choose service');
-    expect(screen.queryByRole('button', { name: 'Print progress' })).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Packing / pickup' })).toBeNull();
   });
 });
 
@@ -911,7 +803,7 @@ describe('print progress and the print queue', () => {
     api.getCounterOrder.mockResolvedValue(savedOrder({ printJobs: mine }));
     api.listPrintJobs.mockImplementation(async (orderId?: string) => (orderId ? mine : [...mine, other]));
     await openOrdersAndFirstOrder();
-    fireEvent.click(screen.getByRole('button', { name: 'Print progress / reprints' }));
+    await openPrintProgress();
     fireEvent.click(await screen.findByRole('button', { name: 'Retry bill' }));
     await waitFor(() => expect(api.retryPrintJob).toHaveBeenCalledWith('bill-job', false));
     await waitFor(() => expect(api.listPrintJobs).toHaveBeenLastCalledWith('o-1'));
@@ -926,7 +818,7 @@ describe('print progress and the print queue', () => {
     api.getCounterOrder.mockResolvedValue(savedOrder({ printJobs: mine }));
     api.listPrintJobs.mockResolvedValue([...mine, other]);
     await openOrdersAndFirstOrder();
-    fireEvent.click(screen.getByRole('button', { name: 'Print progress / reprints' }));
+    await openPrintProgress();
     await screen.findByText('SL-1 · Print progress');
     await waitFor(() => expect(api.listPrintJobs).toHaveBeenCalledWith('o-1'));
     expect(screen.getByText('Queue unavailable')).toBeTruthy();
@@ -941,7 +833,7 @@ describe('print progress and the print queue', () => {
     api.getCounterOrder.mockResolvedValue(savedOrder({ printJobs: [job('bill', 'pending')] }));
     api.listPrintJobs.mockResolvedValue([other]);
     await openOrdersAndFirstOrder();
-    fireEvent.click(screen.getByRole('button', { name: 'Print progress / reprints' }));
+    await openPrintProgress();
     await screen.findByRole('button', { name: 'Resume bill' });
     expect(screen.queryByText('Other customer problem')).toBeNull();
   });
@@ -976,7 +868,7 @@ describe('print progress and the print queue', () => {
     api.getCounterOrder.mockResolvedValue(savedOrder({ printJobs: [job('tags', 'uncertain')] }));
     api.listPrintJobs.mockResolvedValue([job('tags', 'uncertain')]);
     await openOrdersAndFirstOrder();
-    fireEvent.click(screen.getByRole('button', { name: 'Print progress / reprints' }));
+    await openPrintProgress();
     fireEvent.click(await screen.findByRole('button', { name: 'Review uncertain tags job' }));
     expect(screen.getByText('Some tags may already be printed. To avoid duplicates, use Reprint selected tags below to print only the missing tags.')).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Confirm reprint of tags' })).toBeTruthy();
@@ -998,7 +890,7 @@ describe('print progress and the print queue', () => {
   it('only reports a reprint as queued when it was really sent, otherwise keeps the key and says what happened', async () => {
     await signIn();
     await openOrdersAndFirstOrder();
-    fireEvent.click(screen.getByRole('button', { name: 'Print progress / reprints' }));
+    await openPrintProgress();
     fireEvent.click(await screen.findByRole('checkbox', { name: /2600001-1/ }));
     api.reprintCounterOutput.mockResolvedValue(job('tags'));
     api.dispatchPrintJob.mockResolvedValueOnce(job('tags', 'failed'));
@@ -1047,7 +939,7 @@ describe('a double tap never runs a print or pickup action twice', () => {
   it('ignores a second tap on a reprint while the first is running', async () => {
     await signIn();
     await openOrdersAndFirstOrder();
-    fireEvent.click(screen.getByRole('button', { name: 'Print progress / reprints' }));
+    await openPrintProgress();
     await screen.findByText('SL-1 · Print progress');
     const created = deferred<CounterPrintJob>();
     api.reprintCounterOutput.mockReturnValue(created.promise);
@@ -1060,88 +952,233 @@ describe('a double tap never runs a print or pickup action twice', () => {
     expect(api.dispatchPrintJob).toHaveBeenCalledTimes(1);
   });
 
-  it('ignores a second tap on the packing and pickup submit while the first is running', async () => {
-    await signIn();
-    await openOrdersAndFirstOrder();
-    fireEvent.click(screen.getByRole('button', { name: 'Packing checklist' }));
-    await screen.findByText(/Check the physical pieces as they are packed/);
-    fireEvent.click(screen.getAllByRole('checkbox')[0]);
-    const match = deferred<{ matchedCount: number; expectedCount: number; missingIds: string[]; duplicateIds: string[]; wrongOrderIds: string[]; complete: boolean }>();
-    api.matchOrderPieces.mockReturnValue(match.promise);
-    const submit = screen.getByRole('button', { name: 'Save packing checklist' });
-    fireEvent.click(submit);
-    fireEvent.click(submit);
-    expect(api.matchOrderPieces).toHaveBeenCalledTimes(1);
-    match.resolve({ matchedCount: 2, expectedCount: 2, missingIds: [], duplicateIds: [], wrongOrderIds: [], complete: true });
-    await screen.findByText('Every garment is checked for packing.');
-    expect(screen.queryByRole('alert')).toBeNull();
-  });
+
 });
 
-describe('cancelling an order', () => {
-  const cancelled = (over: Partial<CounterSavedOrder> = {}) => savedOrder({ status: 'cancelled', paidMinor: 0, balanceMinor: 0, ...over });
-  const openCancel = () => fireEvent.click(screen.getByRole('button', { name: 'Cancel order' }));
+describe('Orders / Pickup', () => {
+  const searchBox = () => screen.getByLabelText('Search bill number, phone, name or tag ID') as HTMLInputElement;
 
-  it('lets an administrator cancel with a written reason and an explicit confirmation', async () => {
-    await signIn(admin);
-    api.cancelCounterOrder.mockResolvedValue(cancelled());
-    await openOrdersAndFirstOrder();
-    expect(api.cancelCounterOrder).not.toHaveBeenCalled();
-    openCancel();
-    fireEvent.click(screen.getByRole('button', { name: 'Confirm cancel order' }));
-    expect((await screen.findByRole('alert')).textContent).toBe('Enter a reason of 3 to 200 characters.');
-    fireEvent.change(screen.getByLabelText('Reason for cancelling'), { target: { value: 'x'.repeat(201) } });
-    fireEvent.click(screen.getByRole('button', { name: 'Confirm cancel order' }));
-    await screen.findByText('Enter a reason of 3 to 200 characters.');
-    expect(api.cancelCounterOrder).not.toHaveBeenCalled();
-    fireEvent.change(screen.getByLabelText('Reason for cancelling'), { target: { value: '  Customer changed their mind  ' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Confirm cancel order' }));
-    await screen.findByText('Order cancelled. Hand back any money received.');
-    expect(api.cancelCounterOrder).toHaveBeenCalledWith('o-1', 'Customer changed their mind');
-    const status = screen.getByLabelText('Processing status') as HTMLSelectElement;
-    expect(status.value).toBe('cancelled');
-    expect(status.disabled).toBe(true);
-    expect((within(status).getByRole('option', { name: 'Cancelled' }) as HTMLOptionElement).selected).toBe(true);
-    expect(screen.queryByRole('button', { name: 'Cancel order' })).toBeNull();
-    expect(screen.queryByRole('heading', { name: 'Record later payment' })).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Packing checklist' })).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Verify pickup collection' })).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Packing / pickup' })).toBeNull();
-    expect(screen.getByRole('button', { name: 'Print progress / reprints' })).toBeTruthy();
-    expect(api.searchCounterOrders.mock.calls.length).toBeGreaterThan(1);
-  });
-
-  it('can be backed out of, and keeps the reason and explains a refusal', async () => {
-    await signIn(admin);
-    await openOrdersAndFirstOrder();
-    openCancel();
-    fireEvent.change(screen.getByLabelText('Reason for cancelling'), { target: { value: 'Duplicate bill' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Keep order' }));
-    expect(screen.queryByLabelText('Reason for cancelling')).toBeNull();
-    openCancel();
-    expect((screen.getByLabelText('Reason for cancelling') as HTMLInputElement).value).toBe('');
-    fireEvent.change(screen.getByLabelText('Reason for cancelling'), { target: { value: 'Duplicate bill' } });
-    api.cancelCounterOrder.mockRejectedValueOnce(new Error('A collected order cannot be cancelled.'));
-    fireEvent.click(screen.getByRole('button', { name: 'Confirm cancel order' }));
-    await waitFor(() => expect(screen.getByRole('alert').textContent).toBe('A collected order cannot be cancelled.'));
-    expect((screen.getByLabelText('Reason for cancelling') as HTMLInputElement).value).toBe('Duplicate bill');
-  });
-
-  it('is never offered to staff, nor for collected or already cancelled orders', async () => {
-    await signIn(staff);
-    await openOrdersAndFirstOrder();
-    expect(screen.queryByRole('button', { name: 'Cancel order' })).toBeNull();
-    cleanup();
-    await signIn(admin);
-    api.getCounterOrder.mockResolvedValue(savedOrder({ status: 'collected' }));
-    await openOrdersAndFirstOrder();
-    expect(screen.queryByRole('button', { name: 'Cancel order' })).toBeNull();
-    api.getCounterOrder.mockResolvedValue(cancelled());
+  it('opens on the ready list with the counts, and marks Orders / Pickup as the current page', async () => {
+    await signIn();
+    api.searchCounterOrders.mockResolvedValue([summary(1)]);
     nav('Orders / Pickup');
-    fireEvent.click((await screen.findAllByRole('button', { name: 'Open order' }))[0]);
-    await waitFor(() => expect((screen.getByLabelText('Processing status') as HTMLSelectElement).value).toBe('cancelled'));
-    expect(screen.queryByRole('button', { name: 'Cancel order' })).toBeNull();
-    expect(screen.getByText('This order was cancelled. No payment or pickup can be recorded for it.')).toBeTruthy();
+    await screen.findByText('SL-1');
+    expect(api.searchCounterOrders).toHaveBeenCalledWith('', 0, 50, 'ready');
+    expect(api.getCounterOrderQueueCounts).toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: 'Orders / Pickup' }).getAttribute('aria-current')).toBe('page');
+    expect(screen.getByRole('button', { name: /^Ready/ }).getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByText('To collect')).toBeTruthy();
+  });
+
+  it('has no navigation items for Print progress or Packing / pickup', async () => {
+    await signIn();
+    nav('Orders / Pickup');
+    expect(screen.queryByRole('button', { name: 'Print progress' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Packing / pickup' })).toBeNull();
+  });
+
+  it('switches segment, and searches every order by what is typed', async () => {
+    await signIn();
+    nav('Orders / Pickup');
+    await screen.findByText('Nothing is ready for pickup.');
+    fireEvent.click(screen.getByRole('button', { name: /^Overdue/ }));
+    await waitFor(() => expect(api.searchCounterOrders).toHaveBeenLastCalledWith('', 0, 50, 'overdue'));
+    fireEvent.change(searchBox(), { target: { value: 'rita' } });
+    await waitFor(() => expect(api.searchCounterOrders).toHaveBeenLastCalledWith('rita', 0, 50, 'all'));
+    fireEvent.click(screen.getByRole('button', { name: 'Clear' }));
+    await waitFor(() => expect(api.searchCounterOrders).toHaveBeenLastCalledWith('', 0, 50, 'overdue'));
+  });
+
+  it('pages through a long list', async () => {
+    await signIn();
+    api.searchCounterOrders.mockResolvedValueOnce(Array.from({ length: 50 }, (_, i) => summary(i + 1))).mockResolvedValueOnce([summary(51)]);
+    nav('Orders / Pickup');
+    fireEvent.click(await screen.findByRole('button', { name: 'Load more' }));
+    await screen.findByText('SL-51');
+    expect(api.searchCounterOrders).toHaveBeenLastCalledWith('', 50, 50, 'ready');
+  });
+
+  it('opens an order on its detail page, and Back restores the search that was typed', async () => {
+    await signIn();
+    api.searchCounterOrders.mockResolvedValue([summary(1, { status: 'washing' })]);
+    nav('Orders / Pickup');
+    await screen.findByText('SL-1');
+    fireEvent.change(searchBox(), { target: { value: 'rita' } });
+    await waitFor(() => expect(api.searchCounterOrders).toHaveBeenLastCalledWith('rita', 0, 50, 'all'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Open' }));
+    await screen.findByRole('heading', { name: 'SL-1' });
+    expect(screen.getByText('Customer 1 · 9876543210')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Orders / Pickup' }).getAttribute('aria-current')).toBe('page');
+    fireEvent.click(screen.getByRole('button', { name: '← Orders' }));
+    await screen.findByText('Searching all orders');
+    expect(searchBox().value).toBe('rita');
+  });
+
+  it('says so when an order has gone missing, and stays on the list', async () => {
+    await signIn();
+    api.getCounterOrder.mockResolvedValue(null);
+    api.searchCounterOrders.mockResolvedValue([summary(1, { status: 'washing' })]);
+    nav('Orders / Pickup');
+    fireEvent.click(await screen.findByRole('button', { name: 'Open' }));
+    expect((await screen.findByRole('alert')).textContent).toBe('This order is no longer available.');
+    expect(screen.getByRole('heading', { name: 'Orders / Pickup' })).toBeTruthy();
+  });
+
+  it('shows a refused lookup in the banner', async () => {
+    await signIn();
+    api.getCounterOrder.mockRejectedValue(new Error('database is busy'));
+    api.searchCounterOrders.mockResolvedValue([summary(1, { status: 'washing' })]);
+    nav('Orders / Pickup');
+    fireEvent.click(await screen.findByRole('button', { name: 'Open' }));
+    expect((await screen.findByRole('alert')).textContent).toBe('database is busy');
+  });
+
+  it('hands over a ready order from the list and returns to the ready list for the next customer', async () => {
+    await signIn();
+    const collected = savedOrder({ status: 'collected', paidMinor: 4000, balanceMinor: 0, paymentStatus: 'paid' });
+    api.collectCounterOrder.mockResolvedValue(collected);
+    api.searchCounterOrders.mockResolvedValue([summary(1)]);
+    nav('Orders / Pickup');
+    fireEvent.click(await screen.findByRole('button', { name: 'Receive ₹40.00 & hand over' }));
+    await screen.findByText('Balance due ₹40.00');
+    fireEvent.click(screen.getByRole('button', { name: 'Tick all' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Receive ₹40.00 & hand over' }));
+    await screen.findByText('Handed over ✓ SL-1');
+    expect(api.collectCounterOrder).toHaveBeenCalledWith('o-1', ['p-1', 'p-2'], expect.any(String), expect.objectContaining({ amountMinor: 4000, method: 'cash' }));
+    api.searchCounterOrders.mockClear();
+    fireEvent.click(screen.getByRole('button', { name: 'Next order' }));
+    await screen.findByRole('heading', { name: 'Orders / Pickup' });
+    await waitFor(() => expect(api.searchCounterOrders).toHaveBeenCalledWith('', 0, 50, 'ready'));
+  });
+
+  it('goes from the hand-over screen back to the order', async () => {
+    await signIn();
+    api.searchCounterOrders.mockResolvedValue([summary(1)]);
+    nav('Orders / Pickup');
+    fireEvent.click(await screen.findByRole('button', { name: 'Receive ₹40.00 & hand over' }));
+    fireEvent.click(await screen.findByRole('button', { name: '← Order' }));
+    await screen.findByRole('button', { name: 'Hand over to customer →' });
+  });
+
+  it('returns to where the order was opened from', async () => {
+    await signIn();
+    api.listPrintJobs.mockResolvedValue([job('bill', 'submitted')]);
+    nav('Print queue');
+    fireEvent.click(await screen.findByRole('button', { name: 'Open order' }));
+    await screen.findByRole('heading', { name: 'SL-1' });
+    fireEvent.click(screen.getByRole('button', { name: '← Print queue' }));
+    await screen.findByRole('heading', { name: 'Saved print queue' });
+  });
+
+  it('moves the order to the next stage and shows the new status and a message', async () => {
+    await signIn();
+    api.getCounterOrder.mockResolvedValue(savedOrder({ status: 'received' }));
+    await openOrdersAndFirstOrder();
+    fireEvent.click(await screen.findByRole('button', { name: 'Move to Washing' }));
+    await screen.findByText('Order SL-1 moved to washing.');
+    expect(api.updateCounterOrderStatus).toHaveBeenCalledWith('o-1', 'washing');
+  });
+
+  it('shows a refused stage change', async () => {
+    await signIn();
+    api.getCounterOrder.mockResolvedValue(savedOrder({ status: 'received' }));
+    await openOrdersAndFirstOrder();
+    api.updateCounterOrderStatus.mockRejectedValueOnce(new Error('Order cannot move from received to washing.'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Move to Washing' }));
+    expect((await screen.findByRole('alert')).textContent).toBe('Order cannot move from received to washing.');
+  });
+
+  it('receives a payment on the order and shows the new balance', async () => {
+    await signIn();
+    await openOrdersAndFirstOrder();
+    api.recordCounterPayment.mockResolvedValue(savedOrder({ status: 'washing', paidMinor: 4000, balanceMinor: 0, paymentStatus: 'paid' }));
+    fireEvent.click(screen.getAllByRole('button', { name: 'Receive ₹40.00' })[0]);
+    await screen.findByText('Payment saved.');
+    expect(api.recordCounterPayment).toHaveBeenCalledWith('o-1', expect.objectContaining({ amountMinor: 4000, method: 'cash' }));
+    expect(await screen.findByText('Paid in full')).toBeTruthy();
+  });
+
+  it('lets an administrator cancel with a reason, and says how much to hand back', async () => {
+    await signIn(admin);
+    await openOrdersAndFirstOrder();
+    api.cancelCounterOrder.mockResolvedValue(savedOrder({ status: 'cancelled', refundDueMinor: 1500 }));
+    fireEvent.click(screen.getByRole('button', { name: 'More actions' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel order' }));
+    fireEvent.change(screen.getByLabelText('Reason for cancelling'), { target: { value: 'Customer did not come back' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm cancel order' }));
+    await screen.findByText('Order cancelled. Hand back ₹15.00.');
+    expect(api.cancelCounterOrder).toHaveBeenCalledWith('o-1', 'Customer did not come back');
+  });
+
+  it('reprints the bill and the tags of the tagged pieces from the order page', async () => {
+    await signIn();
+    await openOrdersAndFirstOrder();
+    api.reprintCounterOutput.mockResolvedValue(job('tags'));
+    fireEvent.click(screen.getByRole('button', { name: 'More actions' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Reprint tags' }));
+    await screen.findByText('2 selected garment tag(s) were added to the TSC queue.');
+    expect(api.reprintCounterOutput).toHaveBeenCalledWith('o-1', 'tags', ['2600001-1', '2600001-2'], expect.any(String));
+    api.reprintCounterOutput.mockResolvedValue(job('bill'));
+    fireEvent.click(screen.getByRole('button', { name: 'Reprint bill' }));
+    await screen.findByText('A bill reprint was added to the Canon queue.');
+  });
+
+  it('opens the print progress from the order page, and Back returns to the order', async () => {
+    await signIn();
+    await openOrdersAndFirstOrder();
+    await openPrintProgress();
+    expect(screen.getByRole('heading', { name: 'SL-1 · Print progress' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '← Order' }));
+    await screen.findByRole('heading', { name: 'SL-1' });
+  });
+
+  it('lists only tagged pieces for tag reprints, and says when no tags are needed', async () => {
+    await signIn();
+    const mixed = [{ ...pieces[0] }, { ...pieces[1], tagged: false, service: 'Iron' }];
+    api.getCounterOrder.mockResolvedValue(savedOrder({ pieces: mixed }));
+    await openOrdersAndFirstOrder();
+    await openPrintProgress();
+    expect(screen.getAllByRole('checkbox')).toHaveLength(1);
+    fireEvent.click(screen.getByRole('button', { name: '← Order' }));
+    api.getCounterOrder.mockResolvedValue(savedOrder({ pieces: mixed.map(piece => ({ ...piece, tagged: false })) }));
+    nav('Orders / Pickup');
+    fireEvent.click(await screen.findByRole('button', { name: 'Open' }));
+    await screen.findByRole('heading', { name: 'SL-1' });
+    await openPrintProgress();
+    expect(screen.queryAllByRole('checkbox')).toHaveLength(0);
+    expect(screen.getByText('No tags needed for this order.')).toBeTruthy();
+  });
+
+  it('opens the order of a freshly saved bill from its print progress', async () => {
+    await signIn();
+    await startOrder();
+    fireEvent.click(screen.getByRole('button', { name: 'Save & Print' }));
+    await screen.findByText(/Order SL-1 saved/);
+    fireEvent.click(screen.getByRole('button', { name: '← Order' }));
+    await screen.findByRole('heading', { name: 'SL-1' });
+    expect(screen.getByRole('button', { name: 'Orders / Pickup' }).getAttribute('aria-current')).toBe('page');
+  });
+
+  it('starts from a clean list for the next person who signs in', async () => {
+    await signIn();
+    api.searchCounterOrders.mockResolvedValue([summary(1)]);
+    nav('Orders / Pickup');
+    await screen.findByText('SL-1');
+    fireEvent.change(searchBox(), { target: { value: 'rita' } });
+    await waitFor(() => expect(api.searchCounterOrders).toHaveBeenLastCalledWith('rita', 0, 50, 'all'));
+    api.getCounterBootstrap.mockResolvedValue(unauthenticated());
+    fireEvent.click(screen.getByRole('button', { name: /Lock/ }));
+    await screen.findByText('Choose your name and enter your PIN.');
+    api.loginCounter.mockResolvedValue(admin);
+    fireEvent.click(screen.getByRole('button', { name: 'Admin' }));
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'admin-1' } });
+    fireEvent.change(screen.getByLabelText('PIN'), { target: { value: '1234' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
+    await screen.findByText('Choose service');
+    nav('Orders / Pickup');
+    await screen.findByText('SL-1');
+    expect(searchBox().value).toBe('');
+    expect(screen.getByRole('button', { name: /^Ready/ }).getAttribute('aria-pressed')).toBe('true');
   });
 });
 

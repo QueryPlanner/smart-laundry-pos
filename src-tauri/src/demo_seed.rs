@@ -6,12 +6,15 @@
 //! staff Ravi Kulkarni 8642.
 
 use crate::counter::{
-    cancel_order, collect_order, login, quote, save_order, set_discount, set_rate, setup_admin,
-    update_order_status, AccountInput, CounterSession, CustomerInput, LineInput, OrderInput,
-    PaymentInput, SaveInput,
+    cancel_order, collect_order, login, quote, record_payment, save_order, set_discount, set_rate,
+    setup_admin, update_order_status, AccountInput, CounterSession, CustomerInput, LineInput,
+    OrderInput, PaymentInput, RecordPaymentInput, SaveInput,
 };
+use crate::printing::PrintDocument;
 use crate::DatabaseState;
 use chrono::{DateTime, Datelike, Duration, NaiveDate, Utc, Weekday};
+use sqlx::SqlitePool;
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 struct Rng(u64);
@@ -137,6 +140,14 @@ fn lines_for(rng: &mut Rng) -> Vec<LineInput> {
         1 | 2 => "svc-iron",
         _ => "svc-wash-iron",
     };
+    // Some customers only want ironing. Those pieces are untagged, so the order gets no tags.
+    if rng.chance(12) {
+        for _ in 0..rng.range(1, 2) {
+            let g = *rng.pick(&DAILY);
+            add(g, "svc-iron", rng.range(1, 5) as u32);
+        }
+        return lines;
+    }
     match rng.below(100) {
         0..=59 => {
             for _ in 0..rng.range(1, 3) {
@@ -180,6 +191,93 @@ fn lines_for(rng: &mut Rng) -> Vec<LineInput> {
     lines
 }
 
+fn payment_method(rng: &mut Rng) -> &'static str {
+    match rng.below(100) {
+        0..=54 => "cash",
+        55..=89 => "upi",
+        _ => "card",
+    }
+}
+
+/// Gives each order its back-dated bill number: the IST day it was received, with a sequence that
+/// restarts each day, as the live code would have numbered it. Printed documents are rewritten to
+/// match, so reprints and piece tags agree with the order.
+async fn renumber_bills_by_day(pool: &SqlitePool, sims: &[Sim]) {
+    sqlx::query("DELETE FROM order_day_sequences")
+        .execute(pool)
+        .await
+        .unwrap();
+    let mut orders_on_day: HashMap<String, i64> = HashMap::new();
+    for sim in sims {
+        let day = (sim.received + Duration::minutes(330))
+            .format("%Y%m%d")
+            .to_string();
+        let count = orders_on_day.entry(day.clone()).or_insert(0);
+        *count += 1;
+        let seq = *count;
+        let order_no = format!("{day}{seq:04}");
+        let pieces: Vec<(String, i64)> =
+            sqlx::query_as("SELECT short_id,position FROM order_pieces WHERE order_id=?")
+                .bind(&sim.id)
+                .fetch_all(pool)
+                .await
+                .unwrap();
+        let mut short_ids: HashMap<String, String> = HashMap::new();
+        for (old, position) in &pieces {
+            let new = format!("{}{seq:04}-{position}", &day[2..]);
+            sqlx::query("UPDATE order_pieces SET short_id=? WHERE order_id=? AND short_id=?")
+                .bind(&new)
+                .bind(&sim.id)
+                .bind(old)
+                .execute(pool)
+                .await
+                .unwrap();
+            short_ids.insert(old.clone(), new);
+        }
+        sqlx::query("UPDATE orders SET order_number=? WHERE id=?")
+            .bind(&order_no)
+            .bind(&sim.id)
+            .execute(pool)
+            .await
+            .unwrap();
+        let jobs: Vec<(String, String)> =
+            sqlx::query_as("SELECT id,payload_json FROM print_jobs WHERE order_id=?")
+                .bind(&sim.id)
+                .fetch_all(pool)
+                .await
+                .unwrap();
+        for (job_id, payload) in jobs {
+            let mut document: PrintDocument = serde_json::from_str(&payload).unwrap();
+            match &mut document {
+                PrintDocument::Bill(bill) => bill.order_number = order_no.clone(),
+                PrintDocument::Tags(tags) => {
+                    tags.order_number = order_no.clone();
+                    for piece in &mut tags.pieces {
+                        piece.piece_id = short_ids
+                            .get(&piece.piece_id)
+                            .expect("a tag belongs to a piece of its order")
+                            .clone();
+                    }
+                }
+            }
+            sqlx::query("UPDATE print_jobs SET payload_json=? WHERE id=?")
+                .bind(serde_json::to_string(&document).unwrap())
+                .bind(job_id)
+                .execute(pool)
+                .await
+                .unwrap();
+        }
+    }
+    for (day, count) in orders_on_day {
+        sqlx::query("INSERT INTO order_day_sequences(day,next_number) VALUES(?,?)")
+            .bind(day)
+            .bind(count + 1)
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+}
+
 fn typed_phone(base: &str, rng: &mut Rng) -> String {
     match rng.below(10) {
         0 => format!("+91 {base}"),
@@ -193,6 +291,10 @@ struct Sim {
     received: DateTime<Utc>,
     due: DateTime<Utc>,
     piece_ids: Vec<String>,
+    /// Still owed when the order was saved (the balance is taken at collection).
+    balance_minor: i64,
+    /// When the balance was taken, if it was.
+    settled_at: Option<DateTime<Utc>>,
     last_event: DateTime<Utc>,
     collected_at: Option<DateTime<Utc>>,
     cancelled_at: Option<DateTime<Utc>>,
@@ -337,13 +439,15 @@ fn seed_demo_month() {
                 let session = &staff_sessions[(order_key % 2) as usize];
                 let reviewed = quote(&db, session, &order).await.unwrap();
                 let total = reviewed.total_minor;
-                let method = match rng.below(100) {
-                    0..=54 => "cash",
-                    55..=89 => "upi",
-                    _ => "card",
+                // Customers leave nothing, part or all of the total as an advance.
+                let advance_minor = match rng.below(100) {
+                    0..=34 => 0,
+                    35..=64 => total * rng.range(20, 80) as i64 / 100,
+                    _ => total,
                 };
-                let payment = (total > 0).then(|| PaymentInput {
-                    amount_minor: total,
+                let method = payment_method(&mut rng);
+                let payment = (advance_minor > 0).then(|| PaymentInput {
+                    amount_minor: advance_minor,
                     method: method.to_string(),
                     reference: (method == "upi")
                         .then(|| format!("UTR{:010}", rng.below(9_999_999_999))),
@@ -384,6 +488,8 @@ fn seed_demo_month() {
                     received,
                     due: ist(day + Duration::days(2), 17, 0),
                     piece_ids: saved.pieces.iter().map(|p| p.id.clone()).collect(),
+                    balance_minor: saved.balance_minor,
+                    settled_at: None,
                     last_event: received,
                     collected_at: None,
                     cancelled_at: None,
@@ -429,12 +535,30 @@ fn seed_demo_month() {
                     rng.range(0, 59) as u32,
                 );
                 if at < end_of_data && at > sim.received + Duration::hours(24) {
+                    if sim.balance_minor > 0 {
+                        // The balance is paid at the counter before the order is handed back.
+                        record_payment(
+                            &db,
+                            session,
+                            &sim.id,
+                            RecordPaymentInput {
+                                amount_minor: sim.balance_minor,
+                                method: payment_method(&mut rng).into(),
+                                reference: None,
+                                idempotency_key: format!("balance-{index}"),
+                            },
+                        )
+                        .await
+                        .unwrap();
+                        sim.settled_at = Some(at);
+                    }
                     collect_order(
                         &db,
                         session,
                         &sim.id,
                         sim.piece_ids.clone(),
                         &format!("collect-{index}"),
+                        None,
                     )
                     .await
                     .unwrap();
@@ -464,13 +588,23 @@ fn seed_demo_month() {
                 .await
                 .unwrap();
             sqlx::query(
-                "UPDATE payments SET recorded_at=?1,created_at=?1,updated_at=?1 WHERE order_id=?2",
+                "UPDATE payments SET recorded_at=?1,created_at=?1,updated_at=?1 WHERE order_id=?2 AND kind='advance'",
             )
             .bind(&received)
             .bind(&sim.id)
             .execute(pool)
             .await
             .unwrap();
+            if let Some(at) = sim.settled_at {
+                sqlx::query(
+                    "UPDATE payments SET recorded_at=?1,created_at=?1,updated_at=?1 WHERE order_id=?2 AND kind='settlement'",
+                )
+                .bind(stamp(at))
+                .bind(&sim.id)
+                .execute(pool)
+                .await
+                .unwrap();
+            }
             sqlx::query("UPDATE counter_order_requests SET created_at=? WHERE order_id=?")
                 .bind(&received)
                 .bind(&sim.id)
@@ -500,6 +634,7 @@ fn seed_demo_month() {
                     .unwrap();
             }
         }
+        renumber_bills_by_day(pool, &sims).await;
         sqlx::query("UPDATE customers SET created_at=(SELECT MIN(received_at) FROM orders WHERE customer_id=customers.id),updated_at=(SELECT MIN(received_at) FROM orders WHERE customer_id=customers.id) WHERE EXISTS (SELECT 1 FROM orders WHERE customer_id=customers.id)")
             .execute(pool).await.unwrap();
         // The shop's printers worked on a normal day: most output went to paper. The newest orders

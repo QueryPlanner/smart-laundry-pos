@@ -48,6 +48,12 @@ export interface SalesSummary {
   averageOrderMinor: number;
   collectedMinor: number;
   refundedMinor: number;
+  /** Advance paid when an order was booked, before any refund. */
+  advanceCollectedMinor: number;
+  /** Paid at or after pickup, before any refund. */
+  balanceCollectedMinor: number;
+  advanceRefundedMinor: number;
+  balanceRefundedMinor: number;
   netCollectedMinor: number;
   /** Orders cancelled inside the window (by cancellation time). */
   cancelledCount: number;
@@ -72,6 +78,10 @@ export interface SeriesPoint {
   netBilledMinor: number;
   collectedMinor: number;
   refundedMinor: number;
+  advanceCollectedMinor: number;
+  balanceCollectedMinor: number;
+  advanceRefundedMinor: number;
+  balanceRefundedMinor: number;
 }
 export interface SalesSeries { bucket: SalesBucket; points: SeriesPoint[] }
 
@@ -140,11 +150,23 @@ export interface DashboardOverview {
   today: SalesSummary;
   monthToDate: SalesSummary;
   queue: { received: number; inProcess: number; ready: number };
+  /** Orders still owing money (not cancelled or collected) and the balance they owe, as of now. */
+  receivable: { orders: number; minor: number };
   readyWaiting: AttentionList;
   inProcess: AttentionList;
   lowStockCount: number;
   recentOrders: SalesOrderRow[];
 }
+
+/** The four per-kind money figures a summary or a series point carries. */
+export type KindFigures = Pick<SalesSummary,
+  'advanceCollectedMinor' | 'balanceCollectedMinor' | 'advanceRefundedMinor' | 'balanceRefundedMinor'>;
+
+/** Net money per kind: what was taken less what was handed back, for advance and for balance. */
+export const netByKind = (item: KindFigures): { advanceMinor: number; balanceMinor: number } => ({
+  advanceMinor: item.advanceCollectedMinor - item.advanceRefundedMinor,
+  balanceMinor: item.balanceCollectedMinor - item.balanceRefundedMinor,
+});
 
 export const getDashboardOverview = (): Promise<DashboardOverview> => call('counter_dashboard_overview');
 export const getSalesSummary = (filter: SalesFilter): Promise<SalesSummary> => call('counter_sales_summary', { filter });

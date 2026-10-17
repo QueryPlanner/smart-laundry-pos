@@ -9,7 +9,10 @@ use crate::print_layout::format_money;
 #[cfg(any(target_os = "windows", target_os = "linux", test))]
 use crate::print_layout::safe_text;
 #[cfg(any(target_os = "linux", test))]
-use crate::print_layout::{bill_footer_lines, bill_header_lines, bill_message, bill_title};
+use crate::print_layout::{
+    bill_closing_lines, bill_header_lines, bill_message, bill_title, paid_label, tag_customer_name,
+    tag_customer_phone,
+};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 #[cfg(any(target_os = "windows", test))]
@@ -134,6 +137,12 @@ pub struct TagPiece {
 #[serde(rename_all = "camelCase")]
 pub struct TagDocument {
     pub order_number: String,
+    /// Customer details printed on the tag. Empty means "not printed". Documents saved before
+    /// these fields existed omit them.
+    #[serde(default)]
+    pub customer_name: String,
+    #[serde(default)]
+    pub customer_phone: String,
     pub pieces: Vec<TagPiece>,
     /// New tag branding is snapshotted so a reprint matches the original. Old documents omit it.
     #[serde(default)]
@@ -156,6 +165,8 @@ impl Default for TagDocument {
     fn default() -> Self {
         Self {
             order_number: String::new(),
+            customer_name: String::new(),
+            customer_phone: String::new(),
             pieces: Vec::new(),
             shop_name: String::new(),
             show_shop_name: false,
@@ -426,6 +437,10 @@ pub(crate) const MIN_TAG_LENGTH_TENTHS_MM: u16 = 300;
 pub(crate) const MAX_TAG_LENGTH_TENTHS_MM: u16 = 2000;
 const MAX_TAG_SHOP_NAME_CHARS: usize = 60;
 const MAX_TAG_LINE_CHARS: usize = 40;
+/// Generous limits for stored customer details. The layout cuts the name and phone for display,
+/// so these only refuse values that cannot come from the counter.
+const MAX_TAG_CUSTOMER_NAME_CHARS: usize = 200;
+const MAX_TAG_CUSTOMER_PHONE_CHARS: usize = 40;
 
 fn deadline_for(document: &PrintDocument) -> Duration {
     match document {
@@ -633,6 +648,13 @@ fn validate_document(document: &PrintDocument) -> Result<(), PrintError> {
                     "tag branding is longer than the configured limit".into(),
                 ));
             }
+            if tags.customer_name.chars().count() > MAX_TAG_CUSTOMER_NAME_CHARS
+                || tags.customer_phone.chars().count() > MAX_TAG_CUSTOMER_PHONE_CHARS
+            {
+                return Err(PrintError::Invalid(
+                    "tag customer details are longer than the allowed limit".into(),
+                ));
+            }
             if tags.pieces.is_empty() || tags.pieces.len() > MAX_TAGS_PER_DOCUMENT {
                 return Err(PrintError::Invalid(format!(
                     "a tag document must contain between 1 and {MAX_TAGS_PER_DOCUMENT} pieces"
@@ -718,7 +740,11 @@ fn render_lines(document: &PrintDocument) -> Vec<Vec<String>> {
                     "Total: {}",
                     format_money(bill.subtotal_minor - bill.discount_minor)
                 ),
-                format!("Paid: {}", format_money(bill.paid_minor)),
+                format!(
+                    "{}: {}",
+                    paid_label(bill.balance_minor),
+                    format_money(bill.paid_minor)
+                ),
             ]);
             if bill.balance_minor > 0 {
                 lines[0].push(format!("Balance: {}", format_money(bill.balance_minor)));
@@ -726,7 +752,7 @@ fn render_lines(document: &PrintDocument) -> Vec<Vec<String>> {
             if bill.header.show_ready_by {
                 lines[0].push(format!("Ready by: {}", safe_text(&bill.promised_at_ist)));
             }
-            lines[0].extend(bill_footer_lines(&bill.header));
+            lines[0].extend(bill_closing_lines(&bill.header));
             lines
         }
         PrintDocument::Tags(tags) => tags
@@ -740,8 +766,17 @@ fn render_lines(document: &PrintDocument) -> Vec<Vec<String>> {
                 if !tags.tag_line.trim().is_empty() {
                     lines.push(safe_text(&tags.tag_line));
                 }
+                lines.push(format!("Bill {}", safe_text(&tags.order_number)));
+                // Same cut and skip rules as the strip layout, so both renderers agree.
+                for detail in [
+                    tag_customer_name(&tags.customer_name),
+                    tag_customer_phone(&tags.customer_phone),
+                ] {
+                    if !detail.is_empty() {
+                        lines.push(detail);
+                    }
+                }
                 lines.extend([
-                    format!("Bill {}", safe_text(&tags.order_number)),
                     format!(
                         "{} / {}",
                         safe_text(&piece.garment),
@@ -1732,14 +1767,107 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn tags_have_piece_identity_and_no_customer_or_due_fields() {
-        let lines = render_lines(&tags()).concat();
-        let text = lines.join(" ");
-        assert!(text.contains("SL-103") && text.contains("piece-001") && text.contains("1/1"));
-        assert!(!text.to_lowercase().contains("customer"));
-        assert!(!text.to_lowercase().contains("17 oct"));
+    fn tags_with_customer(name: &str, phone: &str) -> PrintDocument {
+        let PrintDocument::Tags(mut value) = tags() else {
+            unreachable!()
+        };
+        value.customer_name = name.into();
+        value.customer_phone = phone.into();
+        PrintDocument::Tags(value)
     }
+
+    #[test]
+    fn tags_print_customer_name_and_phone_but_no_due_date() {
+        let document = tags_with_customer("Asha Patil", "9876543210");
+        validate_document(&document).unwrap();
+        let lines = render_lines(&document).concat();
+        assert_eq!(
+            lines,
+            [
+                "Bill SL-103",
+                "Asha Patil",
+                "9876543210",
+                "Kurta / Wash + Iron",
+                "Piece piece-001 (1/1)",
+            ]
+        );
+        assert!(!lines.iter().any(|l| l.contains("17 Oct")));
+    }
+
+    #[test]
+    fn tag_customer_details_are_cut_for_display_and_skipped_when_empty() {
+        let document = tags_with_customer(&"N".repeat(100), &"7".repeat(30));
+        let lines = render_lines(&document).concat();
+        assert_eq!(lines.len(), 5, "no extra or missing lines: {lines:?}");
+        assert_eq!(lines[1], format!("{}\u{2026}", "N".repeat(23)));
+        assert_eq!(lines[2], "7".repeat(15));
+
+        let blank = tags_with_customer("  \n ", "");
+        let lines = render_lines(&blank).concat();
+        assert_eq!(
+            lines,
+            [
+                "Bill SL-103",
+                "Kurta / Wash + Iron",
+                "Piece piece-001 (1/1)"
+            ]
+        );
+        assert!(lines.iter().all(|l| !l.trim().is_empty()));
+    }
+
+    #[test]
+    fn tag_documents_saved_before_customer_fields_still_load_and_print() {
+        let old: TagDocument = serde_json::from_str(
+            r#"{"orderNumber":"SL-1","pieces":[{"pieceId":"p1","garment":"Shirt","service":"Wash","position":1,"total":1}]}"#,
+        )
+        .unwrap();
+        assert!(old.customer_name.is_empty() && old.customer_phone.is_empty());
+        let document = PrintDocument::Tags(old);
+        validate_document(&document).unwrap();
+        assert_eq!(
+            render_lines(&document).concat(),
+            ["Bill SL-1", "Shirt / Wash", "Piece p1 (1/1)"]
+        );
+        let json = serde_json::to_value(&document).unwrap();
+        assert_eq!(json["document"]["customerName"], "");
+        assert_eq!(json["document"]["customerPhone"], "");
+    }
+
+    #[test]
+    fn tag_customer_fields_have_generous_validation_limits() {
+        let at_limit = tags_with_customer(&"N".repeat(200), &"7".repeat(40));
+        validate_document(&at_limit).unwrap();
+        for document in [
+            tags_with_customer(&"N".repeat(201), ""),
+            tags_with_customer("", &"7".repeat(41)),
+        ] {
+            assert!(matches!(
+                validate_document(&document),
+                Err(PrintError::Invalid(message)) if message.contains("customer details")
+            ));
+        }
+        let PrintDocument::Tags(mut no_pieces) = tags() else {
+            unreachable!()
+        };
+        no_pieces.pieces.clear();
+        assert!(validate_document(&PrintDocument::Tags(no_pieces)).is_err());
+    }
+
+    #[test]
+    fn bill_labels_the_payment_as_an_advance_only_while_a_balance_remains() {
+        let partly = render_lines(&bill()).concat();
+        assert!(partly.iter().any(|l| l == "Advance paid: \u{20b9}10.00"));
+        assert!(!partly.iter().any(|l| l == "Paid: \u{20b9}10.00"));
+        let PrintDocument::Bill(mut settled) = bill() else {
+            unreachable!()
+        };
+        settled.paid_minor = 4500;
+        settled.balance_minor = 0;
+        let settled = render_lines(&PrintDocument::Bill(settled)).concat();
+        assert!(settled.iter().any(|l| l == "Paid: \u{20b9}45.00"));
+        assert!(!settled.iter().any(|l| l.contains("Advance")));
+    }
+
     #[test]
     fn bill_includes_promise_payment_and_count() {
         let text = render_lines(&bill()).concat().join(" ");
@@ -1774,7 +1902,8 @@ mod tests {
         assert_eq!(lines[0], "Example Cleaners");
         assert_eq!(lines[1], "12 Example Road");
         assert_eq!(lines[2], "Tel: PHONE TEST VALUE");
-        assert_eq!(lines.last().unwrap(), "Visit again");
+        assert_eq!(lines[lines.len() - 2], "Visit again");
+        assert_eq!(lines.last().unwrap(), "* terms and conditions apply");
         assert!(!lines.iter().any(|l| l == "Thank you"));
     }
     #[test]
@@ -1782,7 +1911,30 @@ mod tests {
         let lines = render_lines(&bill()).concat();
         assert_eq!(lines[0], "SMART LAUNDRY");
         assert!(lines[1].starts_with("Bill: "));
-        assert_eq!(lines.last().unwrap(), "Thank you");
+        assert_eq!(lines[lines.len() - 2], "Thank you");
+        assert_eq!(lines.last().unwrap(), "* terms and conditions apply");
+    }
+
+    #[test]
+    fn every_bill_text_ends_with_the_terms_line_below_the_footer() {
+        // Custom footer, the default thank-you, and a bill saved before shop settings existed.
+        let custom = PrintDocument::Bill(bill_with_header(BillHeader {
+            footer: "Visit again".into(),
+            ..BillHeader::default()
+        }));
+        let default = bill();
+        let mut legacy = serde_json::to_value(bill()).unwrap();
+        legacy["document"].as_object_mut().unwrap().remove("header");
+        let legacy: PrintDocument = serde_json::from_value(legacy).unwrap();
+        for (document, footer) in [
+            (custom, "Visit again"),
+            (default, "Thank you"),
+            (legacy, "Thank you"),
+        ] {
+            let lines = render_lines(&document).concat();
+            assert_eq!(lines.last().unwrap(), "* terms and conditions apply");
+            assert_eq!(lines[lines.len() - 2], footer, "{lines:?}");
+        }
     }
     #[test]
     fn bills_saved_before_shop_settings_still_load() {

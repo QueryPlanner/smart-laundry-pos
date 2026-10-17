@@ -8,7 +8,7 @@ import { NAV_GROUPS, canOpen, visibleNavGroups, type SectionProps } from './sect
 import type { CounterAccount, CounterCatalogue, CounterSavedOrder } from '@/lib/localFirst/counter';
 
 const api = vi.hoisted(() => ({
-  getCounterBootstrap: vi.fn(), getCounterCatalogue: vi.fn(), getCounterOrder: vi.fn(), getOrderPieces: vi.fn(),
+  getCounterBootstrap: vi.fn(), getCounterCatalogue: vi.fn(), getCounterOrder: vi.fn(), getCounterOrderQueueCounts: vi.fn(), getOrderPieces: vi.fn(),
   listPrintJobs: vi.fn(), lockCounter: vi.fn(), quoteCounterOrder: vi.fn(), searchCounterCustomers: vi.fn(), searchCounterOrders: vi.fn(),
   listCounterStaff: vi.fn(), enumeratePrinters: vi.fn(), getPrinterProfiles: vi.fn(),
 }));
@@ -45,7 +45,7 @@ const catalogue: CounterCatalogue = {
   rates: [{ garmentId: 'shirt', serviceId: 'wash', priceMinor: 1200, configured: true, available: true, version: 1 }],
 };
 const order = (): CounterSavedOrder => ({
-  orderId: 'o-7', orderNumber: 'SL-7', receivedAt: '2026-10-15T06:00:00Z', promisedAt: '2026-10-17T11:30:00Z', status: 'ready',
+  orderId: 'o-7', orderNumber: 'SL-7', customerName: 'Rita Joshi', customerPhone: '9876543210', paymentStatus: 'unpaid', collectedAt: null, refundDueMinor: 0, payments: [], receivedAt: '2026-10-15T06:00:00Z', promisedAt: '2026-10-17T11:30:00Z', status: 'ready',
   totalMinor: 4000, paidMinor: 0, balanceMinor: 4000, pieces: [], printJobs: [],
 } as unknown as CounterSavedOrder);
 
@@ -70,6 +70,7 @@ beforeEach(() => {
   api.lockCounter.mockResolvedValue(undefined);
   api.searchCounterCustomers.mockResolvedValue([]);
   api.searchCounterOrders.mockResolvedValue([]);
+  api.getCounterOrderQueueCounts.mockResolvedValue({ ready: 0, balanceDue: 0, overdue: 0, inProcess: 0, today: 0, all: 0, balanceDueMinor: 0 });
   api.listCounterStaff.mockResolvedValue([]);
   api.enumeratePrinters.mockResolvedValue([]);
   api.getPrinterProfiles.mockResolvedValue(null);
@@ -183,10 +184,14 @@ describe('opening an order from another section', () => {
     await signedInAs(staff);
     go('Customers');
     fireEvent.click(await screen.findByRole('button', { name: 'Open order from Customers' }));
-    expect(await screen.findByText('SL-7 · Order details')).toBeTruthy();
+    expect(await screen.findByRole('heading', { name: 'SL-7' })).toBeTruthy();
     expect(api.getCounterOrder).toHaveBeenCalledWith('o-7');
     expect(navigation().getByRole('button', { name: 'Orders / Pickup' }).getAttribute('aria-current')).toBe('page');
     expect(screen.queryByRole('heading', { name: 'Customers page' })).toBeNull();
+    // The order says who it belongs to, and Back goes to the section it was opened from.
+    expect(screen.getByText('Rita Joshi · 9876543210')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '← Customers' }));
+    expect(await screen.findByRole('heading', { name: 'Customers page' })).toBeTruthy();
   });
 
   it('reports an order that cannot be opened and stays on the section', async () => {
@@ -198,18 +203,32 @@ describe('opening an order from another section', () => {
     expect(screen.getByRole('heading', { name: 'Sales page' })).toBeTruthy();
   });
 
-  it('makes Print progress and Packing / pickup reachable for the opened order, and leaves them for any section', async () => {
+  it('keeps Orders / Pickup current on every page of the opened order, with no extra navigation items', async () => {
     await signedInAs(staff);
     go('Machines');
     fireEvent.click(await screen.findByRole('button', { name: 'Open order from Machines' }));
-    await screen.findByText('SL-7 · Order details');
-    go('Print progress');
-    expect(navigation().getByRole('button', { name: 'Print progress' }).getAttribute('aria-current')).toBe('page');
-    go('Packing / pickup');
-    await waitFor(() => expect(api.getOrderPieces).toHaveBeenCalledWith('o-7'));
-    expect(navigation().getByRole('button', { name: 'Packing / pickup' }).getAttribute('aria-current')).toBe('page');
+    await screen.findByRole('heading', { name: 'SL-7' });
+    expect(labels()).not.toContain('Print progress');
+    expect(labels()).not.toContain('Packing / pickup');
+    fireEvent.click(screen.getByRole('button', { name: 'Hand over to customer →' }));
+    await screen.findByRole('button', { name: '← Order' });
+    expect(navigation().getByRole('button', { name: 'Orders / Pickup' }).getAttribute('aria-current')).toBe('page');
+    fireEvent.click(screen.getByRole('button', { name: '← Order' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'More actions' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Print status' }));
+    await screen.findByRole('heading', { name: 'SL-7 · Print progress' });
+    expect(navigation().getByRole('button', { name: 'Orders / Pickup' }).getAttribute('aria-current')).toBe('page');
     go('Dashboard');
     expect(await screen.findByRole('heading', { name: 'Dashboard page' })).toBeTruthy();
+    expect(navigation().getByRole('button', { name: 'Orders / Pickup' }).getAttribute('aria-current')).toBeNull();
+  });
+
+  it('goes back from the order to the section it was opened from, and from there back to its own pages', async () => {
+    await signedInAs(staff);
+    go('Machines');
+    fireEvent.click(await screen.findByRole('button', { name: 'Open order from Machines' }));
+    fireEvent.click(await screen.findByRole('button', { name: '← Machines' }));
+    expect(await screen.findByRole('heading', { name: 'Machines page' })).toBeTruthy();
   });
 });
 

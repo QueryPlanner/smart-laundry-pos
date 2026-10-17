@@ -11,7 +11,8 @@ import type { SalesBucket } from '@/lib/localFirst/insights';
 const api = vi.hoisted(() => ({
   getSalesSummary: vi.fn(), getSalesSeries: vi.fn(), listSalesOrders: vi.fn(), listSalesTransactions: vi.fn(), listSalesStaff: vi.fn(),
 }));
-vi.mock('@/lib/localFirst/insights', () => api);
+// Only the loaders are faked; the pure netByKind helper keeps its real behaviour.
+vi.mock('@/lib/localFirst/insights', async () => ({ ...(await vi.importActual<object>('@/lib/localFirst/insights')), ...api }));
 
 const staff: CounterAccount = { id: 's1', fullName: 'Clerk', role: 'staff', active: true };
 const KEY: Record<SalesBucket, string> = { hour: '2026-03-15T09:00', day: '2026-03-15', month: '2026-03' };
@@ -43,7 +44,10 @@ beforeEach(() => {
   vi.setSystemTime(new Date('2026-03-15T06:30:00Z'));
   api.listSalesStaff.mockResolvedValue([{ id: 's1', fullName: 'Asha Patil' }, { id: 's2', fullName: 'Ravi Kulkarni' }]);
   api.getSalesSummary.mockResolvedValue(summaryOf());
-  api.getSalesSeries.mockImplementation(async (_filter: unknown, bucket: SalesBucket) => ({ bucket, points: [pointOf(KEY[bucket], 60000, 50000)] }));
+  api.getSalesSeries.mockImplementation(async (_filter: unknown, bucket: SalesBucket) => ({
+    bucket,
+    points: [pointOf(KEY[bucket], 60000, { advanceCollectedMinor: 30000, balanceCollectedMinor: 20000 })],
+  }));
   api.listSalesOrders.mockResolvedValue({
     items: [
       orderRowOf({ discountMinor: 2000, balanceMinor: 500, paidMinor: 29500, methods: ['cash', 'upi'] }),
@@ -80,6 +84,10 @@ describe('SalesPage default view', () => {
     expect(stat('Billed').textContent).toContain(money(180000));
     expect(stat('Billed').textContent).toContain(`Average ${money(45000)} per order`);
     expect(stat('Collected').textContent).toContain(money(150000));
+    expect(stat('Advance collected').textContent).toContain(money(90000));
+    expect(stat('Advance collected').textContent).toContain('Taken when booked, after refunds');
+    expect(stat('Balance received').textContent).toContain(money(55000));
+    expect(stat('Balance received').textContent).toContain('Taken at pickup, after refunds');
     expect(stat('Refunded').textContent).toContain(money(5000));
     expect(stat('Refunded').classList.contains('warn')).toBe(true);
     expect(stat('Net collected').textContent).toContain(money(145000));
@@ -90,6 +98,18 @@ describe('SalesPage default view', () => {
     expect(screen.getByText(/The staff filter follows who created each order/)).toBeTruthy();
     expect(screen.getByText(/Expenses are kept by day/)).toBeTruthy();
     expect(screen.getByText(/Billed counts orders created in the period/)).toBeTruthy();
+    expect(screen.getByText('Advance is the part paid when the order is booked; balance is what is paid at or after pickup.')).toBeTruthy();
+  });
+
+  it('nets refunds off advance and balance separately', async () => {
+    api.getSalesSummary.mockResolvedValue(summaryOf({
+      collectedMinor: 60000, refundedMinor: 10000, advanceCollectedMinor: 40000, balanceCollectedMinor: 20000,
+      advanceRefundedMinor: 10000, balanceRefundedMinor: 0, netCollectedMinor: 50000,
+    }));
+    setup();
+    await waitFor(() => expect(stat('Advance collected').textContent).toContain(money(30000)));
+    expect(stat('Balance received').textContent).toContain(money(20000));
+    expect(stat('Net collected').textContent).toContain(money(50000));
   });
 
   it('breaks the figures down by method, staff, service and status', async () => {
@@ -109,7 +129,8 @@ describe('SalesPage default view', () => {
 
   it('shows empty breakdowns and an unavailable profit when filters hide it', async () => {
     api.getSalesSummary.mockResolvedValue(summaryOf({
-      profitMinor: null, refundedMinor: 0, byMethod: [], byStaff: [], byService: [], byStatus: [],
+      profitMinor: null, refundedMinor: 0, balanceRefundedMinor: 0, netCollectedMinor: 150000,
+      byMethod: [], byStaff: [], byService: [], byStatus: [],
     }));
     setup();
     await waitFor(() => expect(stat('Profit').textContent).toContain('—'));

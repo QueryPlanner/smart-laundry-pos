@@ -4,24 +4,30 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { OrderSummary } from './OrderSummary';
 import type { CounterCatalogue, CounterQuote } from '@/lib/localFirst/counter';
+import { ADVANCE_ABOVE_TOTAL, ADVANCE_NOT_AMOUNT } from '@/lib/localFirst/payment';
 
 const catalogue: CounterCatalogue = { garments: [{ id: 'g1', key: 'shirt', nameEn: 'Shirt', nameMr: 'शर्ट', category: 'tops', imageKey: 'shirt', billingUnit: 'piece', active: true }], services: [{ id: 's1', key: 'wash_iron', name: 'Wash + Iron', active: true }], rates: [] };
 const quote: CounterQuote = { lines: [{ garmentId: 'g1', serviceId: 's1', garment: 'Shirt', service: 'Wash + Iron', quantity: 1, unitPriceMinor: 1200, lineTotalMinor: 1200, rateVersion: 2 }], subtotalMinor: 1200, discountPercentBp: 0, discountMinor: 0, totalMinor: 1200, pieceCount: 1, promisedAt: '2026-10-17T11:30:00Z', catalogueVersion: '2' };
 const props = (overrides: Partial<React.ComponentProps<typeof OrderSummary>> = {}) => ({
-  catalogue, lines: { 'g1|s1': 1 }, quote, customer: { name: 'Rita', phone: '9876543210' }, paymentMethod: 'cash' as const,
+  catalogue, lines: { 'g1|s1': 1 }, quote, customer: { name: 'Rita', phone: '9876543210' }, advance: '', onAdvance: vi.fn(), paymentMethod: 'cash' as const,
   onPaymentMethod: vi.fn(), onRemove: vi.fn(), onQuantity: vi.fn(), onSave: vi.fn(), busy: false, quoteFailed: false, ...overrides,
 });
 const saveButton = () => screen.getByRole('button', { name: /Save & Print|Saving and dispatching/ }) as HTMLButtonElement;
+const advanceInput = () => screen.getByLabelText('Advance received now') as HTMLInputElement;
+const button = (name: string) => screen.getByRole('button', { name }) as HTMLButtonElement;
 afterEach(cleanup);
 
 describe('OrderSummary', () => {
-  it('shows the fixed promise and the full amount to collect, with no editable amount', () => {
+  it('shows the fixed promise, the amount to collect and an empty advance field with nothing paid now', () => {
     render(<OrderSummary {...props()} />);
     expect(screen.getByText('17 Oct 2026, 5:00 pm')).toBeTruthy();
     expect(screen.getByText('Amount to collect').nextSibling?.textContent).toBe('₹12.00');
-    expect(screen.queryByLabelText(/Payment amount/)).toBeNull();
+    expect(advanceInput().value).toBe('');
+    expect(screen.getByText('Any amount can be paid now. The rest is due at pickup.')).toBeTruthy();
+    expect(screen.getByText('Balance to pay at pickup ₹12.00')).toBeTruthy();
+    expect(screen.queryByRole('group', { name: 'Payment method' })).toBeNull();
     expect(screen.queryByText(/Discount/)).toBeNull();
-    expect(screen.getByText('Collect the full amount before saving.')).toBeTruthy();
+    expect(saveButton().disabled).toBe(false);
   });
 
   it('adjusts, removes and edits quantities, and saves', () => {
@@ -46,18 +52,88 @@ describe('OrderSummary', () => {
     expect(screen.getByText('Amount to collect').nextSibling?.textContent).toBe('₹10.50');
   });
 
-  it('offers the payment method and reports changes', () => {
+  it('reports every typed advance exactly as typed', () => {
     const p = props();
     render(<OrderSummary {...p} />);
-    fireEvent.change(screen.getByLabelText('Paid by'), { target: { value: 'upi' } });
+    fireEvent.change(advanceInput(), { target: { value: '25' } });
+    expect(p.onAdvance).toHaveBeenCalledWith('25');
+  });
+
+  it('fills the advance with nothing, half (rounded down to paise) or the whole total', () => {
+    const p = props({ quote: { ...quote, totalMinor: 1201 } });
+    render(<OrderSummary {...p} />);
+    fireEvent.click(button('Half'));
+    fireEvent.click(button('Full'));
+    fireEvent.click(button('Nothing now'));
+    expect(p.onAdvance.mock.calls).toEqual([['6.00'], ['12.01'], ['']]);
+  });
+
+  it('disables Half and Full while there is no quote, but still lets the advance be cleared', () => {
+    const p = props({ quote: null, lines: {} });
+    render(<OrderSummary {...p} />);
+    expect(button('Half').disabled).toBe(true);
+    expect(button('Full').disabled).toBe(true);
+    expect(button('Nothing now').disabled).toBe(false);
+    fireEvent.click(button('Nothing now'));
+    expect(p.onAdvance).toHaveBeenCalledWith('');
+  });
+
+  it('shows the payment method buttons only when the advance is above zero, and reports the choice', () => {
+    const p = props();
+    const view = render(<OrderSummary {...p} />);
+    expect(screen.queryByRole('group', { name: 'Payment method' })).toBeNull();
+    view.rerender(<OrderSummary {...p} advance="0" />);
+    expect(screen.queryByRole('group', { name: 'Payment method' })).toBeNull();
+    view.rerender(<OrderSummary {...p} advance="4" />);
+    for (const label of ['Cash', 'UPI', 'Card', 'Bank transfer', 'Other']) expect(button(label).getAttribute('aria-pressed')).not.toBeNull();
+    expect(button('Cash').getAttribute('aria-pressed')).toBe('true');
+    expect(button('UPI').getAttribute('aria-pressed')).toBe('false');
+    fireEvent.click(button('UPI'));
     expect(p.onPaymentMethod).toHaveBeenCalledWith('upi');
   });
 
-  it('asks for no payment when a full discount leaves nothing to collect', () => {
+  it('states the balance to pay at pickup as one line of text, from the live advance', () => {
+    const p = props();
+    const view = render(<OrderSummary {...p} advance="4.50" />);
+    expect(screen.getByText('Balance to pay at pickup ₹7.50')).toBeTruthy();
+    view.rerender(<OrderSummary {...p} advance="12" />);
+    expect(screen.getByText('Balance to pay at pickup ₹0.00')).toBeTruthy();
+  });
+
+  it('shows no balance while there is no quote', () => {
+    render(<OrderSummary {...props({ quote: null, advance: '10' })} />);
+    expect(screen.queryByText(/Balance to pay at pickup/)).toBeNull();
+  });
+
+  it('refuses text that is not an amount, with a message and a disabled Save', () => {
+    const p = props();
+    const view = render(<OrderSummary {...p} advance="12.345" />);
+    expect(screen.getByRole('alert').textContent).toBe(ADVANCE_NOT_AMOUNT);
+    expect(saveButton().disabled).toBe(true);
+    expect(screen.queryByText(/Balance to pay at pickup/)).toBeNull();
+    expect(screen.queryByRole('group', { name: 'Payment method' })).toBeNull();
+    for (const text of ['abc', '-5']) {
+      view.rerender(<OrderSummary {...p} advance={text} />);
+      expect(screen.getByRole('alert').textContent, text).toBe(ADVANCE_NOT_AMOUNT);
+    }
+  });
+
+  it('refuses an advance above the amount to collect, and accepts one that equals it', () => {
+    const p = props();
+    const view = render(<OrderSummary {...p} advance="12.01" />);
+    expect(screen.getByRole('alert').textContent).toBe(ADVANCE_ABOVE_TOTAL);
+    expect(saveButton().disabled).toBe(true);
+    view.rerender(<OrderSummary {...p} advance="12" />);
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(saveButton().disabled).toBe(false);
+  });
+
+  it('asks for no payment when a full discount leaves nothing to collect, and ignores any advance typed earlier', () => {
     const free = { ...quote, discountPercentBp: 10_000, discountMinor: 1200, totalMinor: 0 };
-    render(<OrderSummary {...props({ quote: free })} />);
-    expect(screen.getByText('Nothing to collect for this order.')).toBeTruthy();
-    expect(screen.queryByLabelText('Paid by')).toBeNull();
+    render(<OrderSummary {...props({ quote: free, advance: '500' })} />);
+    expect(screen.getByText('No payment due')).toBeTruthy();
+    expect(screen.queryByLabelText('Advance received now')).toBeNull();
+    expect(screen.queryByRole('alert')).toBeNull();
     expect(saveButton().disabled).toBe(false);
   });
 

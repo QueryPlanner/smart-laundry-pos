@@ -38,7 +38,7 @@ There is one screen layout for everyone. The menu under the title bar has four g
 | Create staff accounts, deactivate them, reset PINs | No | Yes |
 | Choose printers | No | Yes |
 | Back up now, set the USB folder, restore a backup | No | Yes |
-| Change shop name, address, phone, bill footer and bill number prefix | No | Yes |
+| Change shop name, address, phone, bill footer and tag settings | No | Yes |
 | Cancel an order | No | Yes |
 | **Delete** a customer, expense, inventory item or machine | No | Yes |
 
@@ -67,7 +67,7 @@ Install the Canon and TSC drivers as described in [PRINTING_WINDOWS.md](PRINTING
 
 ## Dashboard
 
-Insights > **Dashboard** is for a quick look at the day. It shows today's figures (orders and pieces, billed, collected, orders ready to collect, orders in process, low-stock items), this month's figures (orders, billed, collected, expenses and profit), a graph of the last 14 days, a list of orders that have been ready for pickup for more than 2 days, a list of orders in process (soonest promise first, overdue ones marked), and the most recent orders. Click a bill number to open that order in Orders / Pickup. Press **Refresh** to reload. Older orders that were saved without individual pieces are not shown in the two attention lists. **Profit** is money collected minus expenses (a cash figure, not an accounting profit).
+Insights > **Dashboard** is for a quick look at the day. It shows today's figures (orders and pieces, billed, **advance collected**, **balance received**, collected, **to collect** (the money still owed on open orders), orders ready to collect, orders in process, low-stock items), this month's figures (orders, billed, advance collected, balance received, collected, expenses and profit), a graph of the last 14 days (bars for what was billed, two lines for the advance and the balance collected), a list of orders that have been ready for pickup for more than 2 days, a list of orders in process (soonest promise first, overdue ones marked), and the most recent orders. Click a bill number to open that order in Orders / Pickup. Press **Refresh** to reload. Older orders that were saved without individual pieces are not shown in the two attention lists. **Profit** is money collected minus expenses (a cash figure, not an accounting profit).
 
 ## Sales
 
@@ -98,7 +98,7 @@ Shop > **Machines** is a list of your washers, dryers and irons with when each w
 
 ## Shop settings
 
-Admin group > **Shop settings** (admin only). Set the laundry name, address, phone, centered message line, and multiline bill footer/terms, then choose which optional fields appear on bills. The order number, customer name, garment lines, piece count and payment totals always print. You can also choose whether tags show the laundry name, add an optional short tag line, and set the per-tag pitch for the 50 mm-wide continuous TSC roll (30–200 mm; new installations start at 30 mm). The batch adds one 10 mm trailing feed after the tag that physically exits last. The previews show content and pitch before saving. Each new order keeps its print choices so reprints match the original; changes apply to new orders. If the footer is blank the bill ends with "Thank you". An existing installation starts with shop name "Smart Laundry" and footer "Thank you for choosing us.", so change them to your own. Set the bill number prefix to 1 to 6 capital letters or digits (for example `LA`, no hyphen); it applies to bills numbered after you save it. Bills print on A4 landscape. The old settings for GST number, receipt width and default completion days were not carried over; ready time remains two days at 5:00 PM.
+Admin group > **Shop settings** (admin only). Set the laundry name, address, phone, centered message line, and multiline bill footer/terms, then choose which optional fields appear on bills. The order number, customer name, garment lines, piece count and payment totals always print. You can also choose whether tags show the laundry name, add an optional short tag line, and set the per-tag pitch for the 50 mm-wide continuous TSC roll (30–200 mm; new installations start at 30 mm). The batch adds one 10 mm trailing feed after the tag that physically exits last. The previews show content and pitch before saving. Each new order keeps its print choices so reprints match the original; changes apply to new orders. If the footer is blank the bill ends with "Thank you". Every bill then prints "* terms and conditions apply" as its last line; that line is fixed and cannot be changed. An existing installation starts with shop name "Smart Laundry" and footer "Thank you for choosing us.", so change them to your own. Bill numbers no longer use a prefix, so there is nothing to set for them. Bills print on A4 landscape. The old settings for GST number, receipt width and default completion days were not carried over; ready time remains two days at 5:00 PM.
 
 ## Taking an order
 
@@ -106,21 +106,24 @@ Admin group > **Shop settings** (admin only). Set the laundry name, address, pho
 2. Choose the service at the top: Wash, Iron, Wash + Iron (the usual) or Dry Clean. Each service has its own set of prices.
 3. Tap the garment pictures to add them, or type a number in the box. A line can hold 1 to 200, an order can have 100 lines and 500 pieces, and an order total must stay under Rs 10,00,000. The bin icon removes a whole line. To add the same garment with a different service, change the service and tap it again.
 4. Check the summary on the right: the lines, the number of pieces, **Ready by** (received date plus two days, 5:00 PM, always), and the **Amount to collect**. Until a price is worked out the amounts show a dash, not 0. Under the Save button, a short note says what is still missing.
-5. Take the full amount from the customer, choose **Paid by** (cash, UPI, card, bank transfer or other), and press **Save & Print**. Payment is always taken in full at this point, so there is nothing owing later. The screen is locked while it saves.
+5. Take the **advance**, if any. Type the amount under **Advance received now**, or tap **Nothing now**, **Half** or **Full**. Choose how it was paid (cash, UPI, card, bank transfer or other) when an amount is entered. The screen shows what is left to pay at pickup. Press **Save & Print**. The advance can be anything from nothing to the whole amount; the rest is taken when the clothes are collected. The screen is locked while it saves.
 
-If rates or a discount changed while the order was open, the program refuses to save and shows the new total. Check it and press Save again. The program saves the order and then prints the bill on the Canon and one tag for each piece on the TSC. A pair of shoes is one piece and gets one tag. Stick or tie each tag to its garment.
+If rates or a discount changed while the order was open, the program refuses to save and shows the new total. Check it and press Save again. The program saves the order and then prints the bill on the Canon and one tag for each piece on the TSC. A garment ordered as Iron only gets no tag, and if every garment is Iron only no tags print at all. A pair of shoes is one piece and gets one tag. Each tag shows the customer's name and phone number, the bill number, the garment, the service and the piece number. Stick or tie each tag to its garment.
 
-Bill numbers look like `LA-2026-00123`: a prefix, the year and a running number that starts again each year. Tag IDs look like `2600123-3`: the year, the bill's running number and the piece number.
+Bill numbers look like `202610170001`: the date (year, month, day, shop time) followed by a running number for that day, which starts again at 0001 each day. Tag IDs look like `2610170001-3`: the year, month and day in two digits each, the bill's running number and the piece number. Bills saved before this change keep their old numbers, such as `LA-2026-00123`.
 
 If the program shows "Order save did not complete", nothing is saved twice; press Save again. If it says the order may already be saved, open Orders / Pickup and look for the bill before saving again. If it says the order is saved but printing failed, go to **Print queue**.
 
 ## Packing, ready and pickup
 
-Open **Orders / Pickup**. It opens on the newest orders. To find one, search by bill number or mobile number (at least two characters; a number can be typed with spaces or +91), then **Open order**.
+Open **Orders / Pickup**. It opens on the orders that are **Ready**, with a count on each filter: **Ready**, **Balance due**, **Overdue**, **In process**, **Today** and **All**. The **To collect** figure at the top is the money still owed on open orders. To find an order, type in the search box: a bill number, the last 2 to 4 digits of today's bill, a mobile number, a customer's name or a tag ID. Each order has one main button that does what it needs next: **Receive ₹X & hand over**, **Hand over**, **Open** or **View**.
 
-- **Processing status** moves an order forward through Washing, Drying, Ironing, Quality check and Packing to **Ready for pickup**. It cannot go backwards.
-- **Packing checklist** is optional. Tick each piece as it is packed and save. The program does not stop you marking an order Ready without it.
-- **Verify pickup collection** works only when the order is Ready. Compare each tag ID with the garments handed over, tick every piece, and press **Verify and complete collection**. If any piece is not ticked, the order cannot be collected. Once collected, an order cannot be collected again.
+- On an order's page, **Back** returns to wherever you opened it from (Orders, Dashboard, Sales, Customers or the Print queue).
+- The stage bar moves an order forward through Received, Washing, Drying, Ironing, Quality check and Packing to **Ready for pickup**: use **Move to ...** for the next stage or **Mark ready now**. It cannot go backwards, and skipping stages asks you to confirm.
+- The **money** panel shows the balance due and every payment (advance or balance). Choose how it was paid and press **Receive ₹X**. Tick **Part payment** to take less than the whole balance.
+- The **Packing check** appears while an order is being ironed or packed. Tick each piece, then **Save check & mark Ready**. A garment with no tag (Iron only) is checked by count.
+- **Hand over to customer** opens the hand-over screen, which has its own **Back** button. Tick every garment with the customer (type a tag ID and press Enter, or tap), take any balance, and press the one button at the bottom: **Receive ₹X**, **Receive ₹X & hand over** or **Hand over order**. It says exactly what is still missing. Taking the balance and handing over happen together, so one cannot happen without the other. Once collected, an order cannot be collected again.
+- **More actions** has Reprint bill, Reprint tags, Print status and (administrator only) Cancel order.
 
 ## If something was entered wrongly
 
@@ -165,6 +168,8 @@ From then on every backup is also copied into that subfolder (the newest 90 are 
 ## Restoring a backup
 
 Restore replaces everything on the laptop with the contents of a backup. Orders and payments entered after that backup was made are lost from the program. **It also brings back the accounts and PINs from that backup: a staff member who was deactivated since then can sign in again, and a staff PIN or the admin PIN that was changed since then goes back to the old one.** Only restore when you must, and make sure no one is taking orders. Only an admin can restore.
+
+Bill numbers are a date plus a running number for the day. Restoring a backup made earlier the same day can therefore re-issue bill numbers that were already printed on paper, so check the paper bills from that day before you take new orders.
 
 1. Sign in as admin. Admin > **Backups** > **Restore from backup...**
 2. Choose the backup file (`laundry-....db`) from the `backups` folder or from the `SmartLaundry-backups-...` folder on the USB drive, then confirm in the box that appears.
@@ -216,7 +221,7 @@ If the PIN was not acceptable, the file could not be read, or there is no admini
 | Administrator access is required to … / The administrator session is no longer valid. | A staff account tried an admin action, or the admin was deactivated while signed in. Sign in again as an admin. |
 | This customer has … order(s) and cannot be deleted… | Customers with orders are kept. To remove an order, the admin cancels it. |
 | Another Smart Laundry POS instance is using this database. | The program is already running. Do not start a second copy. |
-| This order still has … to pay. | Only affects older orders with a balance. Use Record later payment on the order, then collect. |
+| This order still has … to pay. | The balance was not received. On the hand-over screen press **Receive ₹X & hand over**, or take the payment first, then hand over. |
 | Every order piece must be confirmed for collection first. | Tick every piece before completing pickup. |
 | A collected order cannot be cancelled. / This order is already cancelled. | Cancel works only on an order that is neither collected nor already cancelled. |
 | The staged database restore failed validation… | Your records were kept. The bad file was saved aside. Choose a valid backup. |

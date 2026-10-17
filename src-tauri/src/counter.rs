@@ -444,6 +444,8 @@ pub struct QuoteLine {
     pub service_id: String,
     pub garment: String,
     pub service: String,
+    /// The service's stable key (`wash`, `iron`, `wash_iron`, `dry_clean`). `iron` pieces are untagged.
+    pub service_key: String,
     pub quantity: u32,
     pub unit_price_minor: i64,
     pub line_total_minor: i64,
@@ -472,6 +474,7 @@ pub struct Piece {
     pub service: String,
     pub position: u32,
     pub total: u32,
+    pub tagged: bool,
     pub matched: bool,
     pub packing_matched: bool,
     pub collection_matched: bool,
@@ -488,17 +491,38 @@ pub struct PrintJob {
     pub order_id: String,
     pub order_number: String,
 }
+/// One payment on an order. Voided payments stay in the list so the history shows every money movement.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PaymentRow {
+    pub id: String,
+    pub at: String,
+    pub method: String,
+    pub amount_minor: i64,
+    pub reference: Option<String>,
+    /// `advance` when taken at receipt, `settlement` when taken later.
+    pub kind: String,
+    pub voided: bool,
+}
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SavedOrder {
     pub order_id: String,
     pub order_number: String,
+    pub customer_name: String,
+    pub customer_phone: String,
     pub received_at: String,
     pub promised_at: String,
     pub status: String,
+    pub payment_status: String,
+    /// When the order was handed over, or None while it has not been collected.
+    pub collected_at: Option<String>,
     pub total_minor: i64,
     pub paid_minor: i64,
     pub balance_minor: i64,
+    /// Money to hand back on a cancelled order (its voided payments). 0 for every other order.
+    pub refund_due_minor: i64,
+    pub payments: Vec<PaymentRow>,
     pub pieces: Vec<Piece>,
     pub print_jobs: Vec<PrintJob>,
 }
@@ -799,6 +823,7 @@ async fn quote_at(
             service_id: item.service_id.clone(),
             garment: g,
             service: s,
+            service_key: row.try_get("service_key").map_err(db_err)?,
             quantity: item.quantity,
             unit_price_minor: rate,
             line_total_minor: line,
@@ -1276,6 +1301,44 @@ pub async fn apply_admin_pin_reset_file(db: &DatabaseState) -> Option<String> {
     })
 }
 
+/// The shop's calendar day (IST) for an instant, as `YYYYMMDD`. Bill numbers restart each day.
+/// Customer name printed on a tag: trimmed and cut to 60 characters (not bytes).
+fn tag_customer_name(name: &str) -> String {
+    name.trim()
+        .chars()
+        .take(MAX_TAG_CUSTOMER_NAME_CHARS)
+        .collect::<String>()
+        .trim_end()
+        .to_string()
+}
+/// Longest customer name printed on a garment tag.
+const MAX_TAG_CUSTOMER_NAME_CHARS: usize = 60;
+
+fn ist_day_key(instant: chrono::DateTime<Utc>) -> String {
+    (instant + Duration::minutes(330))
+        .format("%Y%m%d")
+        .to_string()
+}
+
+/// Payment state shown on an order. Money state for the UI comes from the balance, not from this.
+pub(crate) fn derive_payment_status(
+    total_minor: i64,
+    paid_minor: i64,
+    cancelled: bool,
+) -> &'static str {
+    if cancelled {
+        "unpaid"
+    } else if total_minor == 0 || paid_minor == total_minor {
+        "paid"
+    } else if paid_minor > total_minor {
+        "overpaid"
+    } else if paid_minor > 0 {
+        "partially_paid"
+    } else {
+        "unpaid"
+    }
+}
+
 fn submission_hash(input: &SaveInput) -> Result<String, String> {
     let bytes = serde_json::to_vec(input)
         .map_err(|error| format!("Could not fingerprint order submission: {error}"))?;
@@ -1286,6 +1349,14 @@ pub async fn save_order(
     db: &DatabaseState,
     session: &CounterSession,
     input: SaveInput,
+) -> Result<SavedOrder, String> {
+    save_order_at(db, session, input, Utc::now()).await
+}
+async fn save_order_at(
+    db: &DatabaseState,
+    session: &CounterSession,
+    input: SaveInput,
+    now: chrono::DateTime<Utc>,
 ) -> Result<SavedOrder, String> {
     let actor = actor(session)?;
     if input.idempotency_key.trim().is_empty() || input.idempotency_key.len() > 100 {
@@ -1319,23 +1390,33 @@ pub async fn save_order(
     if legacy_existing.is_some() {
         return Err("This older submission key cannot be verified. Start a new submission.".into());
     }
-    let now = Utc::now();
     let quote = quote_at(pool, &input.order, now).await?;
     if input.reviewed_quote != quote {
         return Err(
             "Rates or the promised time changed. Review the refreshed quote before saving.".into(),
         );
     }
-    // Payment is always taken in full up front, so a saved order never carries a balance.
-    match (&input.payment, quote.total_minor) {
-        (None, 0) => {}
-        (Some(_), 0) => return Err("No payment is due for a fully discounted order.".into()),
-        (None, _) => return Err("Payment in full is required before the order is saved.".into()),
-        (Some(payment), total) if payment.amount_minor != total => {
-            return Err("The full order amount must be received before the order is saved.".into())
+    // An advance is optional: nothing now, part of the total, or the full amount.
+    if let Some(payment) = &input.payment {
+        if quote.total_minor == 0 {
+            return Err("No payment is due for a fully discounted order.".into());
         }
-        _ => {}
+        if payment.amount_minor <= 0
+            || !matches!(
+                payment.method.as_str(),
+                "cash" | "upi" | "card" | "bank_transfer" | "other"
+            )
+        {
+            return Err("Enter a valid initial payment.".into());
+        }
+        if payment.amount_minor > quote.total_minor {
+            return Err("The advance cannot be more than the order total.".into());
+        }
     }
+    let paid = input
+        .payment
+        .as_ref()
+        .map_or(0, |payment| payment.amount_minor);
     let phone = normalize_phone(&input.order.customer.phone)?;
     let mut tx = db.begin_counter_write().await?;
     if let Some(row) = sqlx::query(
@@ -1420,104 +1501,73 @@ pub async fn save_order(
             Some(id)
         }
     };
-    let year = now.timestamp() + 19800;
-    let year = chrono::DateTime::from_timestamp(year, 0)
-        .ok_or("Could not create order timestamp.")?
-        .format("%Y")
-        .to_string();
-    let prefix = crate::shop_settings::order_prefix(&mut tx).await?;
-    sqlx::query("INSERT INTO order_sequences(year,next_number) VALUES(?,2) ON CONFLICT(year) DO UPDATE SET next_number=next_number+1").bind(year.parse::<i64>().unwrap_or(0)).execute(&mut *tx).await.map_err(db_err)?;
-    let seq: i64 = sqlx::query_scalar("SELECT next_number-1 FROM order_sequences WHERE year=?")
-        .bind(year.parse::<i64>().unwrap_or(0))
+    // Bill numbers are the shop day (IST) followed by a sequence that restarts each day.
+    let day = ist_day_key(now);
+    sqlx::query("INSERT INTO order_day_sequences(day,next_number) VALUES(?,2) ON CONFLICT(day) DO UPDATE SET next_number=next_number+1").bind(&day).execute(&mut *tx).await.map_err(db_err)?;
+    let seq: i64 = sqlx::query_scalar("SELECT next_number-1 FROM order_day_sequences WHERE day=?")
+        .bind(&day)
         .fetch_one(&mut *tx)
         .await
         .map_err(db_err)?;
-    let order_no = format!("{}-{}-{:05}", prefix, year, seq);
+    let order_no = format!("{day}{seq:04}");
     let oid = Uuid::new_v4().to_string();
     let device: String = sqlx::query_scalar("SELECT value FROM app_settings WHERE key='device_id'")
         .fetch_optional(&mut *tx)
         .await
         .map_err(db_err)?
         .unwrap_or_default();
-    sqlx::query("INSERT INTO orders(id,order_number,customer_id,customer_name,customer_phone,order_type,received_at,expected_ready_at,status,subtotal,discount_type,discount_value,discount_amount,total_amount,payment_status,created_by,created_at,updated_at,origin_device_id,idempotency_key) VALUES(?,?,?,?,?,'piece',?,?,'received',?,'percentage',?,?,?,'unpaid',?,?,?,?,?)")
- .bind(&oid).bind(&order_no).bind(customer_id).bind(input.order.customer.name.trim()).bind(&phone).bind(&received).bind(&due).bind(quote.subtotal_minor as f64/100.0).bind(quote.discount_percent_bp as f64/100.0).bind(quote.discount_minor as f64/100.0).bind(quote.total_minor as f64/100.0).bind(&actor.id).bind(&received).bind(&received).bind(device).bind(&input.idempotency_key).execute(&mut *tx).await.map_err(db_err)?;
+    sqlx::query("INSERT INTO orders(id,order_number,customer_id,customer_name,customer_phone,order_type,received_at,expected_ready_at,status,subtotal,discount_type,discount_value,discount_amount,total_amount,payment_status,created_by,created_at,updated_at,origin_device_id,idempotency_key) VALUES(?,?,?,?,?,'piece',?,?,'received',?,'percentage',?,?,?,?,?,?,?,?,?)")
+ .bind(&oid).bind(&order_no).bind(customer_id).bind(input.order.customer.name.trim()).bind(&phone).bind(&received).bind(&due).bind(quote.subtotal_minor as f64/100.0).bind(quote.discount_percent_bp as f64/100.0).bind(quote.discount_minor as f64/100.0).bind(quote.total_minor as f64/100.0).bind(derive_payment_status(quote.total_minor, paid, false)).bind(&actor.id).bind(&received).bind(&received).bind(device).bind(&input.idempotency_key).execute(&mut *tx).await.map_err(db_err)?;
     sqlx::query("INSERT INTO counter_order_requests(idempotency_key,order_id,payload_hash,created_at) VALUES(?,?,?,?)")
         .bind(&input.idempotency_key).bind(&oid).bind(&payload_hash).bind(&received).execute(&mut *tx).await.map_err(db_err)?;
-    let mut all_pieces = Vec::new();
+    // One order item per quote line, in quote order.
+    let mut item_ids = Vec::new();
     for line in &quote.lines {
-        let src = input
-            .order
-            .items
-            .iter()
-            .find(|i| {
-                i.garment_id == line.garment_id
-                    && i.service_id == line.service_id
-                    && i.quantity == line.quantity
-            })
-            .ok_or("Order line changed while saving.")?;
         let item_id = Uuid::new_v4().to_string();
         sqlx::query("INSERT INTO order_items(id,order_id,service_id,item_name,service_name,service_type,quantity,weight_kg,rate,line_total,created_at,garment_id,service_method_id,unit_price_minor,line_total_minor,rate_version) VALUES(?,?,?,?,?,'piece',?,0,?,?,?,?,?,?,?,?)")
-    .bind(&item_id).bind(&oid).bind(&src.service_id).bind(&line.garment).bind(&line.service).bind(src.quantity).bind(line.unit_price_minor as f64/100.0).bind(line.line_total_minor as f64/100.0).bind(&received).bind(&src.garment_id).bind(&src.service_id).bind(line.unit_price_minor).bind(line.line_total_minor).bind(line.rate_version).execute(&mut *tx).await.map_err(db_err)?;
-        let key: String = sqlx::query_scalar("SELECT garment_key FROM garments WHERE id=?")
-            .bind(&src.garment_id)
-            .fetch_one(&mut *tx)
-            .await
-            .map_err(db_err)?;
-        for _ in 0..src.quantity {
-            let pid = Uuid::new_v4().to_string();
-            // Short IDs are the two-digit year, the bill sequence and the position, so they are
-            // unique, collision-free and easy to read out at pickup (for example 2600123-3).
-            let short = format!(
-                "{:02}{:05}-{}",
-                year.parse::<i64>().unwrap_or(0) % 100,
-                seq,
-                all_pieces.len() + 1
-            );
-            all_pieces.push(Piece {
-                id: pid.clone(),
-                short_id: short.clone(),
-                garment_id: src.garment_id.clone(),
-                garment: line.garment.clone(),
-                service: line.service.clone(),
-                position: all_pieces.len() as u32 + 1,
-                total: quote.piece_count,
-                matched: false,
-                packing_matched: false,
-                collection_matched: false,
-            });
-            sqlx::query("INSERT INTO order_pieces(id,short_id,order_id,order_item_id,garment_id,service_id,garment_snapshot,service_snapshot,position,total,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)")
-       .bind(pid).bind(short).bind(&oid).bind(&item_id).bind(&src.garment_id).bind(&src.service_id).bind(&line.garment).bind(&line.service).bind(all_pieces.len() as u32).bind(quote.piece_count).bind(&received).execute(&mut *tx).await.map_err(db_err)?;
-        }
-        let _ = key;
+    .bind(&item_id).bind(&oid).bind(&line.service_id).bind(&line.garment).bind(&line.service).bind(line.quantity).bind(line.unit_price_minor as f64/100.0).bind(line.line_total_minor as f64/100.0).bind(&received).bind(&line.garment_id).bind(&line.service_id).bind(line.unit_price_minor).bind(line.line_total_minor).bind(line.rate_version).execute(&mut *tx).await.map_err(db_err)?;
+        item_ids.push(item_id);
     }
-    let mut paid = 0i64;
+    // Tagged pieces (every service except plain ironing) take positions 1..T; untagged pieces
+    // (ironing only) follow at T+1..N, so the tags a customer carries are always numbered 1..T.
+    let tagged_total: u32 = quote
+        .lines
+        .iter()
+        .filter(|line| line.service_key != "iron")
+        .map(|line| line.quantity)
+        .sum();
+    let mut all_pieces = Vec::new();
+    for untagged_pass in [false, true] {
+        for (line, item_id) in quote.lines.iter().zip(&item_ids) {
+            if (line.service_key == "iron") != untagged_pass {
+                continue;
+            }
+            for _ in 0..line.quantity {
+                let pid = Uuid::new_v4().to_string();
+                let position = all_pieces.len() as u32 + 1;
+                let tagged = !untagged_pass;
+                let short = format!("{}{seq:04}-{position}", &day[2..]);
+                all_pieces.push(Piece {
+                    id: pid.clone(),
+                    short_id: short.clone(),
+                    garment_id: line.garment_id.clone(),
+                    garment: line.garment.clone(),
+                    service: line.service.clone(),
+                    position,
+                    total: quote.piece_count,
+                    tagged,
+                    matched: false,
+                    packing_matched: false,
+                    collection_matched: false,
+                });
+                sqlx::query("INSERT INTO order_pieces(id,short_id,order_id,order_item_id,garment_id,service_id,garment_snapshot,service_snapshot,position,total,created_at,tagged) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)")
+           .bind(pid).bind(short).bind(&oid).bind(item_id).bind(&line.garment_id).bind(&line.service_id).bind(&line.garment).bind(&line.service).bind(position).bind(quote.piece_count).bind(&received).bind(tagged as i64).execute(&mut *tx).await.map_err(db_err)?;
+            }
+        }
+    }
     if let Some(payment) = &input.payment {
-        if payment.amount_minor <= 0
-            || !matches!(
-                payment.method.as_str(),
-                "cash" | "upi" | "card" | "bank_transfer" | "other"
-            )
-        {
-            return Err("Enter a valid initial payment.".into());
-        }
-        paid = payment.amount_minor;
-        let status = "paid";
-        sqlx::query("INSERT INTO payments(id,order_id,amount,method,reference_number,recorded_at,recorded_by,created_at,updated_at,origin_device_id) VALUES(?,?,?,?,?,?,?,?,?,?)")
+        sqlx::query("INSERT INTO payments(id,order_id,amount,method,reference_number,recorded_at,recorded_by,created_at,updated_at,origin_device_id,kind) VALUES(?,?,?,?,?,?,?,?,?,?,'advance')")
    .bind(Uuid::new_v4().to_string()).bind(&oid).bind(paid as f64/100.0).bind(&payment.method).bind(&payment.reference).bind(&received).bind(&actor.id).bind(&received).bind(&received).bind("counter").execute(&mut *tx).await.map_err(db_err)?;
-        sqlx::query("UPDATE orders SET payment_status=? WHERE id=?")
-            .bind(status)
-            .bind(&oid)
-            .execute(&mut *tx)
-            .await
-            .map_err(db_err)?;
-    }
-    if input.payment.is_none() {
-        // Only reachable for a 100% discount (total 0): nothing to collect, so the order is paid.
-        sqlx::query("UPDATE orders SET payment_status='paid' WHERE id=?")
-            .bind(&oid)
-            .execute(&mut *tx)
-            .await
-            .map_err(db_err)?;
     }
     // The shop identity is copied into the document now, so a reprint matches this bill.
     let print_settings = crate::shop_settings::load_for_order(&mut tx).await?;
@@ -1551,27 +1601,31 @@ pub async fn save_order(
         balance_minor: quote.total_minor - paid,
         physical_piece_count: quote.piece_count,
     };
-    let tags = crate::printing::TagDocument {
-        order_number: order_no.clone(),
-        pieces: all_pieces
-            .iter()
-            .map(|x| crate::printing::TagPiece {
-                piece_id: x.short_id.clone(),
-                garment: x.garment.clone(),
-                service: x.service.clone(),
-                position: x.position,
-                total: x.total,
-            })
-            .collect(),
-        shop_name: print_settings.shop_name.clone(),
-        show_shop_name: print_settings.print_shop_name_on_tags,
-        tag_line: print_settings.tag_line.clone(),
-        tag_length_tenths_mm: print_settings.tag_length_tenths_mm,
-    };
-    for (kind, doc) in [
-        ("bill", crate::printing::PrintDocument::Bill(bill)),
-        ("tags", crate::printing::PrintDocument::Tags(tags)),
-    ] {
+    let mut documents = vec![("bill", crate::printing::PrintDocument::Bill(bill))];
+    if tagged_total > 0 {
+        let tags = crate::printing::TagDocument {
+            order_number: order_no.clone(),
+            customer_name: tag_customer_name(&input.order.customer.name),
+            customer_phone: phone.clone(),
+            pieces: all_pieces
+                .iter()
+                .filter(|x| x.tagged)
+                .map(|x| crate::printing::TagPiece {
+                    piece_id: x.short_id.clone(),
+                    garment: x.garment.clone(),
+                    service: x.service.clone(),
+                    position: x.position,
+                    total: tagged_total,
+                })
+                .collect(),
+            shop_name: print_settings.shop_name.clone(),
+            show_shop_name: print_settings.print_shop_name_on_tags,
+            tag_line: print_settings.tag_line.clone(),
+            tag_length_tenths_mm: print_settings.tag_length_tenths_mm,
+        };
+        documents.push(("tags", crate::printing::PrintDocument::Tags(tags)));
+    }
+    for (kind, doc) in documents {
         sqlx::query("INSERT INTO print_jobs(id,order_id,kind,state,payload_json,created_at,updated_at) VALUES(?,?,?,'pending',?,?,?)")
       .bind(Uuid::new_v4().to_string()).bind(&oid).bind(kind).bind(serde_json::to_string(&doc).map_err(|e|e.to_string())?).bind(&received).bind(&received).execute(&mut *tx).await.map_err(db_err)?;
     }
@@ -1584,7 +1638,7 @@ pub async fn save_order(
 pub async fn get_saved(db: &DatabaseState, id: &str) -> Result<Option<SavedOrder>, String> {
     let p = db.writer_pool()?;
     let o = sqlx::query(
-        "SELECT id,order_number,received_at,expected_ready_at,total_amount,status FROM orders WHERE id=?",
+        "SELECT id,order_number,customer_name,customer_phone,received_at,expected_ready_at,total_amount,status,payment_status FROM orders WHERE id=?",
     )
     .bind(id)
     .fetch_optional(p)
@@ -1593,31 +1647,82 @@ pub async fn get_saved(db: &DatabaseState, id: &str) -> Result<Option<SavedOrder
     let Some(o) = o else { return Ok(None) };
     let id: String = o.try_get("id").map_err(db_err)?;
     let no: String = o.try_get("order_number").map_err(db_err)?;
+    let customer_name: String = o.try_get("customer_name").map_err(db_err)?;
+    let customer_phone: String = o.try_get("customer_phone").map_err(db_err)?;
     let received: String = o.try_get("received_at").map_err(db_err)?;
     let due: String = o.try_get("expected_ready_at").map_err(db_err)?;
     let total: f64 = o.try_get("total_amount").map_err(db_err)?;
     let status: String = o.try_get("status").map_err(db_err)?;
-    let paid: f64 = sqlx::query_scalar(
-        "SELECT COALESCE(SUM(amount),0.0) FROM payments WHERE order_id=? AND voided_at IS NULL",
+    let payment_status: String = o.try_get("payment_status").map_err(db_err)?;
+    let collected_at: Option<String> = sqlx::query_scalar(
+        "SELECT created_at FROM counter_collection_requests WHERE order_id=? ORDER BY created_at LIMIT 1",
     )
     .bind(&id)
-    .fetch_one(p)
+    .fetch_optional(p)
     .await
     .map_err(db_err)?;
+    let payments = payment_rows(p, &id).await?;
+    let paid_minor: i64 = payments
+        .iter()
+        .filter(|payment| !payment.voided)
+        .map(|payment| payment.amount_minor)
+        .sum();
+    let total_minor = (total * 100.0).round() as i64;
+    let refund_due_minor = if status == "cancelled" {
+        payments
+            .iter()
+            .filter(|payment| payment.voided)
+            .map(|payment| payment.amount_minor)
+            .sum()
+    } else {
+        0
+    };
     let pieces = pieces_for(p, &id).await?;
     let jobs = jobs_for(p, Some(&id)).await?;
     Ok(Some(SavedOrder {
         order_id: id,
         order_number: no,
+        customer_name,
+        customer_phone,
         received_at: received,
         promised_at: due,
         status,
-        total_minor: (total * 100.0).round() as i64,
-        paid_minor: (paid * 100.0).round() as i64,
-        balance_minor: (total * 100.0).round() as i64 - (paid * 100.0).round() as i64,
+        payment_status,
+        collected_at,
+        total_minor,
+        paid_minor,
+        balance_minor: total_minor - paid_minor,
+        refund_due_minor,
+        payments,
         pieces,
         print_jobs: jobs,
     }))
+}
+
+/// Every payment on an order, oldest first, including voided ones. Each amount is rounded on its own.
+async fn payment_rows(p: &SqlitePool, order: &str) -> Result<Vec<PaymentRow>, String> {
+    let rows = sqlx::query(
+        "SELECT id,recorded_at,method,amount,reference_number,kind,voided_at FROM payments WHERE order_id=? ORDER BY recorded_at,id",
+    )
+    .bind(order)
+    .fetch_all(p)
+    .await
+    .map_err(db_err)?;
+    rows.iter()
+        .map(|row| {
+            let amount: f64 = row.try_get("amount").map_err(db_err)?;
+            let voided_at: Option<String> = row.try_get("voided_at").map_err(db_err)?;
+            Ok(PaymentRow {
+                id: row.try_get("id").map_err(db_err)?,
+                at: row.try_get("recorded_at").map_err(db_err)?,
+                method: row.try_get("method").map_err(db_err)?,
+                amount_minor: (amount * 100.0).round() as i64,
+                reference: row.try_get("reference_number").map_err(db_err)?,
+                kind: row.try_get("kind").map_err(db_err)?,
+                voided: voided_at.is_some(),
+            })
+        })
+        .collect()
 }
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1633,6 +1738,14 @@ pub struct OrderSummary {
     pub paid_minor: i64,
     pub balance_minor: i64,
     pub piece_count: u32,
+    /// The stored `orders.payment_status`.
+    pub payment_status: String,
+    /// Still in process and promised time has passed (the `overdue` filter's definition).
+    pub overdue: bool,
+    /// Pieces that get no tag (ironing only).
+    pub untagged_count: i64,
+    /// Why the order matched the search text, or None when it matched the filter alone.
+    pub match_reason: Option<String>,
 }
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -1643,62 +1756,317 @@ pub struct RecordPaymentInput {
     pub idempotency_key: String,
 }
 
+/// Shop time (IST) as an offset from UTC, in seconds.
+const IST_OFFSET_SECONDS: i64 = 19_800;
+/// Statuses of an order still being worked on: not ready, collected or cancelled.
+const IN_PROCESS_STATUSES: &str =
+    "'received','washing','drying','ironing','quality_check','packing'";
+
+/// Every order with the columns the list filters and sorts on. Money is whole paise, rounded per
+/// order and per payment. Times are Unix seconds through `strftime('%s')`, which reads every stored
+/// shape (`...Z`, `+00:00` and older `YYYY-MM-DD HH:MM:SS`).
+const ORDER_ROWS: &str = "SELECT o.id,o.order_number,o.customer_name,o.customer_phone,o.status,o.payment_status,o.received_at,o.expected_ready_at,o.created_at,\
+CAST(strftime('%s',o.received_at) AS INTEGER) AS received_epoch,\
+CAST(strftime('%s',o.expected_ready_at) AS INTEGER) AS promised_epoch,\
+CAST(ROUND(o.total_amount*100) AS INTEGER) AS total_minor,\
+COALESCE((SELECT SUM(CAST(ROUND(p.amount*100) AS INTEGER)) FROM payments p WHERE p.order_id=o.id AND p.voided_at IS NULL),0) AS paid_minor,\
+(SELECT COUNT(*) FROM order_pieces op WHERE op.order_id=o.id) AS piece_count,\
+(SELECT COUNT(*) FROM order_pieces op WHERE op.order_id=o.id AND op.tagged=0) AS untagged_count \
+FROM orders o";
+
+/// `ORDER_ROWS` plus the balance, the overdue flag and the search reason (alias `m` in the callers).
+/// Reasons are checked in this order: Tag ID, Today's bill, Bill number, Phone, Name. `?1` is the
+/// trimmed search text, empty when there is none; `?2` to `?5` are in `ListScope`.
+fn order_list_sql() -> String {
+    format!(
+        "SELECT r.*,r.total_minor-r.paid_minor AS balance_minor,\
+CASE WHEN r.status IN ({IN_PROCESS_STATUSES}) AND r.promised_epoch<?6 THEN 1 ELSE 0 END AS overdue,\
+CASE WHEN ?1='' THEN NULL \
+WHEN EXISTS(SELECT 1 FROM order_pieces tp WHERE tp.order_id=r.id AND tp.short_id=?4) THEN 'Tag ID' \
+WHEN r.order_number=?5 THEN 'Today''s bill' \
+WHEN r.order_number LIKE ?2 ESCAPE '\\' THEN 'Bill number' \
+WHEN r.customer_phone LIKE ?3 ESCAPE '\\' THEN 'Phone' \
+WHEN r.customer_name LIKE ?2 ESCAPE '\\' THEN 'Name' END AS match_reason \
+FROM ({ORDER_ROWS}) r"
+    )
+}
+
+/// The order list segments (CONTRACT "Order list segments"). `order_queue_counts` counts the same
+/// predicates, so a segment's count is always the length of its filtered list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OrderFilter {
+    All,
+    Ready,
+    BalanceDue,
+    Overdue,
+    InProcess,
+    Today,
+}
+
+impl OrderFilter {
+    /// `None`, or a blank value, lists every order. Any other unknown value is refused.
+    fn parse(text: Option<&str>) -> Result<Self, String> {
+        match text.map(str::trim).unwrap_or_default() {
+            "" | "all" => Ok(Self::All),
+            "ready" => Ok(Self::Ready),
+            "balance_due" => Ok(Self::BalanceDue),
+            "overdue" => Ok(Self::Overdue),
+            "in_process" => Ok(Self::InProcess),
+            "today" => Ok(Self::Today),
+            _ => Err("Unknown order filter.".into()),
+        }
+    }
+
+    /// Condition over the rows of `order_list_sql`. `?7` and `?8` bound the IST day `[start, end)`.
+    fn predicate(self) -> String {
+        match self {
+            Self::All => "1=1".into(),
+            Self::Ready => "m.status='ready'".into(),
+            Self::BalanceDue => {
+                "m.status NOT IN ('collected','cancelled') AND m.balance_minor>0".into()
+            }
+            Self::Overdue => "m.overdue=1".into(),
+            Self::InProcess => format!("m.status IN ({IN_PROCESS_STATUSES})"),
+            Self::Today => "m.received_epoch>=?7 AND m.received_epoch<?8".into(),
+        }
+    }
+
+    /// Promised time first for the queues that wait on a promise (nulls last), balance for the
+    /// balance queue, newest received first otherwise. Ties fall back to newest created, then id.
+    fn order_by(self) -> &'static str {
+        match self {
+            Self::Ready | Self::Overdue | Self::InProcess => {
+                "m.promised_epoch IS NULL,m.promised_epoch,m.created_at DESC,m.id"
+            }
+            Self::BalanceDue => "m.balance_minor DESC,m.created_at DESC,m.id",
+            Self::All | Self::Today => "m.received_epoch DESC,m.created_at DESC,m.id",
+        }
+    }
+}
+
+/// The values bound into the order list. Typed text reaches SQL only as bound values.
+struct ListScope {
+    text: String,
+    pattern: String,
+    phone_pattern: String,
+    tag_id: Option<String>,
+    todays_bill: Option<String>,
+    now: i64,
+    day_start: i64,
+    day_end: i64,
+}
+
+impl ListScope {
+    fn new(query: &str, now: chrono::DateTime<Utc>) -> Self {
+        let q = query.trim();
+        // A typed phone number ("98765 43210", "+91 98765 43210") also matches the stored digits.
+        let phone_digits = strip_country_prefix(
+            q.chars()
+                .filter_map(digit_value)
+                .filter_map(|v| char::from_digit(v, 10))
+                .collect(),
+        );
+        let looks_like_phone = phone_digits.len() >= 3
+            && q.chars().all(|c| {
+                digit_value(c).is_some() || matches!(c, ' ' | '-' | '+' | '.' | '(' | ')')
+            });
+        // LIKE wildcards typed by the operator are matched literally.
+        let pattern = like_contains(q);
+        let phone_pattern = if looks_like_phone {
+            format!("%{phone_digits}%")
+        } else {
+            pattern.clone()
+        };
+        // The IST day that contains `now`, as Unix seconds `[day_start, day_end)`.
+        let shop_seconds = now.timestamp() + IST_OFFSET_SECONDS;
+        let day_start = shop_seconds.div_euclid(86_400) * 86_400 - IST_OFFSET_SECONDS;
+        Self {
+            text: q.to_string(),
+            pattern,
+            phone_pattern,
+            tag_id: is_tag_id(q).then(|| q.to_string()),
+            todays_bill: todays_bill(q, &ist_day_key(now)),
+            now: now.timestamp(),
+            day_start,
+            day_end: day_start + 86_400,
+        }
+    }
+}
+
+/// A piece tag id: a 7 to 10 digit bill part, a dash, then a 1 to 3 digit position
+/// (`2610170001-3`; legacy ids are shorter, such as `2600123-3`).
+fn is_tag_id(text: &str) -> bool {
+    let Some((bill, position)) = text.split_once('-') else {
+        return false;
+    };
+    let all_digits = |part: &str, len: std::ops::RangeInclusive<usize>| {
+        len.contains(&part.len()) && part.bytes().all(|b| b.is_ascii_digit())
+    };
+    all_digits(bill, 7..=10) && all_digits(position, 1..=3)
+}
+
+/// Today's bill for a 2 to 4 digit search: the shop day followed by the digits zero-padded to four.
+/// "7" is too short; "07" and "0007" both name the bill ending 0007. Digits may be typed in any script.
+fn todays_bill(text: &str, today: &str) -> Option<String> {
+    let digits = text
+        .chars()
+        .map(|c| digit_value(c).and_then(|v| char::from_digit(v, 10)))
+        .collect::<Option<String>>()?;
+    if !(2..=4).contains(&digits.len()) {
+        return None;
+    }
+    let sequence: u32 = digits.parse().ok()?;
+    Some(format!("{today}{sequence:04}"))
+}
+
+/// Binds the `ListScope` values to `?1` to `?8`, in that order.
+fn bind_scope<'q>(
+    query: sqlx::query::Query<'q, sqlx::Sqlite, sqlx::sqlite::SqliteArguments<'q>>,
+    scope: &ListScope,
+) -> sqlx::query::Query<'q, sqlx::Sqlite, sqlx::sqlite::SqliteArguments<'q>> {
+    query
+        .bind(scope.text.clone())
+        .bind(scope.pattern.clone())
+        .bind(scope.phone_pattern.clone())
+        .bind(scope.tag_id.clone())
+        .bind(scope.todays_bill.clone())
+        .bind(scope.now)
+        .bind(scope.day_start)
+        .bind(scope.day_end)
+}
+
 pub async fn search_orders(
     db: &DatabaseState,
     session: &CounterSession,
     query: &str,
     offset: u32,
     limit: u32,
+    filter: Option<&str>,
+) -> Result<Vec<OrderSummary>, String> {
+    search_orders_at(db, session, query, offset, limit, filter, Utc::now()).await
+}
+
+/// `search_orders` as of `now`. The shop day and the overdue test both depend on the clock.
+async fn search_orders_at(
+    db: &DatabaseState,
+    session: &CounterSession,
+    query: &str,
+    offset: u32,
+    limit: u32,
+    filter: Option<&str>,
+    now: chrono::DateTime<Utc>,
 ) -> Result<Vec<OrderSummary>, String> {
     let _ = actor(session)?;
     if offset > 100_000 || !(1..=100).contains(&limit) {
         return Err("Order search page is out of range.".into());
     }
-    let q = query.trim();
-    // An empty search lists the newest orders so pickup never opens on a blank screen; a single
-    // character is too broad to be useful.
-    if q.chars().count() == 1 {
+    let filter = OrderFilter::parse(filter)?;
+    // A single character is too broad to be useful, whatever the filter.
+    if query.trim().chars().count() == 1 {
         return Ok(Vec::new());
     }
-    // LIKE wildcards typed by the operator are matched literally.
-    let pattern = like_contains(q);
-    // A typed phone number ("98765 43210", "+91 98765 43210") also matches the stored digits.
-    let phone_digits = strip_country_prefix(
-        q.chars()
-            .filter_map(digit_value)
-            .filter_map(|v| char::from_digit(v, 10))
-            .collect(),
+    let scope = ListScope::new(query, now);
+    // An exact tag id and today's bill rank first; everything else keeps the filter's order.
+    let sql = format!(
+        "SELECT m.* FROM ({list}) m WHERE ({pred}) AND (?1='' OR m.match_reason IS NOT NULL) \
+         ORDER BY CASE m.match_reason WHEN 'Tag ID' THEN 0 WHEN 'Today''s bill' THEN 1 ELSE 2 END,{order} \
+         LIMIT ?9 OFFSET ?10",
+        list = order_list_sql(),
+        pred = filter.predicate(),
+        order = filter.order_by(),
     );
-    let looks_like_phone = phone_digits.len() >= 3
-        && q.chars()
-            .all(|c| digit_value(c).is_some() || matches!(c, ' ' | '-' | '+' | '.' | '(' | ')'));
-    let phone_pattern = if looks_like_phone {
-        format!("%{phone_digits}%")
-    } else {
-        pattern.clone()
-    };
-    let rows = sqlx::query("SELECT o.id,o.order_number,o.customer_name,o.customer_phone,o.status,o.received_at,o.expected_ready_at,o.total_amount,COALESCE((SELECT SUM(p.amount) FROM payments p WHERE p.order_id=o.id AND p.voided_at IS NULL),0.0) AS paid,COALESCE((SELECT COUNT(*) FROM order_pieces p WHERE p.order_id=o.id),0) AS pieces FROM orders o WHERE ?1='' OR o.order_number LIKE ?2 ESCAPE '\\' OR o.customer_phone LIKE ?5 ESCAPE '\\' ORDER BY o.created_at DESC LIMIT ?3 OFFSET ?4")
-        .bind(q).bind(pattern).bind(limit as i64).bind(offset as i64).bind(phone_pattern).fetch_all(db.writer_pool()?).await.map_err(db_err)?;
-    rows.iter()
-        .map(|r| {
-            let total: f64 = r.try_get("total_amount").map_err(db_err)?;
-            let paid: f64 = r.try_get("paid").map_err(db_err)?;
-            Ok(OrderSummary {
-                id: r.try_get("id").map_err(db_err)?,
-                order_number: r.try_get("order_number").map_err(db_err)?,
-                customer_name: r.try_get("customer_name").map_err(db_err)?,
-                customer_phone: r.try_get("customer_phone").map_err(db_err)?,
-                status: r.try_get("status").map_err(db_err)?,
-                received_at: r.try_get("received_at").map_err(db_err)?,
-                promised_at: r.try_get("expected_ready_at").map_err(db_err)?,
-                total_minor: (total * 100.0).round() as i64,
-                paid_minor: (paid * 100.0).round() as i64,
-                balance_minor: (total * 100.0).round() as i64 - (paid * 100.0).round() as i64,
-                piece_count: r.try_get("pieces").map_err(db_err)?,
-            })
-        })
-        .collect()
+    let rows = bind_scope(sqlx::query(&sql), &scope)
+        .bind(limit as i64)
+        .bind(offset as i64)
+        .fetch_all(db.writer_pool()?)
+        .await
+        .map_err(db_err)?;
+    rows.iter().map(order_summary).collect()
 }
+
+fn order_summary(row: &sqlx::sqlite::SqliteRow) -> Result<OrderSummary, String> {
+    let overdue: i64 = row.try_get("overdue").map_err(db_err)?;
+    Ok(OrderSummary {
+        id: row.try_get("id").map_err(db_err)?,
+        order_number: row.try_get("order_number").map_err(db_err)?,
+        customer_name: row.try_get("customer_name").map_err(db_err)?,
+        customer_phone: row.try_get("customer_phone").map_err(db_err)?,
+        status: row.try_get("status").map_err(db_err)?,
+        received_at: row.try_get("received_at").map_err(db_err)?,
+        promised_at: row.try_get("expected_ready_at").map_err(db_err)?,
+        total_minor: row.try_get("total_minor").map_err(db_err)?,
+        paid_minor: row.try_get("paid_minor").map_err(db_err)?,
+        balance_minor: row.try_get("balance_minor").map_err(db_err)?,
+        piece_count: row.try_get("piece_count").map_err(db_err)?,
+        payment_status: row.try_get("payment_status").map_err(db_err)?,
+        overdue: overdue == 1,
+        untagged_count: row.try_get("untagged_count").map_err(db_err)?,
+        match_reason: row.try_get("match_reason").map_err(db_err)?,
+    })
+}
+
+/// How many orders sit in each list segment (no search text). Each count is the length of the
+/// matching filtered list, and `balance_due_minor` is the sum of those balances.
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct QueueCounts {
+    pub ready: i64,
+    pub balance_due: i64,
+    pub overdue: i64,
+    pub in_process: i64,
+    pub today: i64,
+    pub all: i64,
+    pub balance_due_minor: i64,
+}
+
+pub async fn order_queue_counts(
+    db: &DatabaseState,
+    session: &CounterSession,
+) -> Result<QueueCounts, String> {
+    order_queue_counts_at(db, session, Utc::now()).await
+}
+
+/// `order_queue_counts` as of `now`.
+async fn order_queue_counts_at(
+    db: &DatabaseState,
+    session: &CounterSession,
+    now: chrono::DateTime<Utc>,
+) -> Result<QueueCounts, String> {
+    require_actor(session)?;
+    let count = |filter: OrderFilter| {
+        format!(
+            "COALESCE(SUM(CASE WHEN {} THEN 1 ELSE 0 END),0)",
+            filter.predicate()
+        )
+    };
+    let sql = format!(
+        "SELECT {} AS c_ready,{} AS c_balance_due,{} AS c_overdue,{} AS c_in_process,{} AS c_today,{} AS c_all,\
+COALESCE(SUM(CASE WHEN {} THEN m.balance_minor ELSE 0 END),0) AS c_balance_minor FROM ({}) m",
+        count(OrderFilter::Ready),
+        count(OrderFilter::BalanceDue),
+        count(OrderFilter::Overdue),
+        count(OrderFilter::InProcess),
+        count(OrderFilter::Today),
+        count(OrderFilter::All),
+        OrderFilter::BalanceDue.predicate(),
+        order_list_sql(),
+    );
+    let scope = ListScope::new("", now);
+    let row = bind_scope(sqlx::query(&sql), &scope)
+        .fetch_one(db.writer_pool()?)
+        .await
+        .map_err(db_err)?;
+    Ok(QueueCounts {
+        ready: row.try_get("c_ready").map_err(db_err)?,
+        balance_due: row.try_get("c_balance_due").map_err(db_err)?,
+        overdue: row.try_get("c_overdue").map_err(db_err)?,
+        in_process: row.try_get("c_in_process").map_err(db_err)?,
+        today: row.try_get("c_today").map_err(db_err)?,
+        all: row.try_get("c_all").map_err(db_err)?,
+        balance_due_minor: row.try_get("c_balance_minor").map_err(db_err)?,
+    })
+}
+
 pub async fn get_order(
     db: &DatabaseState,
     session: &CounterSession,
@@ -1707,13 +2075,9 @@ pub async fn get_order(
     let _ = actor(session)?;
     get_saved(db, id).await
 }
-pub async fn record_payment(
-    db: &DatabaseState,
-    session: &CounterSession,
-    order_id: &str,
-    input: RecordPaymentInput,
-) -> Result<SavedOrder, String> {
-    let a = actor(session)?;
+/// Checks a payment before anything is written. Shared by a stand-alone payment and a payment that is
+/// recorded together with a collection.
+fn validate_payment_input(input: &RecordPaymentInput) -> Result<(), String> {
     if input.idempotency_key.trim().is_empty() || input.idempotency_key.len() > 100 {
         return Err("A payment submission key is required.".into());
     }
@@ -1725,10 +2089,115 @@ pub async fn record_payment(
     {
         return Err("Enter a positive whole-paise payment and a valid method.".into());
     }
-    let hash = hex(&Sha256::digest(
-        serde_json::to_vec(&(&input.amount_minor, &input.method, &input.reference))
-            .map_err(|e| e.to_string())?,
-    ));
+    Ok(())
+}
+
+/// Fingerprint of a payment's content. A reused request key with a different fingerprint is refused.
+fn payment_fingerprint(input: &RecordPaymentInput) -> Result<String, String> {
+    let bytes = serde_json::to_vec(&(&input.amount_minor, &input.method, &input.reference))
+        .map_err(|e| e.to_string())?;
+    Ok(hex(&Sha256::digest(bytes)))
+}
+
+/// Looks up a payment request key inside a transaction. Returns `true` when this exact payment was
+/// already recorded for this order, so the caller must not insert it again. A key that belongs to
+/// another order or another payment is refused.
+async fn payment_key_recorded_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    order_id: &str,
+    request_key: &str,
+    hash: &str,
+) -> Result<bool, String> {
+    let Some(row) = sqlx::query(
+        "SELECT order_id,payload_hash FROM counter_payment_requests WHERE request_id=?",
+    )
+    .bind(request_key)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(db_err)?
+    else {
+        return Ok(false);
+    };
+    let prior_order: String = row.try_get("order_id").map_err(db_err)?;
+    let prior_hash: String = row.try_get("payload_hash").map_err(db_err)?;
+    if prior_order != order_id || prior_hash != hash {
+        return Err("Payment request key was already used for a different payment.".into());
+    }
+    Ok(true)
+}
+
+/// Money received on an order: non-voided payments, each rounded to paise on its own.
+async fn paid_amount_minor(
+    connection: &mut sqlx::SqliteConnection,
+    order_id: &str,
+) -> Result<i64, String> {
+    let amounts: Vec<f64> =
+        sqlx::query_scalar("SELECT amount FROM payments WHERE order_id=? AND voided_at IS NULL")
+            .bind(order_id)
+            .fetch_all(connection)
+            .await
+            .map_err(db_err)?;
+    Ok(amounts
+        .iter()
+        .map(|amount| (amount * 100.0).round() as i64)
+        .sum())
+}
+
+/// Sets `orders.payment_status` from the order's live payments, inside the caller's transaction.
+async fn refresh_payment_status_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    order_id: &str,
+    cancelled: bool,
+    now: &str,
+) -> Result<(), String> {
+    let total: f64 = sqlx::query_scalar("SELECT total_amount FROM orders WHERE id=?")
+        .bind(order_id)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(db_err)?;
+    let paid = paid_amount_minor(tx, order_id).await?;
+    let status = derive_payment_status((total * 100.0).round() as i64, paid, cancelled);
+    sqlx::query("UPDATE orders SET payment_status=?,updated_at=? WHERE id=?")
+        .bind(status)
+        .bind(now)
+        .bind(order_id)
+        .execute(&mut **tx)
+        .await
+        .map_err(db_err)?;
+    Ok(())
+}
+
+/// Writes one payment, its request key, the new payment status and the audit row. The caller has
+/// already checked the amount against the balance and owns the transaction.
+async fn insert_payment_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    actor_id: &str,
+    order_id: &str,
+    input: &RecordPaymentInput,
+    hash: &str,
+    kind: &str,
+    now: &str,
+) -> Result<(), String> {
+    let payment_id = Uuid::new_v4().to_string();
+    sqlx::query("INSERT INTO payments(id,order_id,amount,method,reference_number,recorded_at,recorded_by,created_at,updated_at,origin_device_id,kind) VALUES(?,?,?,?,?,?,?,?,?,?,?)")
+        .bind(&payment_id).bind(order_id).bind(input.amount_minor as f64/100.0).bind(&input.method).bind(&input.reference).bind(now).bind(actor_id).bind(now).bind(now).bind("counter").bind(kind)
+        .execute(&mut **tx).await.map_err(db_err)?;
+    sqlx::query("INSERT INTO counter_payment_requests(request_id,order_id,payment_id,payload_hash,created_at) VALUES(?,?,?,?,?)")
+        .bind(&input.idempotency_key).bind(order_id).bind(&payment_id).bind(hash).bind(now)
+        .execute(&mut **tx).await.map_err(db_err)?;
+    refresh_payment_status_in_tx(tx, order_id, false, now).await?;
+    audit(tx, actor_id, "payment_recorded", "order", order_id, now).await
+}
+
+pub async fn record_payment(
+    db: &DatabaseState,
+    session: &CounterSession,
+    order_id: &str,
+    input: RecordPaymentInput,
+) -> Result<SavedOrder, String> {
+    let a = actor(session)?;
+    validate_payment_input(&input)?;
+    let hash = payment_fingerprint(&input)?;
     let p = db.writer_pool()?;
     if let Some(row) =
         sqlx::query("SELECT order_id,payload_hash FROM counter_payment_requests WHERE request_id=?")
@@ -1747,18 +2216,7 @@ pub async fn record_payment(
             .ok_or("Order not found.".into());
     }
     let mut tx = db.begin_counter_write().await?;
-    if let Some(row) =
-        sqlx::query("SELECT order_id,payload_hash FROM counter_payment_requests WHERE request_id=?")
-            .bind(&input.idempotency_key)
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(db_err)?
-    {
-        let prior_order: String = row.try_get("order_id").map_err(db_err)?;
-        let prior_hash: String = row.try_get("payload_hash").map_err(db_err)?;
-        if prior_order != order_id || prior_hash != hash {
-            return Err("Payment request key was already used for a different payment.".into());
-        }
+    if payment_key_recorded_in_tx(&mut tx, order_id, &input.idempotency_key, &hash).await? {
         tx.rollback().await.map_err(db_err)?;
         return get_saved(db, order_id)
             .await?
@@ -1775,37 +2233,13 @@ pub async fn record_payment(
     if status == "cancelled" {
         return Err("Payments cannot be added to a cancelled order.".into());
     }
-    let paid: f64 = sqlx::query_scalar(
-        "SELECT COALESCE(SUM(amount),0.0) FROM payments WHERE order_id=? AND voided_at IS NULL",
-    )
-    .bind(order_id)
-    .fetch_one(&mut *tx)
-    .await
-    .map_err(db_err)?;
     let total_minor = (total * 100.0).round() as i64;
-    let paid_minor = (paid * 100.0).round() as i64;
+    let paid_minor = paid_amount_minor(&mut tx, order_id).await?;
     if input.amount_minor > total_minor - paid_minor {
         return Err("Payment cannot exceed the outstanding balance.".into());
     }
     let now = Utc::now().to_rfc3339();
-    let payment_id = Uuid::new_v4().to_string();
-    sqlx::query("INSERT INTO payments(id,order_id,amount,method,reference_number,recorded_at,recorded_by,created_at,updated_at,origin_device_id) VALUES(?,?,?,?,?,?,?,?,?,?)")
-        .bind(&payment_id).bind(order_id).bind(input.amount_minor as f64/100.0).bind(&input.method).bind(&input.reference).bind(&now).bind(&a.id).bind(&now).bind(&now).bind("counter").execute(&mut *tx).await.map_err(db_err)?;
-    sqlx::query("INSERT INTO counter_payment_requests(request_id,order_id,payment_id,payload_hash,created_at) VALUES(?,?,?,?,?)").bind(&input.idempotency_key).bind(order_id).bind(&payment_id).bind(hash).bind(&now).execute(&mut *tx).await.map_err(db_err)?;
-    let new_paid = paid_minor + input.amount_minor;
-    let payment_status = if new_paid == total_minor {
-        "paid"
-    } else {
-        "partially_paid"
-    };
-    sqlx::query("UPDATE orders SET payment_status=?,updated_at=? WHERE id=?")
-        .bind(payment_status)
-        .bind(&now)
-        .bind(order_id)
-        .execute(&mut *tx)
-        .await
-        .map_err(db_err)?;
-    audit(&mut tx, &a.id, "payment_recorded", "order", order_id, &now).await?;
+    insert_payment_in_tx(&mut tx, &a.id, order_id, &input, &hash, "settlement", &now).await?;
     tx.commit().await.map_err(db_err)?;
     get_saved(db, order_id)
         .await?
@@ -1899,24 +2333,17 @@ pub async fn cancel_order(
         _ => {}
     }
     let now = Utc::now().to_rfc3339();
-    let paid: f64 = sqlx::query_scalar(
-        "SELECT COALESCE(SUM(amount),0.0) FROM payments WHERE order_id=? AND voided_at IS NULL",
-    )
-    .bind(order_id)
-    .fetch_one(&mut *tx)
-    .await
-    .map_err(db_err)?;
+    let refund_minor = paid_amount_minor(&mut tx, order_id).await?;
     sqlx::query("UPDATE payments SET voided_at=?,voided_by=?,void_reason=?,updated_at=? WHERE order_id=? AND voided_at IS NULL")
         .bind(&now).bind(&a.id).bind(reason).bind(&now).bind(order_id)
         .execute(&mut *tx).await.map_err(db_err)?;
-    sqlx::query(
-        "UPDATE orders SET status='cancelled',payment_status='unpaid',updated_at=? WHERE id=?",
-    )
-    .bind(&now)
-    .bind(order_id)
-    .execute(&mut *tx)
-    .await
-    .map_err(db_err)?;
+    sqlx::query("UPDATE orders SET status='cancelled',updated_at=? WHERE id=?")
+        .bind(&now)
+        .bind(order_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(db_err)?;
+    refresh_payment_status_in_tx(&mut tx, order_id, true, &now).await?;
     sqlx::query("UPDATE print_jobs SET state='failed',last_error='The order was cancelled.',updated_at=? WHERE order_id=? AND state='pending'")
         .bind(&now).bind(order_id)
         .execute(&mut *tx).await.map_err(db_err)?;
@@ -1930,7 +2357,7 @@ pub async fn cancel_order(
         &serde_json::json!({
             "reason": reason,
             "previousStatus": status,
-            "refundMinor": (paid * 100.0).round() as i64,
+            "refundMinor": refund_minor,
         }),
     )
     .await?;
@@ -1940,12 +2367,15 @@ pub async fn cancel_order(
         .ok_or("Order not found.".into())
 }
 
+/// Hands over a ready order. A `payment` is recorded as a settlement in the same transaction, so the
+/// payment and the collection both happen or neither does. Without one, the balance must already be 0.
 pub async fn collect_order(
     db: &DatabaseState,
     session: &CounterSession,
     order_id: &str,
     piece_ids: Vec<String>,
     request_id: &str,
+    payment: Option<RecordPaymentInput>,
 ) -> Result<SavedOrder, String> {
     let a = actor(session)?;
     if request_id.trim().is_empty() || request_id.len() > 100 {
@@ -1995,14 +2425,22 @@ pub async fn collect_order(
         return Err("Only ready orders can be collected.".into());
     }
     let total: f64 = row.try_get("total_amount").map_err(db_err)?;
-    let paid: f64 = sqlx::query_scalar(
-        "SELECT COALESCE(SUM(amount),0.0) FROM payments WHERE order_id=? AND voided_at IS NULL",
-    )
-    .bind(order_id)
-    .fetch_one(&mut *tx)
-    .await
-    .map_err(db_err)?;
-    let balance = (total * 100.0).round() as i64 - (paid * 100.0).round() as i64;
+    let total_minor = (total * 100.0).round() as i64;
+    let now = Utc::now().to_rfc3339();
+    if let Some(payment) = &payment {
+        validate_payment_input(payment)?;
+        let hash = payment_fingerprint(payment)?;
+        // A payment key that is already recorded for this order is a retry: count it once.
+        if !payment_key_recorded_in_tx(&mut tx, order_id, &payment.idempotency_key, &hash).await? {
+            let outstanding = total_minor - paid_amount_minor(&mut tx, order_id).await?;
+            if payment.amount_minor > outstanding {
+                return Err("Payment cannot exceed the outstanding balance.".into());
+            }
+            insert_payment_in_tx(&mut tx, &a.id, order_id, payment, &hash, "settlement", &now)
+                .await?;
+        }
+    }
+    let balance = total_minor - paid_amount_minor(&mut tx, order_id).await?;
     if balance > 0 {
         return Err(format!(
             "This order still has {} to pay. Record the payment before handing over the garments.",
@@ -2015,7 +2453,6 @@ pub async fn collect_order(
     if !result.complete {
         return Err("Every order piece must be confirmed for collection first.".into());
     }
-    let now = Utc::now().to_rfc3339();
     let updated = sqlx::query(
         "UPDATE orders SET status='collected',updated_at=? WHERE id=? AND status='ready'",
     )
@@ -2052,13 +2489,14 @@ async fn pieces_for_conn(
     connection: &mut sqlx::SqliteConnection,
     order: &str,
 ) -> Result<Vec<Piece>, String> {
-    let rows=sqlx::query("SELECT p.id,p.short_id,p.garment_id,p.garment_snapshot,p.service_snapshot,p.position,p.total,EXISTS(SELECT 1 FROM piece_matches m WHERE m.piece_id=p.id AND m.stage='packing') AS packing_matched,EXISTS(SELECT 1 FROM piece_matches m WHERE m.piece_id=p.id AND m.stage='collection') AS collection_matched FROM order_pieces p WHERE p.order_id=? ORDER BY p.position")
+    let rows=sqlx::query("SELECT p.id,p.short_id,p.garment_id,p.garment_snapshot,p.service_snapshot,p.position,p.total,p.tagged,EXISTS(SELECT 1 FROM piece_matches m WHERE m.piece_id=p.id AND m.stage='packing') AS packing_matched,EXISTS(SELECT 1 FROM piece_matches m WHERE m.piece_id=p.id AND m.stage='collection') AS collection_matched FROM order_pieces p WHERE p.order_id=? ORDER BY p.position")
         .bind(order).fetch_all(&mut *connection).await.map_err(db_err)?;
     rows.iter()
         .map(|r| {
             let packing = r.try_get::<i64, _>("packing_matched").map_err(db_err)? == 1;
             let collection = r.try_get::<i64, _>("collection_matched").map_err(db_err)? == 1;
             Ok(Piece {
+                tagged: r.try_get::<i64, _>("tagged").map_err(db_err)? == 1,
                 id: r.try_get("id").map_err(db_err)?,
                 short_id: r.try_get("short_id").map_err(db_err)?,
                 garment_id: r.try_get("garment_id").map_err(db_err)?,
@@ -2125,6 +2563,17 @@ pub async fn match_pieces(
 ) -> Result<MatchResult, String> {
     let a = actor(session)?;
     let mut tx = db.begin_counter_write().await?;
+    // A closed order's checklists are final: the packing and collection records must not change.
+    let status: Option<String> = sqlx::query_scalar("SELECT status FROM orders WHERE id=?")
+        .bind(order)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(db_err)?;
+    match status.as_deref() {
+        Some("cancelled") => return Err("This order is cancelled.".into()),
+        Some("collected") => return Err("This order has already been collected.".into()),
+        _ => {}
+    }
     let result = match_in_tx(&mut tx, &a.id, order, stage, ids).await?;
     tx.commit().await.map_err(db_err)?;
     Ok(result)
@@ -2507,6 +2956,26 @@ pub async fn retry_job(
         .find(|job| job.id == job_id)
         .ok_or("Print job not found.".into())
 }
+/// Money received on an order right now (voided payments excluded) and the order total, in paise.
+/// Each payment is rounded on its own so the total is never a float sum.
+async fn live_payment_totals(p: &SqlitePool, order_id: &str) -> Result<(i64, i64), String> {
+    let amounts: Vec<f64> =
+        sqlx::query_scalar("SELECT amount FROM payments WHERE order_id=? AND voided_at IS NULL")
+            .bind(order_id)
+            .fetch_all(p)
+            .await
+            .map_err(db_err)?;
+    let paid: i64 = amounts
+        .iter()
+        .map(|amount| (amount * 100.0).round() as i64)
+        .sum();
+    let total: f64 = sqlx::query_scalar("SELECT total_amount FROM orders WHERE id=?")
+        .bind(order_id)
+        .fetch_one(p)
+        .await
+        .map_err(db_err)?;
+    Ok((paid, (total * 100.0).round() as i64))
+}
 pub async fn reprint_output(
     db: &DatabaseState,
     session: &CounterSession,
@@ -2553,7 +3022,11 @@ pub async fn reprint_output(
             .ok_or("Print job not found.".into());
     }
     let source = sqlx::query("SELECT id,payload_json FROM print_jobs WHERE order_id=? AND kind=? AND source_job_id IS NULL ORDER BY created_at DESC LIMIT 1")
-        .bind(order_id).bind(kind).fetch_optional(p).await.map_err(db_err)?.ok_or("Saved print document not found.")?;
+        .bind(order_id).bind(kind).fetch_optional(p).await.map_err(db_err)?.ok_or(if kind == "tags" {
+            "This order has no tags to reprint."
+        } else {
+            "Saved print document not found."
+        })?;
     let source_id: String = source.try_get("id").map_err(db_err)?;
     let payload: String = source.try_get("payload_json").map_err(db_err)?;
     let mut document: crate::printing::PrintDocument = serde_json::from_str(&payload)
@@ -2562,6 +3035,13 @@ pub async fn reprint_output(
         if !piece_ids.is_empty() {
             return Err("Bills are reprinted as a complete document.".into());
         }
+        // The payment block reflects the money received now, not when the bill was first saved.
+        let crate::printing::PrintDocument::Bill(bill) = &mut document else {
+            return Err("Saved bill document has the wrong format.".into());
+        };
+        let (paid_minor, total_minor) = live_payment_totals(p, order_id).await?;
+        bill.paid_minor = paid_minor;
+        bill.balance_minor = total_minor - paid_minor;
     } else {
         if piece_ids.is_empty() {
             return Err("Select at least one garment tag to reprint.".into());
@@ -3067,95 +3547,497 @@ mod counter_tests {
         });
     }
 
+    fn ist_instant(text: &str) -> chrono::DateTime<Utc> {
+        chrono::DateTime::parse_from_rfc3339(text)
+            .unwrap()
+            .with_timezone(&Utc)
+    }
+
+    /// Saves `order` as if it were received at `at`, with an optional advance.
+    async fn save_at(
+        db: &DatabaseState,
+        session: &CounterSession,
+        order: OrderInput,
+        key: &str,
+        at: chrono::DateTime<Utc>,
+        payment: Option<PaymentInput>,
+    ) -> Result<SavedOrder, String> {
+        let reviewed_quote = quote_at(db.writer_pool().unwrap(), &order, at).await?;
+        save_order_at(
+            db,
+            session,
+            SaveInput {
+                order,
+                reviewed_quote,
+                idempotency_key: key.into(),
+                payment,
+            },
+            at,
+        )
+        .await
+    }
+
+    /// Stored payment status and `(kind, amount in paise)` for each payment, oldest first.
+    async fn payment_state(db: &DatabaseState, order_id: &str) -> (String, Vec<(String, i64)>) {
+        let p = db.writer_pool().unwrap();
+        let status: String = sqlx::query_scalar("SELECT payment_status FROM orders WHERE id=?")
+            .bind(order_id)
+            .fetch_one(p)
+            .await
+            .unwrap();
+        let rows: Vec<(String, i64)> = sqlx::query_as(
+            "SELECT kind,CAST(ROUND(amount*100) AS INTEGER) FROM payments WHERE order_id=? ORDER BY recorded_at",
+        )
+        .bind(order_id)
+        .fetch_all(p)
+        .await
+        .unwrap();
+        (status, rows)
+    }
+
+    async fn document_by_job(db: &DatabaseState, job_id: &str) -> crate::printing::PrintDocument {
+        let payload: String = sqlx::query_scalar("SELECT payload_json FROM print_jobs WHERE id=?")
+            .bind(job_id)
+            .fetch_one(db.writer_pool().unwrap())
+            .await
+            .unwrap();
+        serde_json::from_str(&payload).unwrap()
+    }
+
+    /// The document queued when the order was saved (not a reprint).
+    async fn saved_document(
+        db: &DatabaseState,
+        order_id: &str,
+        kind: &str,
+    ) -> crate::printing::PrintDocument {
+        let id: String = sqlx::query_scalar(
+            "SELECT id FROM print_jobs WHERE order_id=? AND kind=? AND source_job_id IS NULL",
+        )
+        .bind(order_id)
+        .bind(kind)
+        .fetch_one(db.writer_pool().unwrap())
+        .await
+        .unwrap();
+        document_by_job(db, &id).await
+    }
+
     #[test]
-    fn payment_is_required_in_full_and_a_full_discount_needs_no_payment() {
+    fn bill_numbers_restart_each_ist_day_and_a_retry_keeps_its_number() {
+        tauri::async_runtime::block_on(async {
+            let path = fixture_path();
+            let db = DatabaseState::open(path.clone()).await;
+            let _admin = admin_fixture(&db).await;
+            let staff = staff_fixture(&db).await;
+            let morning = ist_instant("2026-10-17T10:00:00+05:30");
+            let first = save_at(&db, &staff, order_input(1), "day-1-first", morning, None)
+                .await
+                .unwrap();
+            assert_eq!(first.order_number, "202610170001");
+            assert_eq!(first.pieces[0].short_id, "2610170001-1");
+            let late = save_at(
+                &db,
+                &staff,
+                order_input(1),
+                "day-1-late",
+                ist_instant("2026-10-17T23:59:00+05:30"),
+                None,
+            )
+            .await
+            .unwrap();
+            assert_eq!(late.order_number, "202610170002");
+            // 18:29:59 UTC is still the 17th in IST; 18:30 UTC is already the 18th.
+            let last_of_day = save_at(
+                &db,
+                &staff,
+                order_input(1),
+                "day-1-last",
+                ist_instant("2026-10-17T18:29:59Z"),
+                None,
+            )
+            .await
+            .unwrap();
+            assert_eq!(last_of_day.order_number, "202610170003");
+            let next_day = save_at(
+                &db,
+                &staff,
+                order_input(1),
+                "day-2-first",
+                ist_instant("2026-10-17T18:30:00Z"),
+                None,
+            )
+            .await
+            .unwrap();
+            assert_eq!(next_day.order_number, "202610180001");
+            assert_eq!(next_day.pieces[0].short_id, "2610180001-1");
+            let retry = save_at(&db, &staff, order_input(1), "day-1-first", morning, None)
+                .await
+                .unwrap();
+            assert_eq!(
+                (retry.order_id, retry.order_number),
+                (first.order_id, first.order_number)
+            );
+            cleanup(db, path).await;
+        });
+    }
+
+    #[test]
+    fn an_advance_is_optional_and_can_cover_part_or_all_of_the_total() {
+        tauri::async_runtime::block_on(async {
+            let path = fixture_path();
+            let db = DatabaseState::open(path.clone()).await;
+            let _admin = admin_fixture(&db).await;
+            let staff = staff_fixture(&db).await;
+            let at = ist_instant("2026-10-17T10:00:00+05:30");
+            let total = quote(&db, &staff, &order_input(1))
+                .await
+                .unwrap()
+                .total_minor;
+            let none = save_at(&db, &staff, order_input(1), "advance-none", at, None)
+                .await
+                .unwrap();
+            assert_eq!((none.paid_minor, none.balance_minor), (0, total));
+            assert_eq!(
+                payment_state(&db, &none.order_id).await,
+                ("unpaid".to_string(), vec![])
+            );
+            let partial = save_at(
+                &db,
+                &staff,
+                order_input(1),
+                "advance-part",
+                at,
+                pay(total / 2),
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                (partial.paid_minor, partial.balance_minor),
+                (total / 2, total - total / 2)
+            );
+            assert_eq!(
+                payment_state(&db, &partial.order_id).await,
+                (
+                    "partially_paid".to_string(),
+                    vec![("advance".to_string(), total / 2)]
+                )
+            );
+            let full = save_at(&db, &staff, order_input(1), "advance-full", at, pay(total))
+                .await
+                .unwrap();
+            assert_eq!((full.paid_minor, full.balance_minor), (total, 0));
+            assert_eq!(
+                payment_state(&db, &full.order_id).await,
+                ("paid".to_string(), vec![("advance".to_string(), total)])
+            );
+            cleanup(db, path).await;
+        });
+    }
+
+    #[test]
+    fn an_advance_above_the_total_or_invalid_is_refused_and_saves_nothing() {
+        tauri::async_runtime::block_on(async {
+            let path = fixture_path();
+            let db = DatabaseState::open(path.clone()).await;
+            let _admin = admin_fixture(&db).await;
+            let staff = staff_fixture(&db).await;
+            let at = ist_instant("2026-10-17T10:00:00+05:30");
+            let total = quote(&db, &staff, &order_input(1))
+                .await
+                .unwrap()
+                .total_minor;
+            let attempts = [
+                ("over", total + 1, "cash", "more than the order total"),
+                ("zero", 0, "cash", "valid initial payment"),
+                ("negative", -1, "cash", "valid initial payment"),
+                ("method", total, "barter", "valid initial payment"),
+            ];
+            for (key, amount, method, expected) in attempts {
+                let payment = PaymentInput {
+                    amount_minor: amount,
+                    method: method.into(),
+                    reference: None,
+                };
+                let error = save_at(&db, &staff, order_input(1), key, at, Some(payment))
+                    .await
+                    .unwrap_err();
+                assert!(error.contains(expected), "{key}: {error}");
+            }
+            let orders: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM orders")
+                .fetch_one(db.writer_pool().unwrap())
+                .await
+                .unwrap();
+            assert_eq!(orders, 0);
+            cleanup(db, path).await;
+        });
+    }
+
+    #[test]
+    fn a_fully_discounted_order_needs_no_payment_and_refuses_one() {
         tauri::async_runtime::block_on(async {
             let path = fixture_path();
             let db = DatabaseState::open(path.clone()).await;
             let admin = admin_fixture(&db).await;
             let staff = staff_fixture(&db).await;
-            let reviewed = quote(&db, &staff, &order_input(1)).await.unwrap();
-            let total = reviewed.total_minor;
-            let attempt = |amount: Option<i64>, key: &str| SaveInput {
-                order: order_input(1),
-                reviewed_quote: reviewed.clone(),
-                idempotency_key: key.into(),
-                payment: amount.map(|a| PaymentInput {
-                    amount_minor: a,
-                    method: "cash".into(),
-                    reference: None,
-                }),
-            };
-            for (amount, key) in [
-                (None, "none"),
-                (Some(total - 1), "short"),
-                (Some(total + 1), "over"),
-            ] {
-                assert!(
-                    save_order(&db, &staff, attempt(amount, key)).await.is_err(),
-                    "{key}"
-                );
-            }
-            let mut method = attempt(Some(total), "bad-method");
-            method.payment.as_mut().unwrap().method = "barter".into();
-            assert!(save_order(&db, &staff, method).await.is_err());
-            let saved = save_order(&db, &staff, attempt(Some(total), "exact"))
-                .await
-                .unwrap();
-            assert_eq!((saved.paid_minor, saved.balance_minor), (total, 0));
-            let status: String = sqlx::query_scalar("SELECT payment_status FROM orders WHERE id=?")
-                .bind(&saved.order_id)
-                .fetch_one(db.writer_pool().unwrap())
-                .await
-                .unwrap();
-            assert_eq!(status, "paid");
-
+            let at = ist_instant("2026-10-17T10:00:00+05:30");
             set_discount(&db, &admin, None, 10_000, true, "Free")
                 .await
                 .unwrap();
-            let free_quote = quote(&db, &staff, &order_input(1)).await.unwrap();
-            assert_eq!(free_quote.total_minor, 0);
-            let mut with_payment = SaveInput {
-                order: order_input(1),
-                reviewed_quote: free_quote.clone(),
-                idempotency_key: "free-with-payment".into(),
-                payment: pay(100),
-            };
-            assert!(
-                save_order(&db, &staff, with_payment_clone(&mut with_payment))
-                    .await
-                    .unwrap_err()
-                    .contains("No payment is due")
-            );
-            let free = save_with(&db, &staff, order_input(1), "free")
+            let free = save_at(&db, &staff, order_input(1), "free", at, None)
                 .await
                 .unwrap();
             assert_eq!(
                 (free.total_minor, free.paid_minor, free.balance_minor),
                 (0, 0, 0)
             );
-            let free_status: String =
-                sqlx::query_scalar("SELECT payment_status FROM orders WHERE id=?")
-                    .bind(&free.order_id)
-                    .fetch_one(db.writer_pool().unwrap())
-                    .await
-                    .unwrap();
-            assert_eq!(free_status, "paid");
+            assert_eq!(payment_state(&db, &free.order_id).await.0, "paid");
+            let error = save_at(&db, &staff, order_input(1), "free-paid", at, pay(100))
+                .await
+                .unwrap_err();
+            assert!(error.contains("No payment is due"), "{error}");
             cleanup(db, path).await;
         });
     }
 
-    fn with_payment_clone(input: &mut SaveInput) -> SaveInput {
-        SaveInput {
-            order: input.order.clone(),
-            reviewed_quote: input.reviewed_quote.clone(),
-            idempotency_key: input.idempotency_key.clone(),
-            payment: input.payment.take(),
-        }
+    #[test]
+    fn quote_lines_carry_the_service_key_that_decides_tagging() {
+        tauri::async_runtime::block_on(async {
+            let path = fixture_path();
+            let db = DatabaseState::open(path.clone()).await;
+            let _admin = admin_fixture(&db).await;
+            let staff = staff_fixture(&db).await;
+            let mut order = order_input(1);
+            order.items = ["svc-wash", "svc-iron", "svc-wash-iron", "svc-dry-clean"]
+                .into_iter()
+                .map(|service| LineInput {
+                    garment_id: "g-shirt".into(),
+                    service_id: service.into(),
+                    quantity: 1,
+                })
+                .collect();
+            let quoted = quote(&db, &staff, &order).await.unwrap();
+            assert_eq!(
+                quoted
+                    .lines
+                    .iter()
+                    .map(|line| line.service_key.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["wash", "iron", "wash_iron", "dry_clean"]
+            );
+            cleanup(db, path).await;
+        });
     }
 
     #[test]
-    fn piece_ids_follow_the_bill_sequence_and_one_shoe_pair_gets_one_tag() {
+    fn an_all_iron_order_has_untagged_pieces_a_bill_and_no_tags_job() {
+        tauri::async_runtime::block_on(async {
+            let path = fixture_path();
+            let db = DatabaseState::open(path.clone()).await;
+            let _admin = admin_fixture(&db).await;
+            let staff = staff_fixture(&db).await;
+            let mut order = order_input(2);
+            order.items[0].service_id = "svc-iron".into();
+            let total = quote(&db, &staff, &order).await.unwrap().total_minor;
+            let saved = save_at(
+                &db,
+                &staff,
+                order,
+                "all-iron",
+                ist_instant("2026-10-17T10:00:00+05:30"),
+                pay(total),
+            )
+            .await
+            .unwrap();
+            assert_eq!(saved.pieces.len(), 2);
+            assert!(saved.pieces.iter().all(|piece| !piece.tagged));
+            assert_eq!(
+                saved
+                    .print_jobs
+                    .iter()
+                    .map(|job| job.kind.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["bill"]
+            );
+            let refused = reprint_output(
+                &db,
+                &staff,
+                &saved.order_id,
+                "tags",
+                vec![saved.pieces[0].short_id.clone()],
+                "iron-tags",
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(refused, "This order has no tags to reprint.");
+            reprint_output(&db, &staff, &saved.order_id, "bill", vec![], "iron-bill")
+                .await
+                .unwrap();
+            cleanup(db, path).await;
+        });
+    }
+
+    #[test]
+    fn a_mixed_order_numbers_tagged_pieces_first_and_tags_carry_only_them() {
+        tauri::async_runtime::block_on(async {
+            let path = fixture_path();
+            let db = DatabaseState::open(path.clone()).await;
+            let _admin = admin_fixture(&db).await;
+            let staff = staff_fixture(&db).await;
+            // Ironing is listed first, but the tagged services must still take positions 1..T.
+            let order = OrderInput {
+                customer: CustomerInput {
+                    name: format!("  {}  ", "Ab".repeat(40)),
+                    phone: "+91 98765 43210".into(),
+                    customer_id: None,
+                },
+                items: [("svc-iron", 2), ("svc-wash", 1), ("svc-dry-clean", 1)]
+                    .into_iter()
+                    .map(|(service, quantity)| LineInput {
+                        garment_id: "g-shirt".into(),
+                        service_id: service.into(),
+                        quantity,
+                    })
+                    .collect(),
+            };
+            let total = quote(&db, &staff, &order).await.unwrap().total_minor;
+            let saved = save_at(
+                &db,
+                &staff,
+                order,
+                "mixed",
+                ist_instant("2026-10-17T10:00:00+05:30"),
+                pay(total),
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                saved.pieces.iter().map(|p| p.position).collect::<Vec<_>>(),
+                vec![1, 2, 3, 4]
+            );
+            assert_eq!(
+                saved.pieces.iter().map(|p| p.tagged).collect::<Vec<_>>(),
+                vec![true, true, false, false]
+            );
+            assert!(saved.pieces.iter().all(|p| p.total == 4));
+            for piece in &saved.pieces {
+                assert_eq!(
+                    piece.short_id,
+                    format!(
+                        "{}{}-{}",
+                        &saved.order_number[2..8],
+                        &saved.order_number[8..],
+                        piece.position
+                    )
+                );
+            }
+            let tagged_ids: Vec<String> = saved
+                .pieces
+                .iter()
+                .filter(|p| p.tagged)
+                .map(|p| p.short_id.clone())
+                .collect();
+            let crate::printing::PrintDocument::Tags(tags) =
+                saved_document(&db, &saved.order_id, "tags").await
+            else {
+                panic!("tag document expected")
+            };
+            assert_eq!(
+                tags.pieces
+                    .iter()
+                    .map(|p| (p.piece_id.clone(), p.position, p.total))
+                    .collect::<Vec<_>>(),
+                vec![(tagged_ids[0].clone(), 1, 2), (tagged_ids[1].clone(), 2, 2)]
+            );
+            assert_eq!(tags.customer_name, "Ab".repeat(30));
+            assert_eq!(tags.customer_phone, "9876543210");
+            assert_eq!(tags.order_number, saved.order_number);
+            cleanup(db, path).await;
+        });
+    }
+
+    #[test]
+    fn a_bill_reprint_shows_money_received_after_the_first_save() {
+        tauri::async_runtime::block_on(async {
+            let path = fixture_path();
+            let db = DatabaseState::open(path.clone()).await;
+            let _admin = admin_fixture(&db).await;
+            let staff = staff_fixture(&db).await;
+            let at = ist_instant("2026-10-17T10:00:00+05:30");
+            let total = quote(&db, &staff, &order_input(1))
+                .await
+                .unwrap()
+                .total_minor;
+            let advance = total / 2;
+            let saved = save_at(
+                &db,
+                &staff,
+                order_input(1),
+                "bill-advance",
+                at,
+                pay(advance),
+            )
+            .await
+            .unwrap();
+            let crate::printing::PrintDocument::Bill(first_bill) =
+                saved_document(&db, &saved.order_id, "bill").await
+            else {
+                panic!("bill document expected")
+            };
+            assert_eq!(
+                (first_bill.paid_minor, first_bill.balance_minor),
+                (advance, total - advance)
+            );
+            let settled = record_payment(
+                &db,
+                &staff,
+                &saved.order_id,
+                RecordPaymentInput {
+                    amount_minor: total - advance,
+                    method: "upi".into(),
+                    reference: Some("UTR-BILL".into()),
+                    idempotency_key: "bill-balance".into(),
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(settled.balance_minor, 0);
+            let reprint =
+                reprint_output(&db, &staff, &saved.order_id, "bill", vec![], "bill-again")
+                    .await
+                    .unwrap();
+            let crate::printing::PrintDocument::Bill(bill) =
+                document_by_job(&db, &reprint.id).await
+            else {
+                panic!("bill document expected")
+            };
+            assert_eq!((bill.paid_minor, bill.balance_minor), (total, 0));
+            cleanup(db, path).await;
+        });
+    }
+
+    #[test]
+    fn payment_status_follows_the_amounts_and_cancellation() {
+        assert_eq!(derive_payment_status(1000, 0, false), "unpaid");
+        assert_eq!(derive_payment_status(1000, 400, false), "partially_paid");
+        assert_eq!(derive_payment_status(1000, 1000, false), "paid");
+        assert_eq!(derive_payment_status(1000, 1200, false), "overpaid");
+        assert_eq!(derive_payment_status(0, 0, false), "paid");
+        assert_eq!(derive_payment_status(1000, 400, true), "unpaid");
+        assert_eq!(derive_payment_status(1000, 1000, true), "unpaid");
+    }
+
+    #[test]
+    fn tag_customer_names_are_cut_to_sixty_characters_not_bytes() {
+        assert_eq!(tag_customer_name("  Asha Patil  "), "Asha Patil");
+        assert_eq!(tag_customer_name(&"ā".repeat(70)), "ā".repeat(60));
+        // A cut that lands on a space must not leave a trailing space on the tag.
+        assert_eq!(
+            tag_customer_name(&format!("{} Patil", "A".repeat(59))),
+            "A".repeat(59)
+        );
+    }
+
+    #[test]
+    fn piece_ids_follow_the_bill_number_and_one_shoe_pair_gets_one_tag() {
         tauri::async_runtime::block_on(async {
             let path = fixture_path();
             let db = DatabaseState::open(path.clone()).await;
@@ -3173,15 +4055,20 @@ mod counter_tests {
                 5,
                 "two shirts plus three shoe pairs, one tag each"
             );
-            let year = saved.order_number.split('-').nth(1).unwrap()[2..].to_string();
-            let seq = saved.order_number.rsplit('-').next().unwrap();
+            // Bill numbers are YYYYMMDD plus a four-digit sequence; piece ids are YYMMDD + sequence.
+            assert_eq!(saved.order_number.len(), 12);
+            let seq = &saved.order_number[8..];
             for (index, piece) in saved.pieces.iter().enumerate() {
-                assert_eq!(piece.short_id, format!("{year}{seq}-{}", index + 1));
+                assert_eq!(
+                    piece.short_id,
+                    format!("{}{seq}-{}", &saved.order_number[2..8], index + 1)
+                );
                 assert_eq!((piece.position, piece.total), (index as u32 + 1, 5));
             }
             let again = save_with(&db, &staff, order_input(1), "second")
                 .await
                 .unwrap();
+            assert_ne!(again.order_number, saved.order_number);
             assert!(again
                 .pieces
                 .iter()
@@ -3204,9 +4091,16 @@ mod counter_tests {
                 .await
                 .unwrap();
             let ids: Vec<String> = order.pieces.iter().map(|p| p.id.clone()).collect();
-            let err = collect_order(&db, &staff, &order.order_id, ids[..2].to_vec(), "partial")
-                .await
-                .unwrap_err();
+            let err = collect_order(
+                &db,
+                &staff,
+                &order.order_id,
+                ids[..2].to_vec(),
+                "partial",
+                None,
+            )
+            .await
+            .unwrap_err();
             assert!(err.contains("Every order piece"), "{err}");
             let matches: i64 =
                 sqlx::query_scalar("SELECT COUNT(*) FROM piece_matches WHERE order_id=?")
@@ -3237,24 +4131,29 @@ mod counter_tests {
                 &order.order_id,
                 vec!["nope".into(); 3],
                 "wrong",
+                None,
             )
             .await;
             assert!(wrong.is_err());
-            let done = collect_order(&db, &staff, &order.order_id, ids.clone(), "all")
+            let done = collect_order(&db, &staff, &order.order_id, ids.clone(), "all", None)
                 .await
                 .unwrap();
             assert_eq!(done.status, "collected");
             // The same request key is idempotent; a different key cannot collect again.
-            let again = collect_order(&db, &staff, &order.order_id, ids.clone(), "all")
+            let again = collect_order(&db, &staff, &order.order_id, ids.clone(), "all", None)
                 .await
                 .unwrap();
             assert_eq!(again.status, "collected");
-            assert!(collect_order(&db, &staff, &order.order_id, ids, "other")
-                .await
-                .is_err());
-            assert!(collect_order(&db, &staff, "missing-order", vec![], "ghost")
-                .await
-                .is_err());
+            assert!(
+                collect_order(&db, &staff, &order.order_id, ids, "other", None)
+                    .await
+                    .is_err()
+            );
+            assert!(
+                collect_order(&db, &staff, "missing-order", vec![], "ghost", None)
+                    .await
+                    .is_err()
+            );
             cleanup(db, path).await;
         });
     }
@@ -3741,7 +4640,9 @@ mod counter_tests {
                 "९८७६५४३२१०",
                 "SL",
             ] {
-                let found = search_orders(&db, &staff, query, 0, 50).await.unwrap();
+                let found = search_orders(&db, &staff, query, 0, 50, None)
+                    .await
+                    .unwrap();
                 assert!(
                     found.len() >= 3 || query == "SL",
                     "{query}: {}",
@@ -3773,34 +4674,934 @@ mod counter_tests {
             let staff = staff_fixture(&db).await;
             let first = save_with(&db, &staff, order_input(1), "s-1").await.unwrap();
             let second = save_with(&db, &staff, order_input(2), "s-2").await.unwrap();
-            let recent = search_orders(&db, &staff, "", 0, 50).await.unwrap();
+            let recent = search_orders(&db, &staff, "", 0, 50, None).await.unwrap();
             assert_eq!(
                 recent.iter().map(|o| o.id.as_str()).collect::<Vec<_>>(),
                 vec![second.order_id.as_str(), first.order_id.as_str()]
             );
             assert_eq!(
-                search_orders(&db, &staff, "  ", 0, 1).await.unwrap().len(),
+                search_orders(&db, &staff, "  ", 0, 1, None)
+                    .await
+                    .unwrap()
+                    .len(),
                 1,
                 "paging applies"
             );
-            assert!(search_orders(&db, &staff, "S", 0, 50)
+            assert!(search_orders(&db, &staff, "S", 0, 50, None)
                 .await
                 .unwrap()
                 .is_empty());
             for wildcard in ["%%", "__", "\\"] {
                 assert!(
-                    search_orders(&db, &staff, wildcard, 0, 50)
+                    search_orders(&db, &staff, wildcard, 0, 50, None)
                         .await
                         .unwrap()
                         .is_empty(),
                     "{wildcard} is literal"
                 );
             }
-            let by_number = search_orders(&db, &staff, &second.order_number, 0, 50)
+            let by_number = search_orders(&db, &staff, &second.order_number, 0, 50, None)
                 .await
                 .unwrap();
             assert_eq!(by_number.len(), 1);
-            assert!(search_orders(&db, &staff, "ab", 0, 0).await.is_err());
+            assert!(search_orders(&db, &staff, "ab", 0, 0, None).await.is_err());
+            cleanup(db, path).await;
+        });
+    }
+
+    /// An order for `name` and `phone` with one line of `service` (`svc-wash` is tagged, `svc-iron` is not).
+    fn customer_order(name: &str, phone: &str, service: &str, quantity: u32) -> OrderInput {
+        OrderInput {
+            customer: CustomerInput {
+                name: name.into(),
+                phone: phone.into(),
+                customer_id: None,
+            },
+            items: vec![LineInput {
+                garment_id: "g-shirt".into(),
+                service_id: service.into(),
+                quantity,
+            }],
+        }
+    }
+
+    async fn set_status_directly(db: &DatabaseState, order_id: &str, status: &str) {
+        sqlx::query("UPDATE orders SET status=? WHERE id=?")
+            .bind(status)
+            .bind(order_id)
+            .execute(db.writer_pool().unwrap())
+            .await
+            .unwrap();
+    }
+
+    /// Order ids in list order, for the given search text and filter as of `now`.
+    async fn listed_in_order(
+        db: &DatabaseState,
+        session: &CounterSession,
+        query: &str,
+        filter: Option<&str>,
+        now: chrono::DateTime<Utc>,
+    ) -> Vec<String> {
+        search_orders_at(db, session, query, 0, 100, filter, now)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|o| o.id)
+            .collect()
+    }
+
+    /// Order ids for the given search text and filter, sorted, for set comparisons.
+    async fn listed_ids(
+        db: &DatabaseState,
+        session: &CounterSession,
+        query: &str,
+        filter: Option<&str>,
+        now: chrono::DateTime<Utc>,
+    ) -> Vec<String> {
+        let mut ids = listed_in_order(db, session, query, filter, now).await;
+        ids.sort();
+        ids
+    }
+
+    fn sorted_ids(orders: &[&SavedOrder]) -> Vec<String> {
+        let mut ids: Vec<String> = orders.iter().map(|o| o.order_id.clone()).collect();
+        ids.sort();
+        ids
+    }
+
+    #[test]
+    fn each_list_segment_holds_exactly_the_orders_it_should() {
+        tauri::async_runtime::block_on(async {
+            let path = fixture_path();
+            let db = DatabaseState::open(path.clone()).await;
+            let admin = admin_fixture(&db).await;
+            let staff = staff_fixture(&db).await;
+            let now = ist_instant("2026-10-17T11:30:00+05:30");
+            let four_days_ago = now - Duration::days(4);
+            // Received today, nothing paid: balance due and in process.
+            let unpaid = save_at(
+                &db,
+                &staff,
+                customer_order("Anita", "9000000001", "svc-wash", 1),
+                "unpaid",
+                now,
+                None,
+            )
+            .await
+            .unwrap();
+            // Received today, part paid: balance due and in process.
+            let part = save_at(
+                &db,
+                &staff,
+                customer_order("Bina", "9000000002", "svc-wash", 1),
+                "part",
+                now,
+                pay(2000),
+            )
+            .await
+            .unwrap();
+            // Received today, paid in full, then ready for pickup.
+            let paid_ready = save_at(
+                &db,
+                &staff,
+                customer_order("Chetan", "9000000003", "svc-wash", 1),
+                "paid-ready",
+                now,
+                pay(5000),
+            )
+            .await
+            .unwrap();
+            update_order_status(&db, &staff, &paid_ready.order_id, "ready")
+                .await
+                .unwrap();
+            // Received four days ago, paid in full, still washing: in process and overdue.
+            let late = save_at(
+                &db,
+                &staff,
+                customer_order("Dev", "9000000004", "svc-wash", 1),
+                "late",
+                four_days_ago,
+                pay(5000),
+            )
+            .await
+            .unwrap();
+            update_order_status(&db, &staff, &late.order_id, "washing")
+                .await
+                .unwrap();
+            // Received four days ago, nothing paid, ready: owes money but is not overdue.
+            let ready_unpaid = save_at(
+                &db,
+                &staff,
+                customer_order("Esha", "9000000005", "svc-wash", 1),
+                "ready-unpaid",
+                four_days_ago,
+                None,
+            )
+            .await
+            .unwrap();
+            update_order_status(&db, &staff, &ready_unpaid.order_id, "ready")
+                .await
+                .unwrap();
+            // Collected: set directly here, because collecting needs every piece matched first.
+            let collected = save_at(
+                &db,
+                &staff,
+                customer_order("Farid", "9000000006", "svc-wash", 1),
+                "collected",
+                now,
+                pay(5000),
+            )
+            .await
+            .unwrap();
+            set_status_directly(&db, &collected.order_id, "collected").await;
+            // Cancelled after an advance: the advance is handed back, so nothing is owed.
+            let cancelled = save_at(
+                &db,
+                &staff,
+                customer_order("Gita", "9000000007", "svc-wash", 1),
+                "cancelled",
+                now,
+                pay(1000),
+            )
+            .await
+            .unwrap();
+            cancel_order(&db, &admin, &cancelled.order_id, "Customer cancelled")
+                .await
+                .unwrap();
+            // Ironing only: no tags, nothing paid, in process.
+            let iron = save_at(
+                &db,
+                &staff,
+                customer_order("Hari", "9000000008", "svc-iron", 1),
+                "iron",
+                now,
+                None,
+            )
+            .await
+            .unwrap();
+
+            let everything = [
+                &unpaid,
+                &part,
+                &paid_ready,
+                &late,
+                &ready_unpaid,
+                &collected,
+                &cancelled,
+                &iron,
+            ];
+            assert_eq!(
+                listed_ids(&db, &staff, "", None, now).await,
+                sorted_ids(&everything)
+            );
+            assert_eq!(
+                listed_ids(&db, &staff, "", Some("all"), now).await,
+                sorted_ids(&everything)
+            );
+            assert_eq!(
+                listed_ids(&db, &staff, "", Some("ready"), now).await,
+                sorted_ids(&[&paid_ready, &ready_unpaid])
+            );
+            assert_eq!(
+                listed_ids(&db, &staff, "", Some("balance_due"), now).await,
+                sorted_ids(&[&unpaid, &part, &ready_unpaid, &iron])
+            );
+            assert_eq!(
+                listed_ids(&db, &staff, "", Some("overdue"), now).await,
+                sorted_ids(&[&late])
+            );
+            assert_eq!(
+                listed_ids(&db, &staff, "", Some("in_process"), now).await,
+                sorted_ids(&[&unpaid, &part, &late, &iron])
+            );
+            assert_eq!(
+                listed_ids(&db, &staff, "", Some("today"), now).await,
+                sorted_ids(&[&unpaid, &part, &paid_ready, &collected, &cancelled, &iron])
+            );
+
+            // A search narrows a segment; it never widens one.
+            assert!(listed_ids(&db, &staff, "Anita", Some("ready"), now)
+                .await
+                .is_empty());
+            assert_eq!(
+                listed_ids(&db, &staff, "Anita", Some("balance_due"), now).await,
+                sorted_ids(&[&unpaid])
+            );
+
+            // The queue counts are the lengths of those lists, and the balance is their summed balance.
+            let counts = order_queue_counts_at(&db, &staff, now).await.unwrap();
+            assert_eq!(
+                counts,
+                QueueCounts {
+                    ready: 2,
+                    balance_due: 4,
+                    overdue: 1,
+                    in_process: 4,
+                    today: 6,
+                    all: 8,
+                    balance_due_minor: 5000 + 3000 + 5000 + 1000,
+                }
+            );
+            cleanup(db, path).await;
+        });
+    }
+
+    #[test]
+    fn today_is_the_shop_day_in_ist_not_utc() {
+        tauri::async_runtime::block_on(async {
+            let path = fixture_path();
+            let db = DatabaseState::open(path.clone()).await;
+            let _admin = admin_fixture(&db).await;
+            let staff = staff_fixture(&db).await;
+            // 23:59:59 on 16 October IST is 18:29:59 UTC on the 16th; 00:00 on 17 October IST is 18:30 UTC.
+            let last_second = ist_instant("2026-10-16T23:59:59+05:30");
+            let first_second = ist_instant("2026-10-17T00:00:00+05:30");
+            let yesterday = save_at(
+                &db,
+                &staff,
+                customer_order("Yesterday", "9000000011", "svc-wash", 1),
+                "yesterday",
+                last_second,
+                None,
+            )
+            .await
+            .unwrap();
+            let today = save_at(
+                &db,
+                &staff,
+                customer_order("Today", "9000000012", "svc-wash", 1),
+                "today",
+                first_second,
+                None,
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(
+                listed_ids(
+                    &db,
+                    &staff,
+                    "",
+                    Some("today"),
+                    ist_instant("2026-10-17T11:30:00+05:30")
+                )
+                .await,
+                sorted_ids(&[&today])
+            );
+            // Still the 17th at 23:59:59 IST, and over at 00:00 on the 18th.
+            assert_eq!(
+                listed_ids(
+                    &db,
+                    &staff,
+                    "",
+                    Some("today"),
+                    ist_instant("2026-10-17T23:59:59+05:30")
+                )
+                .await,
+                sorted_ids(&[&today])
+            );
+            assert!(listed_ids(
+                &db,
+                &staff,
+                "",
+                Some("today"),
+                ist_instant("2026-10-18T00:00:00+05:30")
+            )
+            .await
+            .is_empty());
+            // The 16th's order is not today's, but it is still listed under All.
+            assert_eq!(
+                listed_ids(
+                    &db,
+                    &staff,
+                    "",
+                    Some("all"),
+                    ist_instant("2026-10-17T11:30:00+05:30")
+                )
+                .await,
+                sorted_ids(&[&yesterday, &today])
+            );
+            cleanup(db, path).await;
+        });
+    }
+
+    #[test]
+    fn promised_time_orders_the_queues_with_unknown_times_last() {
+        tauri::async_runtime::block_on(async {
+            let path = fixture_path();
+            let db = DatabaseState::open(path.clone()).await;
+            let _admin = admin_fixture(&db).await;
+            let staff = staff_fixture(&db).await;
+            let now = ist_instant("2026-10-17T11:30:00+05:30");
+            let mut washing = Vec::new();
+            for (name, phone, days_ago) in [
+                ("Oldest", "9000000021", 6),
+                ("Middle", "9000000022", 4),
+                ("Newest", "9000000023", 0),
+                ("Unknown", "9000000024", 4),
+            ] {
+                let saved = save_at(
+                    &db,
+                    &staff,
+                    customer_order(name, phone, "svc-wash", 1),
+                    name,
+                    now - Duration::days(days_ago),
+                    None,
+                )
+                .await
+                .unwrap();
+                update_order_status(&db, &staff, &saved.order_id, "washing")
+                    .await
+                    .unwrap();
+                washing.push(saved);
+            }
+            // Its promised time is unknown, so it sorts after every dated promise.
+            sqlx::query("UPDATE orders SET expected_ready_at=NULL WHERE id=?")
+                .bind(&washing[3].order_id)
+                .execute(db.writer_pool().unwrap())
+                .await
+                .unwrap();
+            let order = |i: usize| washing[i].order_id.clone();
+            let expected_in_process = vec![order(0), order(1), order(2), order(3)];
+            assert_eq!(
+                listed_in_order(&db, &staff, "", Some("in_process"), now).await,
+                expected_in_process
+            );
+            assert_eq!(
+                listed_in_order(&db, &staff, "", Some("overdue"), now).await,
+                vec![order(0), order(1)]
+            );
+            cleanup(db, path).await;
+        });
+    }
+
+    #[test]
+    fn the_balance_queue_is_largest_first_and_recent_lists_are_newest_received_first() {
+        tauri::async_runtime::block_on(async {
+            let path = fixture_path();
+            let db = DatabaseState::open(path.clone()).await;
+            let _admin = admin_fixture(&db).await;
+            let staff = staff_fixture(&db).await;
+            let now = ist_instant("2026-10-17T11:30:00+05:30");
+            // Created in this order, but received in a different order: the list follows received time.
+            let recent = save_at(
+                &db,
+                &staff,
+                customer_order("Recent", "9000000031", "svc-wash", 1),
+                "recent",
+                now,
+                None,
+            )
+            .await
+            .unwrap();
+            let older = save_at(
+                &db,
+                &staff,
+                customer_order("Older", "9000000032", "svc-wash", 1),
+                "older",
+                now - Duration::days(2),
+                None,
+            )
+            .await
+            .unwrap();
+            let middle = save_at(
+                &db,
+                &staff,
+                customer_order("Middle", "9000000033", "svc-wash", 1),
+                "middle",
+                now - Duration::days(1),
+                None,
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                listed_in_order(&db, &staff, "", None, now).await,
+                vec![
+                    recent.order_id.clone(),
+                    middle.order_id.clone(),
+                    older.order_id.clone()
+                ]
+            );
+
+            let iron = save_at(
+                &db,
+                &staff,
+                customer_order("Iron", "9000000034", "svc-iron", 1),
+                "iron",
+                now,
+                None,
+            )
+            .await
+            .unwrap();
+            let part = save_at(
+                &db,
+                &staff,
+                customer_order("Part", "9000000035", "svc-wash", 1),
+                "part",
+                now,
+                pay(2000),
+            )
+            .await
+            .unwrap();
+            let full = save_at(
+                &db,
+                &staff,
+                customer_order("Full", "9000000036", "svc-wash", 1),
+                "full",
+                now,
+                None,
+            )
+            .await
+            .unwrap();
+            // Balances: Full 5000, Part 3000, Iron 1000 (plus the three unpaid orders above).
+            let balance = listed_in_order(&db, &staff, "", Some("balance_due"), now).await;
+            let position =
+                |order: &SavedOrder| balance.iter().position(|id| *id == order.order_id).unwrap();
+            assert!(position(&full) < position(&part));
+            assert!(position(&part) < position(&iron));
+            cleanup(db, path).await;
+        });
+    }
+
+    #[test]
+    fn a_two_to_four_digit_search_finds_todays_bill_first_and_still_finds_phone_matches() {
+        tauri::async_runtime::block_on(async {
+            let path = fixture_path();
+            let db = DatabaseState::open(path.clone()).await;
+            let _admin = admin_fixture(&db).await;
+            let staff = staff_fixture(&db).await;
+            let now = ist_instant("2026-10-17T11:30:00+05:30");
+            // Today's bills are ...0001, ...0002 and ...0003; yesterday's first bill is ...0001 of the 16th.
+            let todays_first = save_at(
+                &db,
+                &staff,
+                customer_order("Ledger", "9000010001", "svc-wash", 1),
+                "m1",
+                now,
+                None,
+            )
+            .await
+            .unwrap();
+            let todays_second = save_at(
+                &db,
+                &staff,
+                customer_order("Ledger 0001", "9000000002", "svc-wash", 1),
+                "m2",
+                now,
+                None,
+            )
+            .await
+            .unwrap();
+            let yesterdays = save_at(
+                &db,
+                &staff,
+                customer_order("Quill", "9000000003", "svc-wash", 1),
+                "m3",
+                now - Duration::days(1),
+                None,
+            )
+            .await
+            .unwrap();
+            let phone_only = save_at(
+                &db,
+                &staff,
+                customer_order("Ledger 0001 Two", "9100010002", "svc-wash", 1),
+                "m4",
+                now,
+                None,
+            )
+            .await
+            .unwrap();
+
+            let found = search_orders_at(&db, &staff, "0001", 0, 50, None, now)
+                .await
+                .unwrap();
+            assert_eq!(found.len(), 4, "every order that matches the text");
+            assert_eq!(
+                found[0].id, todays_first.order_id,
+                "today's bill ranks first"
+            );
+            let reason = |order: &SavedOrder| {
+                found
+                    .iter()
+                    .find(|o| o.id == order.order_id)
+                    .and_then(|o| o.match_reason.clone())
+            };
+            // Today's bill beats the phone and name matches on the same order.
+            assert_eq!(reason(&todays_first).as_deref(), Some("Today's bill"));
+            // A name match on its own.
+            assert_eq!(reason(&todays_second).as_deref(), Some("Name"));
+            // The bill number of another day that contains the digits.
+            assert_eq!(reason(&yesterdays).as_deref(), Some("Bill number"));
+            // A phone match beats a name match.
+            assert_eq!(reason(&phone_only).as_deref(), Some("Phone"));
+
+            // "02" is zero-padded to today's bill ...0002, which ranks first.
+            let padded = search_orders_at(&db, &staff, "02", 0, 50, None, now)
+                .await
+                .unwrap();
+            assert_eq!(padded[0].id, todays_second.order_id);
+            assert_eq!(padded[0].match_reason.as_deref(), Some("Today's bill"));
+
+            // Eight digits are a phone search, unchanged by the bill rule.
+            let by_phone = search_orders_at(&db, &staff, "90000100", 0, 50, None, now)
+                .await
+                .unwrap();
+            assert_eq!(
+                by_phone.iter().map(|o| o.id.clone()).collect::<Vec<_>>(),
+                vec![todays_first.order_id.clone()]
+            );
+            assert_eq!(by_phone[0].match_reason.as_deref(), Some("Phone"));
+            cleanup(db, path).await;
+        });
+    }
+
+    #[test]
+    fn legacy_and_new_tag_ids_find_their_order_and_nothing_else() {
+        tauri::async_runtime::block_on(async {
+            let path = fixture_path();
+            let db = DatabaseState::open(path.clone()).await;
+            let _admin = admin_fixture(&db).await;
+            let staff = staff_fixture(&db).await;
+            let now = ist_instant("2026-10-17T11:30:00+05:30");
+            // New tags: 2610170001-1 and 2610170001-2 for two tagged shirts.
+            let two = save_at(
+                &db,
+                &staff,
+                customer_order("Tag One", "9000000041", "svc-wash", 2),
+                "tag-1",
+                now,
+                None,
+            )
+            .await
+            .unwrap();
+            let legacy = save_at(
+                &db,
+                &staff,
+                customer_order("Tag Two", "9000000042", "svc-wash", 1),
+                "tag-2",
+                now,
+                None,
+            )
+            .await
+            .unwrap();
+            // Orders saved before the bill sequence carry a short legacy tag id.
+            sqlx::query("UPDATE order_pieces SET short_id='2600123-3' WHERE order_id=?")
+                .bind(&legacy.order_id)
+                .execute(db.writer_pool().unwrap())
+                .await
+                .unwrap();
+
+            let found = search_orders_at(&db, &staff, "2610170001-2", 0, 50, None, now)
+                .await
+                .unwrap();
+            assert_eq!(
+                found.iter().map(|o| o.id.clone()).collect::<Vec<_>>(),
+                vec![two.order_id.clone()]
+            );
+            assert_eq!(found[0].match_reason.as_deref(), Some("Tag ID"));
+
+            let found = search_orders_at(&db, &staff, "2600123-3", 0, 50, None, now)
+                .await
+                .unwrap();
+            assert_eq!(
+                found.iter().map(|o| o.id.clone()).collect::<Vec<_>>(),
+                vec![legacy.order_id.clone()]
+            );
+            assert_eq!(found[0].match_reason.as_deref(), Some("Tag ID"));
+
+            // A position that was never printed, and a dash with no position, match nothing.
+            assert!(
+                search_orders_at(&db, &staff, "2610170001-3", 0, 50, None, now)
+                    .await
+                    .unwrap()
+                    .is_empty()
+            );
+            assert!(
+                search_orders_at(&db, &staff, "2610170001-", 0, 50, None, now)
+                    .await
+                    .unwrap()
+                    .is_empty()
+            );
+            cleanup(db, path).await;
+        });
+    }
+
+    #[test]
+    fn name_search_ignores_case_and_matches_wildcard_characters_literally() {
+        tauri::async_runtime::block_on(async {
+            let path = fixture_path();
+            let db = DatabaseState::open(path.clone()).await;
+            let _admin = admin_fixture(&db).await;
+            let staff = staff_fixture(&db).await;
+            let now = ist_instant("2026-10-17T11:30:00+05:30");
+            let rita = save_at(
+                &db,
+                &staff,
+                customer_order("Rita Joshi", "9000000051", "svc-wash", 1),
+                "rita",
+                now,
+                None,
+            )
+            .await
+            .unwrap();
+            let _ritu = save_at(
+                &db,
+                &staff,
+                customer_order("Ritu Mehta", "9000000052", "svc-wash", 1),
+                "ritu",
+                now,
+                None,
+            )
+            .await
+            .unwrap();
+            let percent = save_at(
+                &db,
+                &staff,
+                customer_order("50% Off Club", "9000000053", "svc-wash", 1),
+                "percent",
+                now,
+                None,
+            )
+            .await
+            .unwrap();
+            let five_thousand = save_at(
+                &db,
+                &staff,
+                customer_order("5000 Club", "9000000054", "svc-wash", 1),
+                "five",
+                now,
+                None,
+            )
+            .await
+            .unwrap();
+            let underscore = save_at(
+                &db,
+                &staff,
+                customer_order("A_B Traders", "9000000055", "svc-wash", 1),
+                "underscore",
+                now,
+                None,
+            )
+            .await
+            .unwrap();
+            let _axb = save_at(
+                &db,
+                &staff,
+                customer_order("AXB Traders", "9000000056", "svc-wash", 1),
+                "axb",
+                now,
+                None,
+            )
+            .await
+            .unwrap();
+
+            for query in ["RITA", "rita", "Rita Jo"] {
+                let found = search_orders_at(&db, &staff, query, 0, 50, None, now)
+                    .await
+                    .unwrap();
+                assert_eq!(found.len(), 1, "{query}");
+                assert_eq!(found[0].id, rita.order_id, "{query}");
+                assert_eq!(found[0].match_reason.as_deref(), Some("Name"), "{query}");
+            }
+            let percent_hits = search_orders_at(&db, &staff, "50%", 0, 50, None, now)
+                .await
+                .unwrap();
+            assert_eq!(
+                percent_hits
+                    .iter()
+                    .map(|o| o.id.clone())
+                    .collect::<Vec<_>>(),
+                vec![percent.order_id.clone()],
+                "% is literal"
+            );
+            let underscore_hits = search_orders_at(&db, &staff, "A_B", 0, 50, None, now)
+                .await
+                .unwrap();
+            assert_eq!(
+                underscore_hits
+                    .iter()
+                    .map(|o| o.id.clone())
+                    .collect::<Vec<_>>(),
+                vec![underscore.order_id.clone()],
+                "_ is literal"
+            );
+            let club = listed_ids(&db, &staff, "Club", None, now).await;
+            assert_eq!(club, sorted_ids(&[&percent, &five_thousand]));
+            for wildcard in ["%%", "\\%", "\\_"] {
+                assert!(
+                    search_orders_at(&db, &staff, wildcard, 0, 50, None, now)
+                        .await
+                        .unwrap()
+                        .is_empty(),
+                    "{wildcard}"
+                );
+            }
+            cleanup(db, path).await;
+        });
+    }
+
+    #[test]
+    fn unknown_filters_and_short_or_wide_pages_are_refused_or_empty() {
+        tauri::async_runtime::block_on(async {
+            let path = fixture_path();
+            let db = DatabaseState::open(path.clone()).await;
+            let _admin = admin_fixture(&db).await;
+            let staff = staff_fixture(&db).await;
+            let now = ist_instant("2026-10-17T11:30:00+05:30");
+            for number in 1..=5 {
+                let name = format!("Page {number}");
+                let phone = format!("900000006{number}");
+                save_at(
+                    &db,
+                    &staff,
+                    customer_order(&name, &phone, "svc-wash", 1),
+                    &name,
+                    now,
+                    None,
+                )
+                .await
+                .unwrap();
+            }
+
+            let refused = search_orders_at(&db, &staff, "", 0, 10, Some("bogus"), now)
+                .await
+                .unwrap_err();
+            assert_eq!(refused, "Unknown order filter.");
+            assert!(
+                search_orders_at(&db, &staff, "", 0, 10, Some("OVERDUE"), now)
+                    .await
+                    .is_err(),
+                "filters are case sensitive"
+            );
+            assert!(
+                search_orders_at(&db, &staff, "", 0, 10, Some("  ready  "), now)
+                    .await
+                    .is_ok(),
+                "surrounding spaces are ignored"
+            );
+            assert!(
+                search_orders_at(&db, &staff, "", 0, 10, Some("  "), now)
+                    .await
+                    .is_ok(),
+                "a blank filter lists all orders"
+            );
+
+            assert!(search_orders_at(&db, &staff, "P", 0, 10, Some("all"), now)
+                .await
+                .unwrap()
+                .is_empty());
+
+            let everything = listed_in_order(&db, &staff, "", None, now).await;
+            assert_eq!(everything.len(), 5);
+            let middle_page = search_orders_at(&db, &staff, "", 2, 2, None, now)
+                .await
+                .unwrap();
+            assert_eq!(
+                middle_page.iter().map(|o| o.id.clone()).collect::<Vec<_>>(),
+                everything[2..4].to_vec()
+            );
+            assert!(search_orders_at(&db, &staff, "", 5, 2, None, now)
+                .await
+                .unwrap()
+                .is_empty());
+            assert!(search_orders_at(&db, &staff, "", 0, 0, None, now)
+                .await
+                .is_err());
+            assert!(search_orders_at(&db, &staff, "", 0, 101, None, now)
+                .await
+                .is_err());
+            cleanup(db, path).await;
+        });
+    }
+
+    #[test]
+    fn order_rows_report_untagged_pieces_payment_state_and_overdue() {
+        tauri::async_runtime::block_on(async {
+            let path = fixture_path();
+            let db = DatabaseState::open(path.clone()).await;
+            let admin = admin_fixture(&db).await;
+            let staff = staff_fixture(&db).await;
+            let now = ist_instant("2026-10-17T11:30:00+05:30");
+            let iron = save_at(
+                &db,
+                &staff,
+                customer_order("Iron Only", "9000000071", "svc-iron", 2),
+                "iron",
+                now,
+                None,
+            )
+            .await
+            .unwrap();
+            let part = save_at(
+                &db,
+                &staff,
+                customer_order("Part Paid", "9000000072", "svc-wash", 1),
+                "part",
+                now,
+                pay(2000),
+            )
+            .await
+            .unwrap();
+            let late = save_at(
+                &db,
+                &staff,
+                customer_order("Late", "9000000073", "svc-wash", 1),
+                "late",
+                now - Duration::days(4),
+                pay(5000),
+            )
+            .await
+            .unwrap();
+            update_order_status(&db, &staff, &late.order_id, "washing")
+                .await
+                .unwrap();
+            let cancelled = save_at(
+                &db,
+                &staff,
+                customer_order("Gone", "9000000074", "svc-iron", 1),
+                "gone",
+                now,
+                pay(1000),
+            )
+            .await
+            .unwrap();
+            cancel_order(&db, &admin, &cancelled.order_id, "Customer cancelled")
+                .await
+                .unwrap();
+
+            let found = search_orders_at(&db, &staff, "", 0, 50, None, now)
+                .await
+                .unwrap();
+            let row = |order: &SavedOrder| found.iter().find(|o| o.id == order.order_id).unwrap();
+
+            assert_eq!(
+                row(&iron).untagged_count,
+                2,
+                "both ironed pieces are untagged"
+            );
+            assert_eq!(row(&iron).payment_status, "unpaid");
+            assert_eq!(row(&iron).balance_minor, 2000);
+            assert!(!row(&iron).overdue);
+            assert_eq!(row(&iron).match_reason, None);
+
+            assert_eq!(row(&part).untagged_count, 0, "a wash is tagged");
+            assert_eq!(row(&part).payment_status, "partially_paid");
+            assert_eq!(row(&part).balance_minor, 3000);
+
+            assert_eq!(row(&late).payment_status, "paid");
+            assert!(row(&late).overdue, "washing past the promised time");
+            assert!(row(&late).promised_at.is_some());
+
+            assert_eq!(
+                row(&cancelled).payment_status,
+                "unpaid",
+                "a cancelled order is unpaid"
+            );
+            assert!(
+                !row(&cancelled).overdue,
+                "a cancelled order is never overdue"
+            );
             cleanup(db, path).await;
         });
     }
@@ -4217,9 +6018,11 @@ mod counter_tests {
             assert!(update_order_status(&db, &admin, &order.order_id, "ready")
                 .await
                 .is_err());
-            assert!(collect_order(&db, &admin, &order.order_id, vec![], "c")
-                .await
-                .is_err());
+            assert!(
+                collect_order(&db, &admin, &order.order_id, vec![], "c", None)
+                    .await
+                    .is_err()
+            );
             // A collected order cannot be cancelled.
             let collected = save_with(&db, &staff, order_input(1), "to-collect")
                 .await
@@ -4228,7 +6031,7 @@ mod counter_tests {
                 .await
                 .unwrap();
             let ids: Vec<String> = collected.pieces.iter().map(|p| p.id.clone()).collect();
-            collect_order(&db, &staff, &collected.order_id, ids, "c2")
+            collect_order(&db, &staff, &collected.order_id, ids, "c2", None)
                 .await
                 .unwrap();
             assert!(cancel_order(&db, &admin, &collected.order_id, "too late")
@@ -4256,7 +6059,7 @@ mod counter_tests {
                 .await
                 .unwrap();
             let ids: Vec<String> = order.pieces.iter().map(|p| p.id.clone()).collect();
-            collect_order(&db, &staff, &order.order_id, ids.clone(), "same-key")
+            collect_order(&db, &staff, &order.order_id, ids.clone(), "same-key", None)
                 .await
                 .unwrap();
             // A request that raced past the early check lands on the in-transaction check.
@@ -4265,12 +6068,12 @@ mod counter_tests {
                 .execute(db.writer_pool().unwrap())
                 .await
                 .unwrap();
-            let again = collect_order(&db, &staff, &order.order_id, ids, "same-key")
+            let again = collect_order(&db, &staff, &order.order_id, ids, "same-key", None)
                 .await
                 .unwrap();
             assert_eq!(again.order_id, order.order_id);
             assert!(
-                collect_order(&db, &staff, &other.order_id, vec![], "same-key")
+                collect_order(&db, &staff, &other.order_id, vec![], "same-key", None)
                     .await
                     .unwrap_err()
                     .contains("another order")
@@ -4652,18 +6455,12 @@ mod counter_tests {
             let mut invalid = save("bad-payment");
             invalid.payment.as_mut().unwrap().amount_minor = 0;
             assert!(save_order(&db, &admin, invalid).await.is_err());
-            let mut partial = save("partial-payment");
-            partial.payment.as_mut().unwrap().amount_minor = 100;
-            assert!(save_order(&db, &admin, partial)
+            let mut over = save("advance-over-total");
+            over.payment.as_mut().unwrap().amount_minor = 551;
+            assert!(save_order(&db, &admin, over)
                 .await
                 .unwrap_err()
-                .contains("full order amount"));
-            let mut unpaid = save("no-payment");
-            unpaid.payment = None;
-            assert!(save_order(&db, &admin, unpaid)
-                .await
-                .unwrap_err()
-                .contains("Payment in full"));
+                .contains("more than the order total"));
             let order_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM orders")
                 .fetch_one(db.writer_pool().unwrap())
                 .await
@@ -4902,6 +6699,7 @@ mod counter_tests {
                 &order.order_id,
                 all_ids.clone(),
                 "collect-with-balance",
+                None,
             )
             .await
             .unwrap_err();
@@ -4925,7 +6723,8 @@ mod counter_tests {
                 &admin,
                 &order.order_id,
                 all_ids[..3].to_vec(),
-                "collect-incomplete"
+                "collect-incomplete",
+                None,
             )
             .await
             .is_err());
@@ -4935,6 +6734,7 @@ mod counter_tests {
                 &order.order_id,
                 all_ids.clone(),
                 "collect-once",
+                None,
             )
             .await
             .unwrap();
@@ -5034,15 +6834,554 @@ mod counter_tests {
             assert!(queue.iter().any(|job| {
                 job.order_id == order.order_id && job.order_number == order.order_number
             }));
-            assert!(
-                search_orders(&reopened, &reopened_session, &order.order_number, 0, 10)
-                    .await
-                    .unwrap()
-                    .iter()
-                    .any(|summary| summary.id == order.order_id)
-            );
+            assert!(search_orders(
+                &reopened,
+                &reopened_session,
+                &order.order_number,
+                0,
+                10,
+                None
+            )
+            .await
+            .unwrap()
+            .iter()
+            .any(|summary| summary.id == order.order_id));
             drop(reopened);
             let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        });
+    }
+
+    /// Saves `order` now with an advance of `advance_minor` (no advance when `None`).
+    async fn save_with_advance(
+        db: &DatabaseState,
+        session: &CounterSession,
+        order: OrderInput,
+        key: &str,
+        advance_minor: Option<i64>,
+    ) -> Result<SavedOrder, String> {
+        let reviewed_quote = quote(db, session, &order).await?;
+        save_order(
+            db,
+            session,
+            SaveInput {
+                order,
+                reviewed_quote,
+                idempotency_key: key.into(),
+                payment: advance_minor.and_then(pay),
+            },
+        )
+        .await
+    }
+
+    /// Saves an order and marks it ready for collection, with an optional advance.
+    async fn ready_order(
+        db: &DatabaseState,
+        session: &CounterSession,
+        order: OrderInput,
+        key: &str,
+        advance_minor: Option<i64>,
+    ) -> SavedOrder {
+        let saved = save_with_advance(db, session, order, key, advance_minor)
+            .await
+            .unwrap();
+        update_order_status(db, session, &saved.order_id, "ready")
+            .await
+            .unwrap();
+        saved
+    }
+
+    fn ids_of(order: &SavedOrder) -> Vec<String> {
+        order.pieces.iter().map(|p| p.id.clone()).collect()
+    }
+
+    fn settle(amount_minor: i64, key: &str) -> RecordPaymentInput {
+        RecordPaymentInput {
+            amount_minor,
+            method: "upi".into(),
+            reference: Some("ref-1".into()),
+            idempotency_key: key.into(),
+        }
+    }
+
+    async fn payment_request_count(db: &DatabaseState, key: &str) -> i64 {
+        sqlx::query_scalar("SELECT COUNT(*) FROM counter_payment_requests WHERE request_id=?")
+            .bind(key)
+            .fetch_one(db.writer_pool().unwrap())
+            .await
+            .unwrap()
+    }
+
+    #[test]
+    fn a_later_payment_is_a_settlement_and_takes_the_order_from_partly_paid_to_paid() {
+        tauri::async_runtime::block_on(async {
+            let path = fixture_path();
+            let db = DatabaseState::open(path.clone()).await;
+            let admin = admin_fixture(&db).await;
+            let staff = staff_fixture(&db).await;
+            let order = save_with_advance(&db, &staff, order_input(1), "settle-save", None)
+                .await
+                .unwrap();
+            assert_eq!(order.customer_name, "Fixture Customer");
+            assert_eq!(order.customer_phone, "9990000000");
+            assert_eq!(order.payment_status, "unpaid");
+            let total = order.total_minor;
+            let first = total / 2;
+            let partial = record_payment(&db, &admin, &order.order_id, settle(first, "settle-1"))
+                .await
+                .unwrap();
+            assert_eq!(partial.payment_status, "partially_paid");
+            assert_eq!(partial.balance_minor, total - first);
+            assert_eq!(
+                payment_state(&db, &order.order_id).await,
+                (
+                    "partially_paid".to_string(),
+                    vec![("settlement".to_string(), first)]
+                )
+            );
+            let rest = total - first;
+            let paid = record_payment(&db, &admin, &order.order_id, settle(rest, "settle-2"))
+                .await
+                .unwrap();
+            assert_eq!(
+                (paid.payment_status.as_str(), paid.balance_minor),
+                ("paid", 0)
+            );
+            assert_eq!(
+                payment_state(&db, &order.order_id).await,
+                (
+                    "paid".to_string(),
+                    vec![
+                        ("settlement".to_string(), first),
+                        ("settlement".to_string(), rest)
+                    ]
+                )
+            );
+            cleanup(db, path).await;
+        });
+    }
+
+    #[test]
+    fn collecting_with_the_balance_payment_records_the_settlement_and_hands_over_once() {
+        tauri::async_runtime::block_on(async {
+            let path = fixture_path();
+            let db = DatabaseState::open(path.clone()).await;
+            let _admin = admin_fixture(&db).await;
+            let staff = staff_fixture(&db).await;
+            let order = ready_order(&db, &staff, order_input(2), "exact", None).await;
+            assert_eq!(order.collected_at, None);
+            let total = order.total_minor;
+            let ids = ids_of(&order);
+            let collected = collect_order(
+                &db,
+                &staff,
+                &order.order_id,
+                ids.clone(),
+                "collect-exact",
+                Some(settle(total, "pay-exact")),
+            )
+            .await
+            .unwrap();
+            assert_eq!(collected.status, "collected");
+            assert_eq!(
+                (collected.balance_minor, collected.payment_status.as_str()),
+                (0, "paid")
+            );
+            assert!(collected.collected_at.is_some());
+            assert_eq!(
+                payment_state(&db, &order.order_id).await,
+                ("paid".to_string(), vec![("settlement".to_string(), total)])
+            );
+            // The same collection retried returns the earlier success and records nothing more.
+            let again = collect_order(
+                &db,
+                &staff,
+                &order.order_id,
+                ids,
+                "collect-exact",
+                Some(settle(total, "pay-exact")),
+            )
+            .await
+            .unwrap();
+            assert_eq!(again.collected_at, collected.collected_at);
+            assert_eq!(again.payments.len(), 1);
+            cleanup(db, path).await;
+        });
+    }
+
+    #[test]
+    fn a_collection_payment_short_of_the_balance_writes_nothing_and_keeps_the_order_ready() {
+        tauri::async_runtime::block_on(async {
+            let path = fixture_path();
+            let db = DatabaseState::open(path.clone()).await;
+            let _admin = admin_fixture(&db).await;
+            let staff = staff_fixture(&db).await;
+            let order = ready_order(&db, &staff, order_input(2), "short-pay", None).await;
+            let total = order.total_minor;
+            let err = collect_order(
+                &db,
+                &staff,
+                &order.order_id,
+                ids_of(&order),
+                "collect-short",
+                Some(settle(total / 2, "pay-short")),
+            )
+            .await
+            .unwrap_err();
+            assert!(err.contains("still has"), "{err}");
+            assert_eq!(
+                payment_state(&db, &order.order_id).await,
+                ("unpaid".to_string(), vec![])
+            );
+            assert_eq!(payment_request_count(&db, "pay-short").await, 0);
+            let after = get_saved(&db, &order.order_id).await.unwrap().unwrap();
+            assert_eq!((after.status.as_str(), after.collected_at), ("ready", None));
+            cleanup(db, path).await;
+        });
+    }
+
+    #[test]
+    fn a_collection_payment_above_the_balance_is_refused_and_writes_nothing() {
+        tauri::async_runtime::block_on(async {
+            let path = fixture_path();
+            let db = DatabaseState::open(path.clone()).await;
+            let _admin = admin_fixture(&db).await;
+            let staff = staff_fixture(&db).await;
+            let order = ready_order(&db, &staff, order_input(2), "over-pay", None).await;
+            let total = order.total_minor;
+            let err = collect_order(
+                &db,
+                &staff,
+                &order.order_id,
+                ids_of(&order),
+                "collect-over",
+                Some(settle(total + 1, "pay-over")),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(err, "Payment cannot exceed the outstanding balance.");
+            assert_eq!(
+                payment_state(&db, &order.order_id).await,
+                ("unpaid".to_string(), vec![])
+            );
+            assert_eq!(payment_request_count(&db, "pay-over").await, 0);
+            assert_eq!(
+                get_saved(&db, &order.order_id)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .status,
+                "ready"
+            );
+            cleanup(db, path).await;
+        });
+    }
+
+    #[test]
+    fn a_collection_payment_on_an_order_not_yet_ready_is_never_recorded() {
+        tauri::async_runtime::block_on(async {
+            let path = fixture_path();
+            let db = DatabaseState::open(path.clone()).await;
+            let _admin = admin_fixture(&db).await;
+            let staff = staff_fixture(&db).await;
+            let order = save_with_advance(&db, &staff, order_input(1), "not-ready", None)
+                .await
+                .unwrap();
+            let total = order.total_minor;
+            let err = collect_order(
+                &db,
+                &staff,
+                &order.order_id,
+                ids_of(&order),
+                "collect-early",
+                Some(settle(total, "pay-early")),
+            )
+            .await
+            .unwrap_err();
+            assert!(err.contains("Only ready orders"), "{err}");
+            assert_eq!(
+                payment_state(&db, &order.order_id).await,
+                ("unpaid".to_string(), vec![])
+            );
+            assert_eq!(payment_request_count(&db, "pay-early").await, 0);
+            cleanup(db, path).await;
+        });
+    }
+
+    #[test]
+    fn a_failed_collection_takes_its_payment_with_it_so_a_retry_charges_once() {
+        tauri::async_runtime::block_on(async {
+            let path = fixture_path();
+            let db = DatabaseState::open(path.clone()).await;
+            let _admin = admin_fixture(&db).await;
+            let staff = staff_fixture(&db).await;
+            let order = ready_order(&db, &staff, order_input(2), "rollback", None).await;
+            let total = order.total_minor;
+            let ids = ids_of(&order);
+            // Only one of two pieces is confirmed, so the handover fails after the payment was written.
+            let incomplete = collect_order(
+                &db,
+                &staff,
+                &order.order_id,
+                ids[..1].to_vec(),
+                "collect-try-1",
+                Some(settle(total, "pay-retry")),
+            )
+            .await
+            .unwrap_err();
+            assert!(incomplete.contains("Every order piece"), "{incomplete}");
+            assert_eq!(
+                payment_state(&db, &order.order_id).await,
+                ("unpaid".to_string(), vec![])
+            );
+            assert_eq!(payment_request_count(&db, "pay-retry").await, 0);
+            let collected = collect_order(
+                &db,
+                &staff,
+                &order.order_id,
+                ids,
+                "collect-try-2",
+                Some(settle(total, "pay-retry")),
+            )
+            .await
+            .unwrap();
+            assert_eq!(collected.status, "collected");
+            assert_eq!(
+                payment_state(&db, &order.order_id).await,
+                ("paid".to_string(), vec![("settlement".to_string(), total)])
+            );
+            cleanup(db, path).await;
+        });
+    }
+
+    #[test]
+    fn a_payment_already_recorded_is_not_charged_again_by_a_fresh_collection() {
+        tauri::async_runtime::block_on(async {
+            let path = fixture_path();
+            let db = DatabaseState::open(path.clone()).await;
+            let admin = admin_fixture(&db).await;
+            let staff = staff_fixture(&db).await;
+            let order = ready_order(&db, &staff, order_input(1), "recorded-first", None).await;
+            let total = order.total_minor;
+            record_payment(&db, &admin, &order.order_id, settle(total, "pay-first"))
+                .await
+                .unwrap();
+            let collected = collect_order(
+                &db,
+                &staff,
+                &order.order_id,
+                ids_of(&order),
+                "collect-after-pay",
+                Some(settle(total, "pay-first")),
+            )
+            .await
+            .unwrap();
+            assert_eq!(collected.status, "collected");
+            assert_eq!(
+                payment_state(&db, &order.order_id).await,
+                ("paid".to_string(), vec![("settlement".to_string(), total)])
+            );
+            cleanup(db, path).await;
+        });
+    }
+
+    #[test]
+    fn a_payment_key_used_for_another_order_is_refused_at_collection() {
+        tauri::async_runtime::block_on(async {
+            let path = fixture_path();
+            let db = DatabaseState::open(path.clone()).await;
+            let admin = admin_fixture(&db).await;
+            let staff = staff_fixture(&db).await;
+            let first = ready_order(&db, &staff, order_input(1), "key-first", None).await;
+            let second = ready_order(&db, &staff, order_input(1), "key-second", None).await;
+            record_payment(
+                &db,
+                &admin,
+                &first.order_id,
+                settle(first.total_minor, "shared-pay"),
+            )
+            .await
+            .unwrap();
+            let err = collect_order(
+                &db,
+                &staff,
+                &second.order_id,
+                ids_of(&second),
+                "collect-second",
+                Some(settle(second.total_minor, "shared-pay")),
+            )
+            .await
+            .unwrap_err();
+            assert!(
+                err.contains("already used for a different payment"),
+                "{err}"
+            );
+            assert_eq!(
+                payment_state(&db, &second.order_id).await,
+                ("unpaid".to_string(), vec![])
+            );
+            assert_eq!(
+                get_saved(&db, &second.order_id)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .status,
+                "ready"
+            );
+            cleanup(db, path).await;
+        });
+    }
+
+    #[test]
+    fn collecting_without_a_payment_keeps_a_paid_order_and_its_advance_kind() {
+        tauri::async_runtime::block_on(async {
+            let path = fixture_path();
+            let db = DatabaseState::open(path.clone()).await;
+            let _admin = admin_fixture(&db).await;
+            let staff = staff_fixture(&db).await;
+            let total = quote(&db, &staff, &order_input(1))
+                .await
+                .unwrap()
+                .total_minor;
+            let order = ready_order(&db, &staff, order_input(1), "paid-at-save", Some(total)).await;
+            let collected =
+                collect_order(&db, &staff, &order.order_id, ids_of(&order), "plain", None)
+                    .await
+                    .unwrap();
+            assert_eq!(collected.status, "collected");
+            assert_eq!(
+                payment_state(&db, &order.order_id).await,
+                ("paid".to_string(), vec![("advance".to_string(), total)])
+            );
+            cleanup(db, path).await;
+        });
+    }
+
+    #[test]
+    fn a_cancelled_order_keeps_its_payment_history_and_the_money_to_return() {
+        tauri::async_runtime::block_on(async {
+            let path = fixture_path();
+            let db = DatabaseState::open(path.clone()).await;
+            let admin = admin_fixture(&db).await;
+            let staff = staff_fixture(&db).await;
+            let total = quote(&db, &staff, &order_input(2))
+                .await
+                .unwrap()
+                .total_minor;
+            let advance = total / 2;
+            let settlement = total / 4;
+            let order =
+                save_with_advance(&db, &staff, order_input(2), "cancel-history", Some(advance))
+                    .await
+                    .unwrap();
+            let settled = record_payment(
+                &db,
+                &admin,
+                &order.order_id,
+                settle(settlement, "cancel-settle"),
+            )
+            .await
+            .unwrap();
+            assert_eq!(settled.payment_status, "partially_paid");
+            assert_eq!(
+                settled.refund_due_minor, 0,
+                "only cancelled orders owe money back"
+            );
+            assert_eq!(
+                settled
+                    .payments
+                    .iter()
+                    .map(|p| (p.kind.as_str(), p.amount_minor, p.voided))
+                    .collect::<Vec<_>>(),
+                vec![
+                    ("advance", advance, false),
+                    ("settlement", settlement, false)
+                ]
+            );
+            let cancelled = cancel_order(&db, &admin, &order.order_id, "customer left")
+                .await
+                .unwrap();
+            assert_eq!(
+                (
+                    cancelled.status.as_str(),
+                    cancelled.payment_status.as_str(),
+                    cancelled.paid_minor,
+                    cancelled.refund_due_minor,
+                ),
+                ("cancelled", "unpaid", 0, advance + settlement)
+            );
+            assert_eq!(
+                cancelled
+                    .payments
+                    .iter()
+                    .map(|p| (p.kind.as_str(), p.voided))
+                    .collect::<Vec<_>>(),
+                vec![("advance", true), ("settlement", true)],
+                "voided payments stay in the history"
+            );
+            assert_eq!(cancelled.collected_at, None);
+            cleanup(db, path).await;
+        });
+    }
+
+    #[test]
+    fn checklists_cannot_change_on_a_cancelled_or_collected_order() {
+        tauri::async_runtime::block_on(async {
+            let path = fixture_path();
+            let db = DatabaseState::open(path.clone()).await;
+            let admin = admin_fixture(&db).await;
+            let staff = staff_fixture(&db).await;
+            let cancelled = save_with_advance(&db, &staff, order_input(1), "closed-cancel", None)
+                .await
+                .unwrap();
+            cancel_order(&db, &admin, &cancelled.order_id, "entered twice")
+                .await
+                .unwrap();
+            let refused = match_pieces(
+                &db,
+                &staff,
+                &cancelled.order_id,
+                "packing",
+                ids_of(&cancelled),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(refused, "This order is cancelled.");
+
+            let total = quote(&db, &staff, &order_input(1))
+                .await
+                .unwrap()
+                .total_minor;
+            let collected =
+                ready_order(&db, &staff, order_input(1), "closed-collect", Some(total)).await;
+            collect_order(
+                &db,
+                &staff,
+                &collected.order_id,
+                ids_of(&collected),
+                "closed-req",
+                None,
+            )
+            .await
+            .unwrap();
+            let refused = match_pieces(
+                &db,
+                &staff,
+                &collected.order_id,
+                "collection",
+                ids_of(&collected),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(refused, "This order has already been collected.");
+
+            let open = save_with_advance(&db, &staff, order_input(1), "still-open", None)
+                .await
+                .unwrap();
+            let matched = match_pieces(&db, &staff, &open.order_id, "packing", ids_of(&open))
+                .await
+                .unwrap();
+            assert!(matched.complete);
+            cleanup(db, path).await;
         });
     }
 }

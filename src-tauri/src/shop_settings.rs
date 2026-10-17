@@ -385,23 +385,6 @@ pub async fn counter_save_shop_settings(
     save_shop_settings(&state, &session, &settings).await
 }
 
-/// Bill-number prefix for the next order, read inside the order-saving transaction. A blank or
-/// missing value falls back to `LA`. Numbers come from a per-year counter that does not depend on
-/// the prefix, so changing it never repeats or skips a number.
-pub(crate) async fn order_prefix(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-) -> Result<String, String> {
-    let stored: Option<String> =
-        sqlx::query_scalar("SELECT value FROM app_settings WHERE key='order_prefix'")
-            .fetch_optional(&mut **tx)
-            .await
-            .map_err(db_err)?;
-    Ok(stored
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| DEFAULT_ORDER_PREFIX.to_string()))
-}
-
 /// All print choices are read from the same order transaction and copied into the saved jobs.
 pub(crate) async fn load_for_order(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
@@ -928,7 +911,7 @@ mod tests {
     }
 
     #[test]
-    fn changing_the_prefix_mid_year_never_repeats_or_skips_a_bill_number() {
+    fn changing_the_prefix_never_changes_or_repeats_a_bill_number() {
         tauri::async_runtime::block_on(async {
             let (db, path) = open().await;
             let admin = session("admin-1", "admin");
@@ -942,18 +925,19 @@ mod tests {
             save_shop_settings(&db, &admin, &changed).await.unwrap();
             let third = save(&db, &staff, "k3").await;
 
+            // Bill numbers are the shop day plus a running sequence; the prefix is not part of them.
             let numbers = [&first, &second, &third].map(|o| o.order_number.clone());
-            let parts: Vec<Vec<&str>> = numbers.iter().map(|n| n.split('-').collect()).collect();
-            assert_eq!(parts[0][0], "LA");
-            assert_eq!(parts[1][0], "NL");
-            assert_eq!(parts[2][0], "LA");
-            let sequence: Vec<u32> = parts.iter().map(|p| p[2].parse().unwrap()).collect();
+            for number in &numbers {
+                assert_eq!(number.len(), 12, "{number}");
+                assert!(number.chars().all(|c| c.is_ascii_digit()), "{number}");
+            }
+            let sequence: Vec<&str> = numbers.iter().map(|n| &n[8..]).collect();
             assert_eq!(
                 sequence,
-                [1, 2, 3],
+                ["0001", "0002", "0003"],
                 "one running number whatever the prefix"
             );
-            assert_eq!(parts[0][1], parts[2][1]);
+            assert_eq!(numbers[0][..8], numbers[2][..8]);
             let unique: std::collections::HashSet<_> = numbers.iter().collect();
             assert_eq!(unique.len(), 3);
             // The piece ids of the three bills never collide either.
@@ -969,7 +953,7 @@ mod tests {
     }
 
     #[test]
-    fn a_blank_stored_prefix_still_numbers_orders_with_the_default() {
+    fn a_blank_or_missing_stored_prefix_does_not_stop_orders_being_numbered() {
         tauri::async_runtime::block_on(async {
             let (db, path) = open().await;
             sqlx::query("UPDATE app_settings SET value=' ' WHERE key='order_prefix'")
@@ -977,17 +961,14 @@ mod tests {
                 .await
                 .unwrap();
             let saved = save(&db, &session("staff-1", "staff"), "blank").await;
-            assert!(
-                saved.order_number.starts_with("LA-"),
-                "{}",
-                saved.order_number
-            );
+            assert_eq!(saved.order_number.len(), 12, "{}", saved.order_number);
             sqlx::query("DELETE FROM app_settings WHERE key='order_prefix'")
                 .execute(db.writer_pool().unwrap())
                 .await
                 .unwrap();
             let again = save(&db, &session("staff-1", "staff"), "missing").await;
-            assert!(again.order_number.starts_with("LA-"));
+            assert_eq!(again.order_number.len(), 12, "{}", again.order_number);
+            assert!(again.order_number > saved.order_number);
             cleanup(db, path);
         });
     }

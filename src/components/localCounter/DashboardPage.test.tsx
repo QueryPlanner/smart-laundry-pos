@@ -8,10 +8,17 @@ import { money } from './ui';
 import type { CounterAccount } from '@/lib/localFirst/counter';
 
 const api = vi.hoisted(() => ({ getDashboardOverview: vi.fn(), getSalesSeries: vi.fn() }));
-vi.mock('@/lib/localFirst/insights', () => api);
+// Only the two loaders are faked; the pure netByKind helper keeps its real behaviour.
+vi.mock('@/lib/localFirst/insights', async () => ({ ...(await vi.importActual<object>('@/lib/localFirst/insights')), ...api }));
 
 const staff: CounterAccount = { id: 's1', fullName: 'Clerk', role: 'staff', active: true };
-const series = { bucket: 'day', points: [pointOf('2026-03-14', 40000, 30000), pointOf('2026-03-15', 60000, 55000)] };
+const series = {
+  bucket: 'day',
+  points: [
+    pointOf('2026-03-14', 40000, { advanceCollectedMinor: 20000, balanceCollectedMinor: 10000 }),
+    pointOf('2026-03-15', 60000, { advanceCollectedMinor: 35000, balanceCollectedMinor: 20000 }),
+  ],
+};
 
 const setup = () => {
   const props = { account: staff, onError: vi.fn(), onNotice: vi.fn(), onOpenOrder: vi.fn() };
@@ -39,13 +46,23 @@ describe('DashboardPage', () => {
     expect(stat(today, 'Orders').textContent).toContain('5 pieces');
     expect(stat(today, 'Billed').textContent).toContain(money(60000));
     expect(stat(today, 'Billed').textContent).toContain(`${money(5000)} discount given`);
+    expect(stat(today, 'Advance collected').textContent).toContain(money(35000));
+    expect(stat(today, 'Advance collected').textContent).toContain('Taken when the order was booked');
+    expect(stat(today, 'Balance received').textContent).toContain(money(20000));
+    expect(stat(today, 'Balance received').textContent).toContain('Taken at or after pickup');
     expect(stat(today, 'Collected').textContent).toContain(money(55000));
+    expect(stat(today, 'To collect').textContent).toContain(money(12500));
+    expect(stat(today, 'To collect').textContent).toContain('2 orders with a balance');
+    expect(stat(today, 'To collect').classList.contains('warn')).toBe(true);
     expect(stat(today, 'Ready to collect').textContent).toContain('4');
     expect(stat(today, 'In process').textContent).toContain('5');
     expect(stat(today, 'In process').textContent).toContain('2 not started');
     expect(stat(today, 'Low stock').textContent).toContain('2');
     const month = screen.getByRole('heading', { name: 'This month' }).nextElementSibling as HTMLElement;
     expect(stat(month, 'Billed').textContent).toContain(money(900000));
+    expect(stat(month, 'Advance collected').textContent).toContain(money(500000));
+    expect(stat(month, 'Balance received').textContent).toContain(money(300000));
+    expect(stat(month, 'Collected').textContent).toContain(money(800000));
     expect(stat(month, 'Expenses').textContent).toContain(money(100000));
     expect(stat(month, 'Profit').textContent).toContain(money(700000));
     expect(screen.getByRole('img').getAttribute('aria-label')).toContain('Sales for the last 14 days');
@@ -65,6 +82,8 @@ describe('DashboardPage', () => {
     expect(within(working).getByText('Washing')).toBeTruthy();
     expect(within(working).getByText('Overdue')).toBeTruthy();
     expect(within(working).getAllByText('—').length).toBe(1);
+    expect(within(working).getByRole('columnheader', { name: 'To pay' })).toBeTruthy();
+    expect(within(working).getAllByText('Paid')).toHaveLength(2);
     fireEvent.click(within(working).getByRole('button', { name: 'LA-2026-00009' }));
     expect(props.onOpenOrder).toHaveBeenLastCalledWith('w2');
     expect(screen.queryByText(/Showing/)).toBeNull();
@@ -82,6 +101,25 @@ describe('DashboardPage', () => {
     expect(screen.getByText('Showing 1 of 25, soonest promise first.')).toBeTruthy();
   });
 
+  it('shows the balance still to pay on an order in process, and Paid when nothing is owed', async () => {
+    api.getDashboardOverview.mockResolvedValue(overviewOf({
+      inProcess: {
+        total: 2,
+        orders: [
+          attentionOf({ id: 'w1', orderNumber: 'LA-W1', status: 'drying', balanceMinor: 7500, promisedAt: null }),
+          attentionOf({ id: 'w2', orderNumber: 'LA-W2', status: 'packing', balanceMinor: 0, promisedAt: null }),
+        ],
+      },
+    }));
+    setup();
+    const working = (await screen.findByRole('heading', { name: 'In process' })).parentElement as HTMLElement;
+    const owing = within(working).getByRole('button', { name: 'LA-W1' }).closest('tr') as HTMLElement;
+    expect(owing.textContent).toContain('Drying');
+    expect(owing.textContent).toContain(money(7500));
+    const settled = within(working).getByRole('button', { name: 'LA-W2' }).closest('tr') as HTMLElement;
+    expect(settled.textContent).toContain('Paid');
+  });
+
   it('lists recent orders and opens one', async () => {
     const { props } = setup();
     const recent = (await screen.findByRole('heading', { name: 'Recent orders' })).parentElement as HTMLElement;
@@ -95,15 +133,55 @@ describe('DashboardPage', () => {
     api.getDashboardOverview.mockResolvedValue(overviewOf({
       readyWaiting: { total: 0, orders: [] }, inProcess: { total: 0, orders: [] }, recentOrders: [], lowStockCount: 0,
       queue: { received: 0, inProcess: 0, ready: 0 },
-      today: summaryOf({ discountMinor: 0, refundedMinor: 2500, netCollectedMinor: 7500 }),
+      today: summaryOf({
+        discountMinor: 0, collectedMinor: 10000, advanceCollectedMinor: 7500, balanceCollectedMinor: 2500,
+        refundedMinor: 2500, advanceRefundedMinor: 0, balanceRefundedMinor: 2500, netCollectedMinor: 7500,
+      }),
     }));
     setup();
     await screen.findByText('Nothing has been waiting for pickup for more than 2 days.');
     const today = screen.getByRole('heading', { name: 'Today' }).nextElementSibling as HTMLElement;
     expect(stat(today, 'Billed').textContent).not.toContain('discount');
     expect(stat(today, 'Collected').textContent).toContain(`After ${money(2500)} refunded`);
+    expect(stat(today, 'Advance collected').textContent).toContain(money(7500));
+    expect(stat(today, 'Balance received').textContent).toContain(money(0));
     expect(screen.getByText('No orders are being processed.')).toBeTruthy();
     expect(screen.getByText('No orders yet.')).toBeTruthy();
+  });
+
+  it('takes refunds off each kind of money, not off the other', async () => {
+    api.getDashboardOverview.mockResolvedValue(overviewOf({
+      today: summaryOf({
+        collectedMinor: 55000, advanceCollectedMinor: 35000, balanceCollectedMinor: 20000, refundedMinor: 2500,
+        advanceRefundedMinor: 1000, balanceRefundedMinor: 1500, netCollectedMinor: 52500,
+      }),
+    }));
+    setup();
+    await screen.findByText('Figures for today, 15 Mar 2026, and the month so far.');
+    const today = screen.getByRole('heading', { name: 'Today' }).nextElementSibling as HTMLElement;
+    expect(stat(today, 'Advance collected').textContent).toContain(money(34000));
+    expect(stat(today, 'Balance received').textContent).toContain(money(18500));
+    expect(stat(today, 'Collected').textContent).toContain(money(52500));
+    expect(stat(today, 'Collected').textContent).toContain(`After ${money(2500)} refunded`);
+  });
+
+  it('says nothing is owed in neutral tone when every balance is paid', async () => {
+    api.getDashboardOverview.mockResolvedValue(overviewOf({ receivable: { orders: 0, minor: 0 } }));
+    setup();
+    await screen.findByText('Figures for today, 15 Mar 2026, and the month so far.');
+    const today = screen.getByRole('heading', { name: 'Today' }).nextElementSibling as HTMLElement;
+    expect(stat(today, 'To collect').textContent).toContain(money(0));
+    expect(stat(today, 'To collect').textContent).toContain('Nothing owed');
+    expect(stat(today, 'To collect').classList.contains('warn')).toBe(false);
+    expect(stat(today, 'To collect').classList.contains('neutral')).toBe(true);
+  });
+
+  it('says one order is still owing in the singular', async () => {
+    api.getDashboardOverview.mockResolvedValue(overviewOf({ receivable: { orders: 1, minor: 4500 } }));
+    setup();
+    await screen.findByText('Figures for today, 15 Mar 2026, and the month so far.');
+    const today = screen.getByRole('heading', { name: 'Today' }).nextElementSibling as HTMLElement;
+    expect(stat(today, 'To collect').textContent).toContain('1 order with a balance');
   });
 
   it('works out profit itself if the native side leaves it out, and flags a loss', async () => {

@@ -11,6 +11,8 @@ export type CounterServiceKey = 'wash' | 'iron' | 'wash_iron' | 'dry_clean';
 export type CounterJobKind = 'bill' | 'tags';
 export type CounterJobState = 'pending' | 'submitting' | 'submitted' | 'failed' | 'uncertain';
 export type CounterPaymentMethod = 'cash' | 'upi' | 'card' | 'bank_transfer' | 'other';
+export type CounterPaymentStatus = 'unpaid' | 'partially_paid' | 'paid' | 'overpaid';
+export type CounterPaymentKind = 'advance' | 'settlement';
 
 export interface CounterAccount { id: string; fullName: string; role: CounterRole; active: boolean }
 export interface CounterBootstrap { setupRequired: boolean; authenticated: boolean; account: CounterAccount | null; accounts: CounterAccount[]; warning: string | null; restorePending: boolean }
@@ -29,7 +31,7 @@ export interface CounterOrderLineInput { garmentId: string; serviceId: string; q
 export interface CounterOrderInput { customer: CounterCustomer; items: CounterOrderLineInput[] }
 export interface CounterQuoteLine {
   garmentId: string; serviceId: string; garment: string; service: string;
-  quantity: number; unitPriceMinor: number; lineTotalMinor: number; rateVersion: number;
+  quantity: number; unitPriceMinor: number; lineTotalMinor: number; rateVersion: number; serviceKey: CounterServiceKey;
 }
 export interface CounterQuote {
   lines: CounterQuoteLine[]; subtotalMinor: number; discountPercentBp: number; discountMinor: number; totalMinor: number;
@@ -38,20 +40,43 @@ export interface CounterQuote {
 export interface CounterSaveInput extends CounterOrderInput {
   reviewedQuote: CounterQuote;
   idempotencyKey: string;
+  /** An advance: `0 < amountMinor <= totalMinor`. Omit when nothing is received at save time. */
   payment?: { amountMinor: number; method: CounterPaymentMethod; reference?: string };
 }
 export interface CounterPiece {
   id: string; shortId: string; garmentId: string; garment: string; service: string;
   position: number; total: number; matched: boolean; packingMatched: boolean; collectionMatched: boolean;
+  tagged: boolean;
+}
+export interface CounterPayment {
+  id: string; at: string; method: CounterPaymentMethod; amountMinor: number;
+  reference: string | null; kind: CounterPaymentKind; voided: boolean;
 }
 export interface CounterPrintJob { id: string; kind: CounterJobKind; state: CounterJobState; printerId: string | null; osJobId: string | null; lastError: string | null; orderId: string; orderNumber: string }
 export interface CounterSavedOrder {
-  orderId: string; orderNumber: string; receivedAt: string; promisedAt: string; status: string;
+  orderId: string; orderNumber: string; customerName: string; customerPhone: string;
+  receivedAt: string; promisedAt: string; status: string;
   totalMinor: number; paidMinor: number; balanceMinor: number;
+  paymentStatus: CounterPaymentStatus; collectedAt: string | null;
+  /** > 0 only on a cancelled order that had payments. */
+  refundDueMinor: number;
+  /** Oldest first; includes voided payments. */
+  payments: CounterPayment[];
   pieces: CounterPiece[]; printJobs: CounterPrintJob[];
 }
-export interface CounterOrderSummary { id: string; orderNumber: string; customerName: string; customerPhone: string; status: string; receivedAt: string; promisedAt: string | null; totalMinor: number; paidMinor: number; balanceMinor: number; pieceCount: number }
+export interface CounterOrderSummary {
+  id: string; orderNumber: string; customerName: string; customerPhone: string; status: string;
+  receivedAt: string; promisedAt: string | null; totalMinor: number; paidMinor: number; balanceMinor: number;
+  pieceCount: number; paymentStatus: CounterPaymentStatus; overdue: boolean; untaggedCount: number;
+  /** Why this order matched the search text, or null when it matched the filter alone. */
+  matchReason: string | null;
+}
 export interface CounterRecordPaymentInput { amountMinor: number; method: CounterPaymentMethod; reference?: string; idempotencyKey: string }
+export type CounterOrderFilter = 'all' | 'ready' | 'balance_due' | 'overdue' | 'in_process' | 'today';
+export interface CounterQueueCounts {
+  ready: number; balanceDue: number; overdue: number; inProcess: number; today: number; all: number;
+  balanceDueMinor: number;
+}
 export type CounterMatchStage = 'packing' | 'collection';
 export type CounterProcessingStatus = 'washing' | 'drying' | 'ironing' | 'quality_check' | 'packing' | 'ready';
 export interface PieceMatchResult {
@@ -101,11 +126,19 @@ export const saveCounterOrder = (input: CounterSaveInput): Promise<CounterSavedO
 export const getOrderPieces = (orderId: string): Promise<CounterPiece[]> => call('counter_get_order_pieces', { orderId });
 export const matchOrderPieces = (orderId: string, stage: CounterMatchStage, pieceIds: string[]): Promise<PieceMatchResult> =>
   call('counter_match_order_pieces', { orderId, stage, pieceIds });
-export const searchCounterOrders = (query: string, offset = 0, limit = 50): Promise<CounterOrderSummary[]> => call('counter_search_orders', { query, offset, limit });
+export const searchCounterOrders = (query: string, offset = 0, limit = 50, filter: CounterOrderFilter = 'all'): Promise<CounterOrderSummary[]> =>
+  call('counter_search_orders', { query, offset, limit, filter });
+/** Counts for each order list segment, with no search text. */
+export const getCounterOrderQueueCounts = (): Promise<CounterQueueCounts> => call('counter_order_queue_counts');
 export const getCounterOrder = (orderId: string): Promise<CounterSavedOrder | null> => call('counter_get_order', { orderId });
 export const recordCounterPayment = (orderId: string, input: CounterRecordPaymentInput): Promise<CounterSavedOrder> => call('counter_record_payment', { orderId, input });
 export const updateCounterOrderStatus = (orderId: string, status: CounterProcessingStatus): Promise<CounterSavedOrder> => call('counter_update_order_status', { orderId, status });
-export const collectCounterOrder = (orderId: string, pieceIds: string[], requestId: string): Promise<CounterSavedOrder> => call('counter_collect_order', { orderId, pieceIds, requestId });
+/**
+ * When `payment` is present it is recorded as a settlement in the same transaction as the collection,
+ * so either both happen or neither.
+ */
+export const collectCounterOrder = (orderId: string, pieceIds: string[], requestId: string, payment?: CounterRecordPaymentInput): Promise<CounterSavedOrder> =>
+  call('counter_collect_order', { orderId, pieceIds, requestId, payment });
 /** Admin only. Voids every payment on the order and marks it cancelled; `reason` must be 3 to 200 characters. */
 export const cancelCounterOrder = (orderId: string, reason: string): Promise<CounterSavedOrder> => call('counter_cancel_order', { orderId, reason });
 export const enumeratePrinters = (): Promise<NativePrinter[]> => call('counter_enumerate_printers');

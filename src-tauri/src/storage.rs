@@ -19,7 +19,21 @@ use sqlx::{Connection, Row};
 const MIGRATION_SQL: &str = include_str!("../migrations/001_initial_schema.sql");
 const MIGRATION_V2_SQL: &str = include_str!("../migrations/002_counter_domain.sql");
 const MIGRATION_V3_SQL: &str = include_str!("../migrations/003_default_rate_card.sql");
-const SCHEMA_VERSION: i64 = 3;
+const MIGRATION_V4_SQL: &str = include_str!("../migrations/004_advance_daily_tags.sql");
+/// Every schema step, oldest first: its version number, its SQL and a name for error messages.
+/// Startup, the schema contract and the test fixtures all read this one list, so a new step is
+/// added here once and nowhere else.
+const MIGRATION_STEPS: &[(i64, &str, &str)] = &[
+    (1, MIGRATION_SQL, "v1 local database"),
+    (2, MIGRATION_V2_SQL, "v2 counter"),
+    (3, MIGRATION_V3_SQL, "v3 default rate card"),
+    (
+        4,
+        MIGRATION_V4_SQL,
+        "v4 advance payments, daily bills and tags",
+    ),
+];
+const SCHEMA_VERSION: i64 = 4;
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const WRITER_CONNECTIONS: u32 = 1;
 const READER_CONNECTIONS: u32 = 4;
@@ -227,6 +241,14 @@ const REQUIRED_TABLES: &[(&str, &[&str])] = &[
             "created_at",
         ],
     ),
+];
+
+/// Tables and columns that schema version 4 added. Checked only for databases at version 4 or
+/// later, so a version 3 database still validates until it is upgraded.
+const REQUIRED_TABLES_V4: &[(&str, &[&str])] = &[
+    ("order_day_sequences", &["day", "next_number"]),
+    ("payments", &["kind"]),
+    ("order_pieces", &["tagged"]),
 ];
 
 const REQUIRED_FOREIGN_KEYS: &[(&str, &str, &str, &str)] = &[
@@ -945,6 +967,14 @@ async fn detect_applied_version(
     Ok(1)
 }
 
+/// The message for a file written by a newer app. Both the startup path and the validator use it,
+/// so the owner sees the same explanation wherever the file is opened.
+fn unsupported_schema_version(version: i64) -> String {
+    format!(
+        "The local database uses unsupported schema version {version}. This app supports versions up to {SCHEMA_VERSION}; install the latest version of the app."
+    )
+}
+
 async fn initialize_schema(pool: &SqlitePool, existed: bool) -> Result<(), String> {
     let mut connection = pool
         .acquire()
@@ -956,9 +986,7 @@ async fn initialize_schema(pool: &SqlitePool, existed: bool) -> Result<(), Strin
         .map_err(|error| format!("Could not read the local schema version: {error}"))?;
 
     if !(0..=SCHEMA_VERSION).contains(&version) {
-        return Err(format!(
-            "The local database uses unsupported schema version {version}. This app supports versions up to {SCHEMA_VERSION}; install the latest version of the app."
-        ));
+        return Err(unsupported_schema_version(version));
     }
 
     // A file left by an interrupted first run exists but holds no tables; it must still get the
@@ -968,6 +996,8 @@ async fn initialize_schema(pool: &SqlitePool, existed: bool) -> Result<(), Strin
     } else {
         0
     };
+    // The file is checked against the contract of the version it really has, before anything
+    // is changed.
     match applied {
         0 => validate_integrity_and_foreign_keys(&mut connection).await?,
         1 => {
@@ -975,7 +1005,7 @@ async fn initialize_schema(pool: &SqlitePool, existed: bool) -> Result<(), Strin
             validate_integrity_and_foreign_keys(&mut connection).await?;
         }
         _ => {
-            validate_schema(&mut connection).await?;
+            validate_schema(&mut connection, applied).await?;
             validate_integrity_and_foreign_keys(&mut connection).await?;
         }
     }
@@ -987,12 +1017,7 @@ async fn initialize_schema(pool: &SqlitePool, existed: bool) -> Result<(), Strin
         let migration_result = async {
             // Each step runs only if the database has not had it yet, oldest first, all in one
             // transaction: a failure leaves the database exactly as it was.
-            let steps: [(i64, &str, &str); 3] = [
-                (1, MIGRATION_SQL, "v1 local database"),
-                (2, MIGRATION_V2_SQL, "v2 counter"),
-                (3, MIGRATION_V3_SQL, "v3 default rate card"),
-            ];
-            for (step, sql, name) in steps {
+            for &(step, sql, name) in MIGRATION_STEPS {
                 if applied < step {
                     sqlx::raw_sql(sql)
                         .execute(&mut *transaction)
@@ -1019,7 +1044,7 @@ async fn initialize_schema(pool: &SqlitePool, existed: bool) -> Result<(), Strin
             .commit()
             .await
             .map_err(|error| format!("Could not commit the schema migration: {error}"))?;
-        validate_schema(&mut connection).await?;
+        validate_schema(&mut connection, SCHEMA_VERSION).await?;
         validate_integrity_and_foreign_keys(&mut connection).await?;
     }
 
@@ -1134,37 +1159,20 @@ async fn validate_v1_schema(
             }
         }
     }
-    validate_schema_contract_version(connection, false).await?;
+    validate_schema_contract_version(connection, 1).await?;
     Ok(())
 }
 
+/// Checks a database at `version` (2 or later). Tables and columns from the earlier versions are
+/// always required; the version 4 additions are required only once the file is at version 4.
+/// The whole schema is then compared with the contract for that version.
 async fn validate_schema(
     connection: &mut sqlx::pool::PoolConnection<sqlx::Sqlite>,
+    version: i64,
 ) -> Result<(), String> {
-    for (table, required_columns) in REQUIRED_TABLES {
-        let sql = format!("PRAGMA table_info(\"{table}\")");
-        let rows = sqlx::query(&sql)
-            .fetch_all(&mut **connection)
-            .await
-            .map_err(|error| format!("Could not inspect table {table}: {error}"))?;
-        let columns = rows
-            .iter()
-            .map(|row| row.try_get::<String, _>("name"))
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|error| format!("Could not read table {table}: {error}"))?;
-        if columns.is_empty() {
-            return Err(format!("The local database is missing table {table}."));
-        }
-        for required in *required_columns {
-            if !columns
-                .iter()
-                .any(|column| column.eq_ignore_ascii_case(required))
-            {
-                return Err(format!(
-                    "The local database table {table} is missing required column {required}."
-                ));
-            }
-        }
+    require_tables_and_columns(connection, REQUIRED_TABLES).await?;
+    if version >= 4 {
+        require_tables_and_columns(connection, REQUIRED_TABLES_V4).await?;
     }
 
     for (table, parent, column, on_delete) in REQUIRED_FOREIGN_KEYS {
@@ -1199,18 +1207,49 @@ async fn validate_schema(
         }
     }
 
-    validate_schema_contract(connection).await
+    validate_schema_contract_version(connection, version).await
 }
 
-async fn validate_schema_contract(
-    actual_connection: &mut sqlx::pool::PoolConnection<sqlx::Sqlite>,
+/// Every listed table must exist and hold every listed column (names compare without regard to
+/// case). The messages are the ones the local database has always reported.
+async fn require_tables_and_columns(
+    connection: &mut sqlx::pool::PoolConnection<sqlx::Sqlite>,
+    required_tables: &[(&str, &[&str])],
 ) -> Result<(), String> {
-    validate_schema_contract_version(actual_connection, true).await
+    for (table, required_columns) in required_tables {
+        let sql = format!("PRAGMA table_info(\"{table}\")");
+        let rows = sqlx::query(&sql)
+            .fetch_all(&mut **connection)
+            .await
+            .map_err(|error| format!("Could not inspect table {table}: {error}"))?;
+        let columns = rows
+            .iter()
+            .map(|row| row.try_get::<String, _>("name"))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("Could not read table {table}: {error}"))?;
+        if columns.is_empty() {
+            return Err(format!("The local database is missing table {table}."));
+        }
+        for required in *required_columns {
+            if !columns
+                .iter()
+                .any(|column| column.eq_ignore_ascii_case(required))
+            {
+                return Err(format!(
+                    "The local database table {table} is missing required column {required}."
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
+/// Compares the schema objects of `actual_connection` with the schema a database at `version`
+/// must have: every migration step up to that version applied to an empty database. Steps that
+/// only change data (version 3) add no objects, so versions 2 and 3 share one contract.
 async fn validate_schema_contract_version(
     actual_connection: &mut sqlx::pool::PoolConnection<sqlx::Sqlite>,
-    include_v2: bool,
+    version: i64,
 ) -> Result<(), String> {
     let expected_pool = SqlitePoolOptions::new()
         .max_connections(1)
@@ -1223,15 +1262,15 @@ async fn validate_schema_contract_version(
         .await
         .map_err(|error| format!("Could not prepare the schema contract: {error}"))?;
     let expected_result = async {
-        sqlx::raw_sql(MIGRATION_SQL)
-            .execute(&expected_pool)
-            .await
-            .map_err(|error| format!("Could not prepare the schema contract: {error}"))?;
-        if include_v2 {
-            sqlx::raw_sql(MIGRATION_V2_SQL)
-                .execute(&expected_pool)
-                .await
-                .map_err(|error| format!("Could not prepare the v2 schema contract: {error}"))?;
+        for &(step, sql, name) in MIGRATION_STEPS {
+            if step <= version {
+                sqlx::raw_sql(sql)
+                    .execute(&expected_pool)
+                    .await
+                    .map_err(|error| {
+                        format!("Could not prepare the {name} schema contract: {error}")
+                    })?;
+            }
         }
         let mut connection = expected_pool
             .acquire()
@@ -1402,18 +1441,15 @@ async fn validate_database_pool(pool: &SqlitePool) -> Result<(), String> {
         .fetch_one(&mut *connection)
         .await
         .map_err(|error| format!("Could not read the database schema version: {error}"))?;
-    if !(0..=SCHEMA_VERSION).contains(&version) {
-        return Err(format!(
-            "The database uses unsupported schema version {version}. This app supports versions up to {SCHEMA_VERSION}; install the latest version of the app."
-        ));
-    }
+    // Each file is checked against the contract of the version it records, so an older copy (a
+    // pre-upgrade copy or a backup) is judged by its own version, not by the newest one.
     match version {
         0 if table_exists(&mut connection, "counter_accounts").await? => {
-            validate_schema(&mut connection).await?
+            validate_schema(&mut connection, 2).await?
         }
         0 | 1 => validate_v1_schema(&mut connection).await?,
-        2 | 3 => validate_schema(&mut connection).await?,
-        _ => unreachable!("schema version was range checked"),
+        2..=SCHEMA_VERSION => validate_schema(&mut connection, version).await?,
+        _ => return Err(unsupported_schema_version(version)),
     }
 
     validate_integrity_and_foreign_keys(&mut connection).await
