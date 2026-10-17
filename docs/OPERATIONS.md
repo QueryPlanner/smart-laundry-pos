@@ -67,7 +67,7 @@ Install the Canon and TSC drivers as described in [PRINTING_WINDOWS.md](PRINTING
 
 ## Dashboard
 
-Insights > **Dashboard** is for a quick look at the day. It shows today's figures (orders and pieces, billed, collected, orders ready to collect, orders in process, low-stock items), this month's figures (orders, billed, collected, expenses and profit), a graph of the last 14 days, a list of orders that have been ready for pickup for more than 2 days, a list of orders in process (soonest promise first, overdue ones marked), and the most recent orders. Click a bill number to open that order in Orders / Pickup. Press **Refresh** to reload. Older orders that were saved without individual pieces are not shown in the two attention lists. **Profit** is money collected minus expenses (a cash figure, not an accounting profit).
+Insights > **Dashboard** is for a quick look at the day. It shows today's figures (orders and pieces, billed, **advance collected**, **balance received**, collected, **to collect** (the money still owed on open orders), orders ready to collect, orders in process, low-stock items), this month's figures (orders, billed, advance collected, balance received, collected, expenses and profit), a graph of the last 14 days (bars for what was billed, two lines for the advance and the balance collected), a list of orders that have been ready for pickup for more than 2 days, a list of orders in process (soonest promise first, overdue ones marked), and the most recent orders. Click a bill number to open that order in Orders / Pickup. Press **Refresh** to reload. Older orders that were saved without individual pieces are not shown in the two attention lists. **Profit** is money collected minus expenses (a cash figure, not an accounting profit).
 
 ## Sales
 
@@ -106,7 +106,7 @@ Admin group > **Shop settings** (admin only). Set the laundry name, address, pho
 2. Choose the service at the top: Wash, Iron, Wash + Iron (the usual) or Dry Clean. Each service has its own set of prices.
 3. Tap the garment pictures to add them, or type a number in the box. A line can hold 1 to 200, an order can have 100 lines and 500 pieces, and an order total must stay under Rs 10,00,000. The bin icon removes a whole line. To add the same garment with a different service, change the service and tap it again.
 4. Check the summary on the right: the lines, the number of pieces, **Ready by** (received date plus two days, 5:00 PM, always), and the **Amount to collect**. Until a price is worked out the amounts show a dash, not 0. Under the Save button, a short note says what is still missing.
-5. Take the full amount from the customer, choose **Paid by** (cash, UPI, card, bank transfer or other), and press **Save & Print**. Payment is always taken in full at this point, so there is nothing owing later. The screen is locked while it saves.
+5. Take the **advance**, if any. Type the amount under **Advance received now**, or tap **Nothing now**, **Half** or **Full**. Choose how it was paid (cash, UPI, card, bank transfer or other) when an amount is entered. The screen shows what is left to pay at pickup. Press **Save & Print**. The advance can be anything from nothing to the whole amount; the rest is taken when the clothes are collected. The screen is locked while it saves.
 
 If rates or a discount changed while the order was open, the program refuses to save and shows the new total. Check it and press Save again. The program saves the order and then prints the bill on the Canon and one tag for each piece on the TSC. A garment ordered as Iron only gets no tag, and if every garment is Iron only no tags print at all. A pair of shoes is one piece and gets one tag. Each tag shows the customer's name and phone number, the bill number, the garment, the service and the piece number. Stick or tie each tag to its garment.
 
@@ -116,11 +116,14 @@ If the program shows "Order save did not complete", nothing is saved twice; pres
 
 ## Packing, ready and pickup
 
-Open **Orders / Pickup**. It opens on the newest orders. To find one, search by bill number or mobile number (at least two characters; a number can be typed with spaces or +91), then **Open order**.
+Open **Orders / Pickup**. It opens on the orders that are **Ready**, with a count on each filter: **Ready**, **Balance due**, **Overdue**, **In process**, **Today** and **All**. The **To collect** figure at the top is the money still owed on open orders. To find an order, type in the search box: a bill number, the last 2 to 4 digits of today's bill, a mobile number, a customer's name or a tag ID. Each order has one main button that does what it needs next: **Receive ₹X & hand over**, **Hand over**, **Open** or **View**.
 
-- **Processing status** moves an order forward through Washing, Drying, Ironing, Quality check and Packing to **Ready for pickup**. It cannot go backwards.
-- **Packing checklist** is optional. Tick each piece as it is packed and save. The program does not stop you marking an order Ready without it.
-- **Verify pickup collection** works only when the order is Ready. Compare each tag ID with the garments handed over, tick every piece, and press **Verify and complete collection**. If any piece is not ticked, the order cannot be collected. Once collected, an order cannot be collected again.
+- On an order's page, **Back** returns to wherever you opened it from (Orders, Dashboard, Sales, Customers or the Print queue).
+- The stage bar moves an order forward through Received, Washing, Drying, Ironing, Quality check and Packing to **Ready for pickup**: use **Move to ...** for the next stage or **Mark ready now**. It cannot go backwards, and skipping stages asks you to confirm.
+- The **money** panel shows the balance due and every payment (advance or balance). Choose how it was paid and press **Receive ₹X**. Tick **Part payment** to take less than the whole balance.
+- The **Packing check** appears while an order is being ironed or packed. Tick each piece, then **Save check & mark Ready**. A garment with no tag (Iron only) is checked by count.
+- **Hand over to customer** opens the hand-over screen, which has its own **Back** button. Tick every garment with the customer (type a tag ID and press Enter, or tap), take any balance, and press the one button at the bottom: **Receive ₹X**, **Receive ₹X & hand over** or **Hand over order**. It says exactly what is still missing. Taking the balance and handing over happen together, so one cannot happen without the other. Once collected, an order cannot be collected again.
+- **More actions** has Reprint bill, Reprint tags, Print status and (administrator only) Cancel order.
 
 ## If something was entered wrongly
 
@@ -218,7 +221,7 @@ If the PIN was not acceptable, the file could not be read, or there is no admini
 | Administrator access is required to … / The administrator session is no longer valid. | A staff account tried an admin action, or the admin was deactivated while signed in. Sign in again as an admin. |
 | This customer has … order(s) and cannot be deleted… | Customers with orders are kept. To remove an order, the admin cancels it. |
 | Another Smart Laundry POS instance is using this database. | The program is already running. Do not start a second copy. |
-| This order still has … to pay. | Only affects older orders with a balance. Use Record later payment on the order, then collect. |
+| This order still has … to pay. | The balance was not received. On the hand-over screen press **Receive ₹X & hand over**, or take the payment first, then hand over. |
 | Every order piece must be confirmed for collection first. | Tick every piece before completing pickup. |
 | A collected order cannot be cancelled. / This order is already cancelled. | Cancel works only on an order that is neither collected nor already cancelled. |
 | The staged database restore failed validation… | Your records were kept. The bad file was saved aside. Choose a valid backup. |
