@@ -45,6 +45,27 @@ const TAG_SIZE_STEPS: [(f32, f32, f32); 4] = [
 /// A page wider than this (about 4.6 inches) is not a 50 mm label roll: tags would print one per
 /// large sheet. The TSC driver must be set to the label size.
 const MAX_TAG_WIDTH_PT: f32 = 330.0;
+/// Longest customer name printed on a tag, counting the ellipsis that marks a cut name.
+const TAG_CUSTOMER_NAME_MAX_CHARS: usize = 24;
+/// Longest customer phone printed on a tag. A longer value is cut to this many characters.
+const TAG_CUSTOMER_PHONE_MAX_CHARS: usize = 15;
+/// Branding lines a tag strip may print. When nothing fits, they are dropped in this order: the
+/// tag line first, then the shop name. The customer name and phone, bill, garment, service,
+/// piece and ID are never dropped.
+const TAG_BRANDING_ATTEMPTS: [TagBranding; 3] = [
+    TagBranding {
+        shop_name: true,
+        tag_line: true,
+    },
+    TagBranding {
+        shop_name: true,
+        tag_line: false,
+    },
+    TagBranding {
+        shop_name: false,
+        tag_line: false,
+    },
+];
 
 /// Physical media dimensions in typographic points (1/72 inch). Platform adapters check their
 /// printable rectangle separately and translate these media-relative coordinates when needed.
@@ -228,6 +249,17 @@ pub fn bill_footer(header: &BillHeader) -> String {
     }
 }
 
+/// Fixed line printed as the last line of every bill, below the footer. The shop cannot turn it
+/// off, and it is added at print time, so bills saved before it existed also get it.
+const BILL_TERMS_LINE: &str = "* terms and conditions apply";
+
+/// Everything that closes a bill: the footer lines, then the fixed terms line last.
+pub fn bill_closing_lines(header: &BillHeader) -> Vec<String> {
+    let mut lines = bill_footer_lines(header);
+    lines.push(BILL_TERMS_LINE.into());
+    lines
+}
+
 pub fn bill_footer_lines(header: &BillHeader) -> Vec<String> {
     let lines: Vec<_> = header
         .footer
@@ -239,6 +271,15 @@ pub fn bill_footer_lines(header: &BillHeader) -> Vec<String> {
         vec![DEFAULT_BILL_FOOTER.into()]
     } else {
         lines
+    }
+}
+
+/// Label for the amount collected so far. While a balance remains, that amount is an advance.
+pub fn paid_label(balance_minor: i64) -> &'static str {
+    if balance_minor > 0 {
+        "Advance paid"
+    } else {
+        "Paid"
     }
 }
 
@@ -479,7 +520,11 @@ fn layout_bill(
             left + width / 3.0,
         ),
         (
-            format!("Paid: {}", format_money(bill.paid_minor)),
+            format!(
+                "{}: {}",
+                paid_label(bill.balance_minor),
+                format_money(bill.paid_minor)
+            ),
             left + 2.0 * width / 3.0,
         ),
         (
@@ -525,11 +570,17 @@ fn layout_bill(
         ));
     }
     totals.push(("Total".into(), format_money(due), true));
-    totals.push(("Paid".into(), format_money(bill.paid_minor), false));
+    totals.push((
+        paid_label(bill.balance_minor).into(),
+        format_money(bill.paid_minor),
+        false,
+    ));
     if bill.balance_minor > 0 {
         totals.push(("Balance due".into(), format_money(bill.balance_minor), true));
     }
-    let footer: Vec<String> = bill_footer_lines(&bill.header)
+    // The closing lines (footer, then the terms line) are part of `needed`, so the rows shrink
+    // or paginate to leave room for them.
+    let footer: Vec<String> = bill_closing_lines(&bill.header)
         .into_iter()
         .flat_map(|line| wrap_text(&line, width, 9.0, false, meter))
         .collect();
@@ -688,27 +739,40 @@ fn layout_tags(
     layout_tag_strip(tags, spec, meter).map(|page| vec![page])
 }
 
-fn layout_tag_strip(
-    tags: &TagDocument,
-    spec: PageSpec,
-    meter: &dyn TextMeter,
-) -> Result<LaidOutPage, PrintError> {
-    let content_width = spec.width_pt - TAG_LEFT_INSET_PT - TAG_RIGHT_INSET_PT;
-    let pitch_pt = f32::from(tags.tag_length_tenths_mm) * 72.0 / 254.0;
-    let physical_tail_pt = f32::from(TAG_FINAL_TAIL_TENTHS_MM) * 72.0 / 254.0;
-    for (small, large, id_size) in TAG_SIZE_STEPS {
+/// Which optional branding lines one attempt prints.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TagBranding {
+    shop_name: bool,
+    tag_line: bool,
+}
+
+/// Everything that stays the same while one strip is tried at different font sizes.
+struct TagStrip<'a> {
+    tags: &'a TagDocument,
+    /// Sorted by position, so index 0 is the first tag down the strip.
+    pieces: Vec<&'a TagPiece>,
+    content_width_pt: f32,
+    pitch_pt: f32,
+    tail_pt: f32,
+    meter: &'a dyn TextMeter,
+}
+
+impl TagStrip<'_> {
+    /// Lays out every tag at one font size and branding choice. Returns `None` when some tag's
+    /// text does not fit inside its own pitch.
+    fn lay_out(&self, sizes: (f32, f32, f32), branding: TagBranding) -> Option<Vec<StyledLine>> {
+        let (small, _, _) = sizes;
+        let customer = customer_blocks(self.tags, small, self.content_width_pt, self.meter);
         let mut lines = Vec::new();
-        let mut fits = true;
-        // TSC physically delivers the reverse of this PDF-order strip. Sorting by the stable
-        // piece position makes Piece 1 the physical final tag, where the extra tail belongs.
-        let mut pieces: Vec<_> = tags.pieces.iter().collect();
-        pieces.sort_by_key(|piece| piece.position);
-        for (index, piece) in pieces.into_iter().enumerate() {
-            let blocks = tag_blocks(tags, piece, small, large, id_size);
-            let mut y = physical_tail_pt + TAG_TOP_INSET_PT + index as f32 * pitch_pt;
-            let start_y = y;
+        for (index, piece) in self.pieces.iter().enumerate() {
+            // Each tag owns one pitch of the strip. Its text starts TAG_TOP_INSET_PT below the top
+            // of that slot, so the tag fits only when its bottom edge is still inside the slot.
+            let slot_top = self.tail_pt + index as f32 * self.pitch_pt;
+            let start_y = slot_top + TAG_TOP_INSET_PT;
+            let mut y = start_y;
+            let blocks = tag_blocks(self.tags, piece, sizes, branding, &customer);
             for (text, size, bold) in blocks {
-                for wrapped in wrap_text(&text, content_width, size, bold, meter) {
+                for wrapped in wrap_text(&text, self.content_width_pt, size, bold, self.meter) {
                     lines.push(StyledLine {
                         text: wrapped,
                         size_pt: size,
@@ -719,19 +783,43 @@ fn layout_tag_strip(
                     y += size * POINTS_PER_LINE_HEIGHT;
                 }
             }
-            if y - start_y > pitch_pt {
-                fits = false;
-                break;
+            if (y - start_y) + TAG_TOP_INSET_PT > self.pitch_pt {
+                return None;
             }
         }
-        if fits {
-            return Ok(LaidOutPage {
-                margin_pt: TAG_LEFT_INSET_PT,
-                right_margin_pt: TAG_RIGHT_INSET_PT,
-                bottom_reserved_pt: 0.0,
-                rules: Vec::new(),
-                lines,
-            });
+        Some(lines)
+    }
+}
+
+fn layout_tag_strip(
+    tags: &TagDocument,
+    spec: PageSpec,
+    meter: &dyn TextMeter,
+) -> Result<LaidOutPage, PrintError> {
+    // TSC physically delivers the reverse of this PDF-order strip. Sorting by the stable
+    // piece position makes Piece 1 the physical final tag, where the extra tail belongs.
+    let mut pieces: Vec<&TagPiece> = tags.pieces.iter().collect();
+    pieces.sort_by_key(|piece| piece.position);
+    let strip = TagStrip {
+        tags,
+        pieces,
+        content_width_pt: spec.width_pt - TAG_LEFT_INSET_PT - TAG_RIGHT_INSET_PT,
+        pitch_pt: f32::from(tags.tag_length_tenths_mm) * 72.0 / 254.0,
+        tail_pt: f32::from(TAG_FINAL_TAIL_TENTHS_MM) * 72.0 / 254.0,
+        meter,
+    };
+    // The full branding is tried at every font step before any branding line is dropped.
+    for branding in TAG_BRANDING_ATTEMPTS {
+        for sizes in TAG_SIZE_STEPS {
+            if let Some(lines) = strip.lay_out(sizes, branding) {
+                return Ok(LaidOutPage {
+                    margin_pt: TAG_LEFT_INSET_PT,
+                    right_margin_pt: TAG_RIGHT_INSET_PT,
+                    bottom_reserved_pt: 0.0,
+                    rules: Vec::new(),
+                    lines,
+                });
+            }
         }
     }
     Err(PrintError::Invalid(
@@ -739,26 +827,110 @@ fn layout_tag_strip(
     ))
 }
 
-fn tag_blocks<'a>(
-    tags: &'a TagDocument,
-    piece: &'a TagPiece,
-    small: f32,
-    large: f32,
-    id_size: f32,
+/// The customer name as printed on a tag: safe text, cut to `TAG_CUSTOMER_NAME_MAX_CHARS`
+/// characters with a trailing ellipsis. Empty when no name was saved.
+pub(crate) fn tag_customer_name(name: &str) -> String {
+    let name = safe_text(name);
+    if name.chars().count() <= TAG_CUSTOMER_NAME_MAX_CHARS {
+        return name;
+    }
+    let kept: String = name.chars().take(TAG_CUSTOMER_NAME_MAX_CHARS - 1).collect();
+    format!("{}\u{2026}", kept.trim_end())
+}
+
+/// The customer phone as printed on a tag: safe text, cut to `TAG_CUSTOMER_PHONE_MAX_CHARS`
+/// characters. Empty when no phone was saved.
+pub(crate) fn tag_customer_phone(phone: &str) -> String {
+    safe_text(phone)
+        .chars()
+        .take(TAG_CUSTOMER_PHONE_MAX_CHARS)
+        .collect()
+}
+
+/// Cuts `text` with a trailing ellipsis until it fits on one line of `max_width_pt`. Used for
+/// the customer name, which must never wrap onto a second line.
+fn fit_one_line(
+    text: &str,
+    max_width_pt: f32,
+    size_pt: f32,
+    bold: bool,
+    meter: &dyn TextMeter,
+) -> String {
+    if meter.width_pt(text, size_pt, bold) <= max_width_pt {
+        return text.to_owned();
+    }
+    let chars: Vec<char> = text.chars().collect();
+    for kept in (0..chars.len()).rev() {
+        let prefix: String = chars[..kept].iter().collect();
+        let candidate = format!("{}\u{2026}", prefix.trim_end());
+        if meter.width_pt(&candidate, size_pt, bold) <= max_width_pt {
+            return candidate;
+        }
+    }
+    "\u{2026}".to_owned()
+}
+
+/// Customer name and phone lines for every tag at one font size. Empty details are left out.
+///
+/// The rule is fixed: the name is cut to one line. Name and phone share one line, joined by a
+/// middle dot, when that line fits the tag width measured in bold, which is the wider style.
+/// Otherwise the name and the phone take one line each. The shared line is never taller than
+/// the two-line form, so it is always preferred when it fits.
+fn customer_blocks(
+    tags: &TagDocument,
+    size: f32,
+    content_width: f32,
+    meter: &dyn TextMeter,
+) -> Vec<(String, f32, bool)> {
+    let name = fit_one_line(
+        &tag_customer_name(&tags.customer_name),
+        content_width,
+        size,
+        true,
+        meter,
+    );
+    let phone = tag_customer_phone(&tags.customer_phone);
+    match (name.is_empty(), phone.is_empty()) {
+        (true, true) => Vec::new(),
+        (false, true) => vec![(name, size, true)],
+        (true, false) => vec![(phone, size, false)],
+        (false, false) => {
+            let shared = format!("{name} \u{b7} {phone}");
+            if meter.width_pt(&shared, size, true) <= content_width {
+                vec![(shared, size, true)]
+            } else {
+                vec![(name, size, true), (phone, size, false)]
+            }
+        }
+    }
+}
+
+/// The text blocks of one tag, top to bottom, as (text, point size, bold). Shop name, tag line,
+/// bill, customer, garment, service, piece and ID, in that order. Branding lines are included
+/// only when the attempt allows them and the tag has them set.
+fn tag_blocks(
+    tags: &TagDocument,
+    piece: &TagPiece,
+    (small, large, id_size): (f32, f32, f32),
+    branding: TagBranding,
+    customer: &[(String, f32, bool)],
 ) -> Vec<(String, f32, bool)> {
     let mut blocks = Vec::new();
-    if tags.show_shop_name && !safe_text(&tags.shop_name).is_empty() {
-        blocks.push((safe_text(&tags.shop_name), small, true));
+    let shop_name = safe_text(&tags.shop_name);
+    if branding.shop_name && tags.show_shop_name && !shop_name.is_empty() {
+        blocks.push((shop_name, small, true));
     }
-    if !safe_text(&tags.tag_line).is_empty() {
-        blocks.push((safe_text(&tags.tag_line), small, false));
+    let tag_line = safe_text(&tags.tag_line);
+    if branding.tag_line && !tag_line.is_empty() {
+        blocks.push((tag_line, small, false));
     }
+    blocks.push((
+        format!("Bill {}", safe_text(&tags.order_number)),
+        small,
+        true,
+    ));
+    blocks.extend(customer.iter().cloned());
     blocks.extend([
-        (
-            format!("Bill {}", safe_text(&tags.order_number)),
-            small,
-            true,
-        ),
         (safe_text(&piece.garment), large, true),
         (safe_text(&piece.service), large, false),
         (
@@ -842,6 +1014,17 @@ mod tests {
 
     fn texts(page: &LaidOutPage) -> Vec<&str> {
         page.lines.iter().map(|l| l.text.as_str()).collect()
+    }
+
+    /// A bill page ends with its footer line and then the fixed terms line, in that order.
+    fn assert_ends_with_footer_then_terms(page: &LaidOutPage, footer: &str) {
+        let lines = texts(page);
+        assert_eq!(
+            lines.last(),
+            Some(&"* terms and conditions apply"),
+            "{lines:?}"
+        );
+        assert_eq!(lines[lines.len() - 2], footer, "{lines:?}");
     }
 
     fn assert_within(page: &LaidOutPage, spec: PageSpec) {
@@ -955,7 +1138,7 @@ mod tests {
             })
             .count();
         assert_eq!(garments, 40);
-        assert!(texts(pages.last().unwrap()).contains(&"Thank you"));
+        assert_ends_with_footer_then_terms(pages.last().unwrap(), "Thank you");
     }
 
     #[test]
@@ -1010,12 +1193,89 @@ mod tests {
         ));
     }
 
+    /// A three-tag strip with every branding line and a typical customer set. The garment is long
+    /// enough to need the full tag width.
+    fn branded_strip(length_tenths_mm: u16) -> TagDocument {
+        TagDocument {
+            order_number: "LA-2026-00123".into(),
+            customer_name: "Priya Sharma".into(),
+            customer_phone: "9876543210".into(),
+            pieces: (1..=3)
+                .map(|position| TagPiece {
+                    piece_id: format!("2610170001-{position}"),
+                    garment: "Gents Kurta Pyjama".into(),
+                    service: "Wash + Iron".into(),
+                    position,
+                    total: 3,
+                })
+                .collect(),
+            shop_name: "Sunrise Cleaners".into(),
+            show_shop_name: true,
+            tag_line: "Quality care".into(),
+            tag_length_tenths_mm: length_tenths_mm,
+        }
+    }
+
+    /// Every line must end inside the pitch of the tag it belongs to. A tag's text starts
+    /// TAG_TOP_INSET_PT below its slot top, so the bottom edge is measured from the slot top.
+    fn assert_no_tag_overflows_its_pitch(page: &LaidOutPage, tags: &TagDocument) {
+        let pitch = f32::from(tags.tag_length_tenths_mm) * 72.0 / 254.0;
+        let tail = f32::from(TAG_FINAL_TAIL_TENTHS_MM) * 72.0 / 254.0;
+        for line in &page.lines {
+            let slot_top = tail + ((line.y_pt - tail) / pitch).floor() * pitch;
+            let bottom = line.y_pt + line.size_pt * POINTS_PER_LINE_HEIGHT;
+            assert!(
+                bottom - slot_top <= pitch + 0.01,
+                "{:?} ends {:.2} pt into a {:.2} pt tag",
+                line.text,
+                bottom - slot_top,
+                pitch
+            );
+        }
+    }
+
     #[test]
-    fn tag_carries_only_bill_garment_service_position_and_id() {
-        let document = tag("Saree", "Dry Clean");
+    fn tag_carries_customer_bill_garment_service_position_and_id() {
+        let mut document = tag("Saree", "Dry Clean");
+        document.customer_name = "Asha Patil".into();
+        document.customer_phone = "9876543210".into();
         let spec = tag_spec(&document);
         let pages = layout_tags(&document, spec, &FakeMeter).unwrap();
         assert_eq!(pages.len(), 1);
+        // The name and phone take one line each: the shared line would be too wide here.
+        assert_eq!(
+            texts(&pages[0]),
+            vec![
+                "Bill LA-2026-00123",
+                "Asha Patil",
+                "9876543210",
+                "Saree",
+                "Dry Clean",
+                "Piece 3/4",
+                "ID 2600123-3"
+            ]
+        );
+        assert_within(&pages[0], spec);
+    }
+
+    #[test]
+    fn customer_name_and_phone_share_one_line_when_they_fit() {
+        let mut document = tag("Saree", "Dry Clean");
+        document.customer_name = "Asha".into();
+        document.customer_phone = "98765".into();
+        let pages = layout_tags(&document, tag_spec(&document), &FakeMeter).unwrap();
+        let lines = texts(&pages[0]);
+        assert!(lines.contains(&"Asha \u{b7} 98765"), "{lines:?}");
+        assert!(!lines.contains(&"Asha"));
+        assert!(!lines.contains(&"98765"));
+    }
+
+    #[test]
+    fn empty_customer_details_leave_no_blank_lines() {
+        let mut document = tag("Saree", "Dry Clean");
+        document.customer_name = "   ".into();
+        document.customer_phone = String::new();
+        let pages = layout_tags(&document, tag_spec(&document), &FakeMeter).unwrap();
         assert_eq!(
             texts(&pages[0]),
             vec![
@@ -1026,7 +1286,147 @@ mod tests {
                 "ID 2600123-3"
             ]
         );
+        assert!(pages[0].lines.iter().all(|l| !l.text.trim().is_empty()));
+    }
+
+    #[test]
+    fn a_long_customer_name_is_cut_to_one_line_and_keeps_every_tag_pitch() {
+        let mut document = branded_strip(300);
+        // 100 characters with no spaces: the name cannot wrap at a word boundary.
+        document.customer_name = "Ab".repeat(50);
+        let spec = tag_spec(&document);
+        let pages = layout_tags(&document, spec, &FakeMeter).unwrap();
+        let page = &pages[0];
+        let names: Vec<&StyledLine> = page
+            .lines
+            .iter()
+            .filter(|line| line.text.starts_with("Ab"))
+            .collect();
+        assert_eq!(names.len(), 3, "one name line per tag");
+        for name in &names {
+            assert!(name.text.ends_with('\u{2026}'), "{}", name.text);
+            assert!(name.text.chars().count() <= TAG_CUSTOMER_NAME_MAX_CHARS);
+        }
+        let bills: Vec<f32> = page
+            .lines
+            .iter()
+            .filter(|line| line.text.starts_with("Bill "))
+            .map(|line| line.y_pt)
+            .collect();
+        assert_eq!(bills.len(), 3);
+        let pitch = 300.0 * 72.0 / 254.0;
+        for pair in bills.windows(2) {
+            assert!((pair[1] - pair[0] - pitch).abs() < 0.01);
+        }
+        assert_within(page, spec);
+        assert_no_tag_overflows_its_pitch(page, &document);
+    }
+
+    #[test]
+    fn a_long_garment_with_customer_details_fits_a_30mm_tag_without_overlap() {
+        let mut document = branded_strip(300);
+        document.shop_name.clear();
+        document.show_shop_name = false;
+        document.tag_line.clear();
+        let spec = tag_spec(&document);
+        let pages = layout_tags(&document, spec, &FakeMeter).unwrap();
         assert_within(&pages[0], spec);
+        assert_no_tag_overflows_its_pitch(&pages[0], &document);
+        let lines = texts(&pages[0]);
+        for position in 1..=3 {
+            assert!(lines.contains(&format!("Piece {position}/3").as_str()));
+        }
+        assert!(lines.contains(&"Priya Sharma"), "{lines:?}");
+    }
+
+    #[test]
+    fn the_tag_line_is_the_first_branding_line_dropped_at_30mm() {
+        let document = branded_strip(300);
+        let spec = tag_spec(&document);
+        let pages = layout_tags(&document, spec, &FakeMeter).unwrap();
+        let lines = texts(&pages[0]);
+        assert!(!lines.contains(&"Quality care"), "{lines:?}");
+        assert!(lines.contains(&"Sunrise Cleaners"), "{lines:?}");
+        assert!(
+            lines.contains(&"Priya Sharma \u{b7} 9876543210"),
+            "{lines:?}"
+        );
+        assert!(lines.contains(&"Bill LA-2026-00123"));
+        assert!(lines.contains(&"Gents Kurta Pyjama"));
+        assert!(lines.contains(&"Wash + Iron"));
+        assert!(lines.contains(&"Piece 1/3"));
+        assert!(lines.contains(&"ID 2610170001-1"));
+        assert_within(&pages[0], spec);
+        assert_no_tag_overflows_its_pitch(&pages[0], &document);
+    }
+
+    #[test]
+    fn the_shop_name_is_dropped_only_after_the_tag_line_when_nothing_else_fits() {
+        // The name and phone never share a line here. With the shop name printed, every font step
+        // is one small line too tall, so the tag line goes and then the shop name.
+        let mut document = branded_strip(300);
+        document.customer_name = "Bartholomew Fitzgerald".into();
+        document.customer_phone = "+91 9876543210".into();
+        let spec = tag_spec(&document);
+        let pages = layout_tags(&document, spec, &FakeMeter).unwrap();
+        let lines = texts(&pages[0]);
+        assert!(!lines.contains(&"Sunrise Cleaners"), "{lines:?}");
+        assert!(!lines.contains(&"Quality care"), "{lines:?}");
+        assert!(lines.contains(&"Bartholomew Fitzgerald"), "{lines:?}");
+        assert!(lines.contains(&"+91 9876543210"), "{lines:?}");
+        assert!(lines.contains(&"Bill LA-2026-00123"));
+        assert!(lines.contains(&"Gents Kurta Pyjama"));
+        assert_within(&pages[0], spec);
+        assert_no_tag_overflows_its_pitch(&pages[0], &document);
+    }
+
+    #[test]
+    fn branding_is_kept_on_longer_tags_and_the_tag_line_goes_first_at_30mm() {
+        // Measured with the stand-in meter: at 30 mm the tag line is dropped first, at 40 mm and
+        // 50 mm nothing is dropped.
+        for (length, expect_tag_line) in [(300, false), (400, true), (500, true)] {
+            let document = branded_strip(length);
+            let pages = layout_tags(&document, tag_spec(&document), &FakeMeter).unwrap();
+            let lines = texts(&pages[0]);
+            assert!(lines.contains(&"Sunrise Cleaners"), "{length}: {lines:?}");
+            assert_eq!(
+                lines.contains(&"Quality care"),
+                expect_tag_line,
+                "{length}: {lines:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_tag_that_cannot_fit_is_refused_after_every_branding_drop() {
+        let mut document = branded_strip(300);
+        document.pieces[0].garment = "W".repeat(400);
+        let spec = tag_spec(&document);
+        assert!(matches!(
+            layout_tags(&document, spec, &FakeMeter),
+            Err(PrintError::Invalid(message)) if message.contains("configured tag pitch")
+        ));
+    }
+
+    #[test]
+    fn tag_numbers_come_from_the_piece_values_not_the_strip_index() {
+        let mut document = tag("Shirt", "Wash");
+        document.pieces = [2, 5]
+            .into_iter()
+            .map(|position| TagPiece {
+                piece_id: format!("2600123-{position}"),
+                garment: "Shirt".into(),
+                service: "Wash".into(),
+                position,
+                total: 5,
+            })
+            .collect();
+        let pages = layout_tags(&document, tag_spec(&document), &FakeMeter).unwrap();
+        let numbers: Vec<&str> = texts(&pages[0])
+            .into_iter()
+            .filter(|line| line.starts_with("Piece "))
+            .collect();
+        assert_eq!(numbers, ["Piece 2/5", "Piece 5/5"]);
     }
 
     #[test]
@@ -1249,6 +1649,23 @@ mod tests {
         assert!(!texts(&pages[0]).iter().any(|l| l.starts_with("Phone")));
     }
 
+    #[test]
+    fn the_payment_is_an_advance_only_while_a_balance_remains() {
+        let mut partly_paid = bill(1);
+        partly_paid.paid_minor = 2500;
+        partly_paid.balance_minor = 2500;
+        let pages = layout_bill(&partly_paid, A4, &FakeMeter).unwrap();
+        let lines = texts(&pages[0]);
+        assert!(lines.contains(&"Advance paid: \u{20b9}25.00"), "{lines:?}");
+        assert!(!lines.contains(&"Paid: \u{20b9}25.00"), "{lines:?}");
+        assert!(lines.contains(&"Balance due: \u{20b9}25.00"), "{lines:?}");
+
+        let pages = layout_bill(&bill(1), A4, &FakeMeter).unwrap();
+        let lines = texts(&pages[0]);
+        assert!(lines.contains(&"Paid: \u{20b9}50.00"), "{lines:?}");
+        assert!(!lines.iter().any(|l| l.contains("Advance")), "{lines:?}");
+    }
+
     const BILL_SMALL_LANDSCAPE: PageSpec = PageSpec {
         width_pt: 566.0,
         height_pt: 425.0,
@@ -1282,7 +1699,7 @@ mod tests {
         assert_eq!(pages[0].lines[0].size_pt, 18.0);
         assert!(pages[0].lines[1].size_pt < pages[0].lines[0].size_pt);
         assert!(!lines.contains(&"SMART LAUNDRY"));
-        assert_eq!(lines.last(), Some(&"Visit again soon"));
+        assert_ends_with_footer_then_terms(&pages[0], "Visit again soon");
         assert!(!lines.contains(&"Thank you"));
     }
 
@@ -1301,7 +1718,7 @@ mod tests {
         assert_eq!(lines[0], "SMART LAUNDRY");
         assert_eq!(lines[1], "Bill: LA-2026-00123");
         assert!(!lines.iter().any(|l| l.starts_with("Tel")));
-        assert_eq!(lines.last(), Some(&"Thank you"));
+        assert_ends_with_footer_then_terms(&pages[0], "Thank you");
         let name_only = BillHeader {
             shop_name: "Only Name".into(),
             ..BillHeader::default()
@@ -1378,18 +1795,26 @@ mod tests {
 
     #[test]
     fn a_bill_that_does_not_fit_at_the_normal_size_shrinks_its_rows_to_stay_on_one_page() {
-        let pages = layout_bill(&a5_bill(7), A5_LANDSCAPE, &FakeMeter).unwrap();
+        // Six items are the most that fit one A5 page at the smallest row size once the terms
+        // line takes its room; seven items continue onto a second page.
+        let pages = layout_bill(&a5_bill(6), A5_LANDSCAPE, &FakeMeter).unwrap();
         assert_eq!(pages.len(), 1);
         let size = item_row_size(&pages).unwrap();
         assert!((7.0..10.0).contains(&size), "row size {size}");
         assert_within(&pages[0], A5_LANDSCAPE);
-        assert_eq!(garment_count(&pages), 7);
+        assert_eq!(garment_count(&pages), 6);
         let lines = texts(&pages[0]);
         assert!(lines.contains(&"Example Cleaners"), "header is on the page");
         assert!(lines.contains(&"Visit again soon"), "footer is on the page");
         assert!(
-            lines.contains(&"Total: \u{20b9}350.00"),
+            lines.contains(&"Total: \u{20b9}300.00"),
             "totals are on the page"
+        );
+        assert_eq!(
+            layout_bill(&a5_bill(7), A5_LANDSCAPE, &FakeMeter)
+                .unwrap()
+                .len(),
+            2
         );
     }
 
@@ -1429,6 +1854,32 @@ mod tests {
         assert!(texts(&pages[1]).contains(&"Visit again soon"));
         for page in &pages {
             assert_within(page, A5_LANDSCAPE);
+        }
+    }
+
+    #[test]
+    fn every_bill_ends_with_the_terms_line_below_the_footer() {
+        // Custom footer on one page, the default thank-you, and a bill that runs to a second A5 page.
+        let pages = layout_bill(&a5_bill(1), A5_LANDSCAPE, &FakeMeter).unwrap();
+        assert_ends_with_footer_then_terms(pages.last().unwrap(), "Visit again soon");
+
+        let pages = layout_bill(&bill(1), A4, &FakeMeter).unwrap();
+        assert_ends_with_footer_then_terms(pages.last().unwrap(), "Thank you");
+
+        let pages = layout_bill(&a5_bill(8), A5_LANDSCAPE, &FakeMeter).unwrap();
+        assert_eq!(pages.len(), 2);
+        assert_ends_with_footer_then_terms(&pages[1], "Visit again soon");
+        assert!(!texts(&pages[0]).contains(&"* terms and conditions apply"));
+    }
+
+    #[test]
+    fn the_terms_line_stays_inside_the_margin_for_every_bill_length() {
+        for items in 1..=30 {
+            let pages = layout_bill(&a5_bill(items), A5_LANDSCAPE, &FakeMeter).unwrap();
+            for page in &pages {
+                assert_within(page, A5_LANDSCAPE);
+            }
+            assert_ends_with_footer_then_terms(pages.last().unwrap(), "Visit again soon");
         }
     }
 

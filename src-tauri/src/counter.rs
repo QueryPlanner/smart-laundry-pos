@@ -1553,6 +1553,8 @@ pub async fn save_order(
     };
     let tags = crate::printing::TagDocument {
         order_number: order_no.clone(),
+        customer_name: input.order.customer.name.trim().into(),
+        customer_phone: phone.clone(),
         pieces: all_pieces
             .iter()
             .map(|x| crate::printing::TagPiece {
