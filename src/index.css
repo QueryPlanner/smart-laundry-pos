@@ -673,7 +673,7 @@ All colors MUST be HSL.
 /* Order list: one row per order. Wide: head, customer, money and the action button on one line.
    Narrower: the action button moves to a third column, then the row stacks with the action last. */
 .counter-order-list{display:grid;gap:10px;margin:0;padding:0;list-style:none}
-.counter-order-row{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1.3fr) minmax(0,1fr) auto;grid-template-areas:"head customer money action" "match match match action";align-items:center;gap:8px 18px;padding:14px 16px;border:1px solid #e1e9e5;border-radius:12px;background:#fff;box-shadow:0 4px 18px #152b2310}
+.counter-order-row{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1.3fr) minmax(0,1fr) 15rem;grid-template-areas:"head customer money action" "match match match action";align-items:center;gap:8px 18px;padding:14px 16px;border:1px solid #e1e9e5;border-radius:12px;background:#fff;box-shadow:0 4px 18px #152b2310}
 .counter-order-head{grid-area:head;display:flex;flex-wrap:wrap;align-items:center;gap:8px;min-width:0}
 .counter-order-head .counter-badge{gap:4px}
 .counter-order-head svg{width:14px;height:14px;flex:none}
@@ -684,7 +684,7 @@ All colors MUST be HSL.
 .counter-order-money>span:first-child{font-size:13px;color:#5f6f68}
 .counter-match-reason{grid-area:match;font-size:12px;font-weight:650;color:#4f6159}
 .counter-order-row>.counter-touch{grid-area:action;justify-self:end;min-width:9.5rem}
-@media (max-width:1100px){.counter-order-row{grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto;grid-template-areas:"head customer action" "money money action" "match match action"}}
+@media (max-width:1100px){.counter-order-row{grid-template-columns:minmax(0,1fr) minmax(0,1fr) 15rem;grid-template-areas:"head customer action" "money money action" "match match action"}}
 @media (max-width:900px){.counter-order-row{grid-template-columns:minmax(0,1fr);grid-template-areas:"head" "customer" "money" "match" "action"}.counter-order-row>.counter-touch{justify-self:stretch;min-width:0}}
 
 /* Bill number: the date part (first 8 digits) small and muted, the sequence (last 4 digits) large and bold, on one baseline. */

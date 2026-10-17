@@ -38,7 +38,8 @@ export const useOrderList = ({ active, onError, debounceMs = 180 }: OrderListOpt
   const [segment, setSegmentState] = useState<CounterOrderFilter>('ready');
   const [counts, setCounts] = useState<CounterQueueCounts | null>(null);
   const [results, setResults] = useState<CounterOrderSummary[]>([]);
-  const [loading, setLoading] = useState(false);
+  // Already loading on the first render when the page is showing, so "nothing here" never flashes before the list.
+  const [loading, setLoading] = useState(active);
   const [hasMore, setHasMore] = useState(false);
   const [reloads, setReloads] = useState(0);
   // The latest error handler, so a new function from the parent never restarts a fetch.
