@@ -107,6 +107,7 @@ where
             counter_get_catalogue,
             counter_search_customers,
             counter_search_orders,
+            counter_order_queue_counts,
             counter_get_order,
             counter_record_payment,
             counter_update_order_status,
@@ -242,8 +243,16 @@ async fn counter_search_orders(
     query: String,
     offset: u32,
     limit: u32,
+    filter: Option<String>,
 ) -> Result<Vec<counter::OrderSummary>, String> {
-    counter::search_orders(&state, &session, &query, offset, limit).await
+    counter::search_orders(&state, &session, &query, offset, limit, filter.as_deref()).await
+}
+#[tauri::command]
+async fn counter_order_queue_counts(
+    state: State<'_, DatabaseState>,
+    session: State<'_, CounterSession>,
+) -> Result<counter::QueueCounts, String> {
+    counter::order_queue_counts(&state, &session).await
 }
 #[tauri::command]
 async fn counter_get_order(

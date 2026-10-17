@@ -38,6 +38,7 @@ const table: Array<[string, () => Promise<unknown>, string, Record<string, unkno
   ['matchOrderPieces', () => counter.matchOrderPieces('o', 'packing', ['p']), 'counter_match_order_pieces', { orderId: 'o', stage: 'packing', pieceIds: ['p'] }],
   ['searchCounterOrders', () => counter.searchCounterOrders('SL', 5, 10, 'overdue'), 'counter_search_orders', { query: 'SL', offset: 5, limit: 10, filter: 'overdue' }],
   ['searchCounterOrders defaults', () => counter.searchCounterOrders('SL'), 'counter_search_orders', { query: 'SL', offset: 0, limit: 50, filter: 'all' }],
+  ['getCounterOrderQueueCounts', () => counter.getCounterOrderQueueCounts(), 'counter_order_queue_counts', undefined],
   ['getCounterOrder', () => counter.getCounterOrder('o'), 'counter_get_order', { orderId: 'o' }],
   ['recordCounterPayment', () => counter.recordCounterPayment('o', { amountMinor: 100, method: 'cash', idempotencyKey: 'k' }), 'counter_record_payment', { orderId: 'o', input: { amountMinor: 100, method: 'cash', idempotencyKey: 'k' } }],
   ['updateCounterOrderStatus', () => counter.updateCounterOrderStatus('o', 'ready'), 'counter_update_order_status', { orderId: 'o', status: 'ready' }],

@@ -1738,6 +1738,14 @@ pub struct OrderSummary {
     pub paid_minor: i64,
     pub balance_minor: i64,
     pub piece_count: u32,
+    /// The stored `orders.payment_status`.
+    pub payment_status: String,
+    /// Still in process and promised time has passed (the `overdue` filter's definition).
+    pub overdue: bool,
+    /// Pieces that get no tag (ironing only).
+    pub untagged_count: i64,
+    /// Why the order matched the search text, or None when it matched the filter alone.
+    pub match_reason: Option<String>,
 }
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -1748,62 +1756,317 @@ pub struct RecordPaymentInput {
     pub idempotency_key: String,
 }
 
+/// Shop time (IST) as an offset from UTC, in seconds.
+const IST_OFFSET_SECONDS: i64 = 19_800;
+/// Statuses of an order still being worked on: not ready, collected or cancelled.
+const IN_PROCESS_STATUSES: &str =
+    "'received','washing','drying','ironing','quality_check','packing'";
+
+/// Every order with the columns the list filters and sorts on. Money is whole paise, rounded per
+/// order and per payment. Times are Unix seconds through `strftime('%s')`, which reads every stored
+/// shape (`...Z`, `+00:00` and older `YYYY-MM-DD HH:MM:SS`).
+const ORDER_ROWS: &str = "SELECT o.id,o.order_number,o.customer_name,o.customer_phone,o.status,o.payment_status,o.received_at,o.expected_ready_at,o.created_at,\
+CAST(strftime('%s',o.received_at) AS INTEGER) AS received_epoch,\
+CAST(strftime('%s',o.expected_ready_at) AS INTEGER) AS promised_epoch,\
+CAST(ROUND(o.total_amount*100) AS INTEGER) AS total_minor,\
+COALESCE((SELECT SUM(CAST(ROUND(p.amount*100) AS INTEGER)) FROM payments p WHERE p.order_id=o.id AND p.voided_at IS NULL),0) AS paid_minor,\
+(SELECT COUNT(*) FROM order_pieces op WHERE op.order_id=o.id) AS piece_count,\
+(SELECT COUNT(*) FROM order_pieces op WHERE op.order_id=o.id AND op.tagged=0) AS untagged_count \
+FROM orders o";
+
+/// `ORDER_ROWS` plus the balance, the overdue flag and the search reason (alias `m` in the callers).
+/// Reasons are checked in this order: Tag ID, Today's bill, Bill number, Phone, Name. `?1` is the
+/// trimmed search text, empty when there is none; `?2` to `?5` are in `ListScope`.
+fn order_list_sql() -> String {
+    format!(
+        "SELECT r.*,r.total_minor-r.paid_minor AS balance_minor,\
+CASE WHEN r.status IN ({IN_PROCESS_STATUSES}) AND r.promised_epoch<?6 THEN 1 ELSE 0 END AS overdue,\
+CASE WHEN ?1='' THEN NULL \
+WHEN EXISTS(SELECT 1 FROM order_pieces tp WHERE tp.order_id=r.id AND tp.short_id=?4) THEN 'Tag ID' \
+WHEN r.order_number=?5 THEN 'Today''s bill' \
+WHEN r.order_number LIKE ?2 ESCAPE '\\' THEN 'Bill number' \
+WHEN r.customer_phone LIKE ?3 ESCAPE '\\' THEN 'Phone' \
+WHEN r.customer_name LIKE ?2 ESCAPE '\\' THEN 'Name' END AS match_reason \
+FROM ({ORDER_ROWS}) r"
+    )
+}
+
+/// The order list segments (CONTRACT "Order list segments"). `order_queue_counts` counts the same
+/// predicates, so a segment's count is always the length of its filtered list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OrderFilter {
+    All,
+    Ready,
+    BalanceDue,
+    Overdue,
+    InProcess,
+    Today,
+}
+
+impl OrderFilter {
+    /// `None`, or a blank value, lists every order. Any other unknown value is refused.
+    fn parse(text: Option<&str>) -> Result<Self, String> {
+        match text.map(str::trim).unwrap_or_default() {
+            "" | "all" => Ok(Self::All),
+            "ready" => Ok(Self::Ready),
+            "balance_due" => Ok(Self::BalanceDue),
+            "overdue" => Ok(Self::Overdue),
+            "in_process" => Ok(Self::InProcess),
+            "today" => Ok(Self::Today),
+            _ => Err("Unknown order filter.".into()),
+        }
+    }
+
+    /// Condition over the rows of `order_list_sql`. `?7` and `?8` bound the IST day `[start, end)`.
+    fn predicate(self) -> String {
+        match self {
+            Self::All => "1=1".into(),
+            Self::Ready => "m.status='ready'".into(),
+            Self::BalanceDue => {
+                "m.status NOT IN ('collected','cancelled') AND m.balance_minor>0".into()
+            }
+            Self::Overdue => "m.overdue=1".into(),
+            Self::InProcess => format!("m.status IN ({IN_PROCESS_STATUSES})"),
+            Self::Today => "m.received_epoch>=?7 AND m.received_epoch<?8".into(),
+        }
+    }
+
+    /// Promised time first for the queues that wait on a promise (nulls last), balance for the
+    /// balance queue, newest received first otherwise. Ties fall back to newest created, then id.
+    fn order_by(self) -> &'static str {
+        match self {
+            Self::Ready | Self::Overdue | Self::InProcess => {
+                "m.promised_epoch IS NULL,m.promised_epoch,m.created_at DESC,m.id"
+            }
+            Self::BalanceDue => "m.balance_minor DESC,m.created_at DESC,m.id",
+            Self::All | Self::Today => "m.received_epoch DESC,m.created_at DESC,m.id",
+        }
+    }
+}
+
+/// The values bound into the order list. Typed text reaches SQL only as bound values.
+struct ListScope {
+    text: String,
+    pattern: String,
+    phone_pattern: String,
+    tag_id: Option<String>,
+    todays_bill: Option<String>,
+    now: i64,
+    day_start: i64,
+    day_end: i64,
+}
+
+impl ListScope {
+    fn new(query: &str, now: chrono::DateTime<Utc>) -> Self {
+        let q = query.trim();
+        // A typed phone number ("98765 43210", "+91 98765 43210") also matches the stored digits.
+        let phone_digits = strip_country_prefix(
+            q.chars()
+                .filter_map(digit_value)
+                .filter_map(|v| char::from_digit(v, 10))
+                .collect(),
+        );
+        let looks_like_phone = phone_digits.len() >= 3
+            && q.chars().all(|c| {
+                digit_value(c).is_some() || matches!(c, ' ' | '-' | '+' | '.' | '(' | ')')
+            });
+        // LIKE wildcards typed by the operator are matched literally.
+        let pattern = like_contains(q);
+        let phone_pattern = if looks_like_phone {
+            format!("%{phone_digits}%")
+        } else {
+            pattern.clone()
+        };
+        // The IST day that contains `now`, as Unix seconds `[day_start, day_end)`.
+        let shop_seconds = now.timestamp() + IST_OFFSET_SECONDS;
+        let day_start = shop_seconds.div_euclid(86_400) * 86_400 - IST_OFFSET_SECONDS;
+        Self {
+            text: q.to_string(),
+            pattern,
+            phone_pattern,
+            tag_id: is_tag_id(q).then(|| q.to_string()),
+            todays_bill: todays_bill(q, &ist_day_key(now)),
+            now: now.timestamp(),
+            day_start,
+            day_end: day_start + 86_400,
+        }
+    }
+}
+
+/// A piece tag id: a 7 to 10 digit bill part, a dash, then a 1 to 3 digit position
+/// (`2610170001-3`; legacy ids are shorter, such as `2600123-3`).
+fn is_tag_id(text: &str) -> bool {
+    let Some((bill, position)) = text.split_once('-') else {
+        return false;
+    };
+    let all_digits = |part: &str, len: std::ops::RangeInclusive<usize>| {
+        len.contains(&part.len()) && part.bytes().all(|b| b.is_ascii_digit())
+    };
+    all_digits(bill, 7..=10) && all_digits(position, 1..=3)
+}
+
+/// Today's bill for a 2 to 4 digit search: the shop day followed by the digits zero-padded to four.
+/// "7" is too short; "07" and "0007" both name the bill ending 0007. Digits may be typed in any script.
+fn todays_bill(text: &str, today: &str) -> Option<String> {
+    let digits = text
+        .chars()
+        .map(|c| digit_value(c).and_then(|v| char::from_digit(v, 10)))
+        .collect::<Option<String>>()?;
+    if !(2..=4).contains(&digits.len()) {
+        return None;
+    }
+    let sequence: u32 = digits.parse().ok()?;
+    Some(format!("{today}{sequence:04}"))
+}
+
+/// Binds the `ListScope` values to `?1` to `?8`, in that order.
+fn bind_scope<'q>(
+    query: sqlx::query::Query<'q, sqlx::Sqlite, sqlx::sqlite::SqliteArguments<'q>>,
+    scope: &ListScope,
+) -> sqlx::query::Query<'q, sqlx::Sqlite, sqlx::sqlite::SqliteArguments<'q>> {
+    query
+        .bind(scope.text.clone())
+        .bind(scope.pattern.clone())
+        .bind(scope.phone_pattern.clone())
+        .bind(scope.tag_id.clone())
+        .bind(scope.todays_bill.clone())
+        .bind(scope.now)
+        .bind(scope.day_start)
+        .bind(scope.day_end)
+}
+
 pub async fn search_orders(
     db: &DatabaseState,
     session: &CounterSession,
     query: &str,
     offset: u32,
     limit: u32,
+    filter: Option<&str>,
+) -> Result<Vec<OrderSummary>, String> {
+    search_orders_at(db, session, query, offset, limit, filter, Utc::now()).await
+}
+
+/// `search_orders` as of `now`. The shop day and the overdue test both depend on the clock.
+async fn search_orders_at(
+    db: &DatabaseState,
+    session: &CounterSession,
+    query: &str,
+    offset: u32,
+    limit: u32,
+    filter: Option<&str>,
+    now: chrono::DateTime<Utc>,
 ) -> Result<Vec<OrderSummary>, String> {
     let _ = actor(session)?;
     if offset > 100_000 || !(1..=100).contains(&limit) {
         return Err("Order search page is out of range.".into());
     }
-    let q = query.trim();
-    // An empty search lists the newest orders so pickup never opens on a blank screen; a single
-    // character is too broad to be useful.
-    if q.chars().count() == 1 {
+    let filter = OrderFilter::parse(filter)?;
+    // A single character is too broad to be useful, whatever the filter.
+    if query.trim().chars().count() == 1 {
         return Ok(Vec::new());
     }
-    // LIKE wildcards typed by the operator are matched literally.
-    let pattern = like_contains(q);
-    // A typed phone number ("98765 43210", "+91 98765 43210") also matches the stored digits.
-    let phone_digits = strip_country_prefix(
-        q.chars()
-            .filter_map(digit_value)
-            .filter_map(|v| char::from_digit(v, 10))
-            .collect(),
+    let scope = ListScope::new(query, now);
+    // An exact tag id and today's bill rank first; everything else keeps the filter's order.
+    let sql = format!(
+        "SELECT m.* FROM ({list}) m WHERE ({pred}) AND (?1='' OR m.match_reason IS NOT NULL) \
+         ORDER BY CASE m.match_reason WHEN 'Tag ID' THEN 0 WHEN 'Today''s bill' THEN 1 ELSE 2 END,{order} \
+         LIMIT ?9 OFFSET ?10",
+        list = order_list_sql(),
+        pred = filter.predicate(),
+        order = filter.order_by(),
     );
-    let looks_like_phone = phone_digits.len() >= 3
-        && q.chars()
-            .all(|c| digit_value(c).is_some() || matches!(c, ' ' | '-' | '+' | '.' | '(' | ')'));
-    let phone_pattern = if looks_like_phone {
-        format!("%{phone_digits}%")
-    } else {
-        pattern.clone()
-    };
-    let rows = sqlx::query("SELECT o.id,o.order_number,o.customer_name,o.customer_phone,o.status,o.received_at,o.expected_ready_at,o.total_amount,COALESCE((SELECT SUM(p.amount) FROM payments p WHERE p.order_id=o.id AND p.voided_at IS NULL),0.0) AS paid,COALESCE((SELECT COUNT(*) FROM order_pieces p WHERE p.order_id=o.id),0) AS pieces FROM orders o WHERE ?1='' OR o.order_number LIKE ?2 ESCAPE '\\' OR o.customer_phone LIKE ?5 ESCAPE '\\' ORDER BY o.created_at DESC LIMIT ?3 OFFSET ?4")
-        .bind(q).bind(pattern).bind(limit as i64).bind(offset as i64).bind(phone_pattern).fetch_all(db.writer_pool()?).await.map_err(db_err)?;
-    rows.iter()
-        .map(|r| {
-            let total: f64 = r.try_get("total_amount").map_err(db_err)?;
-            let paid: f64 = r.try_get("paid").map_err(db_err)?;
-            Ok(OrderSummary {
-                id: r.try_get("id").map_err(db_err)?,
-                order_number: r.try_get("order_number").map_err(db_err)?,
-                customer_name: r.try_get("customer_name").map_err(db_err)?,
-                customer_phone: r.try_get("customer_phone").map_err(db_err)?,
-                status: r.try_get("status").map_err(db_err)?,
-                received_at: r.try_get("received_at").map_err(db_err)?,
-                promised_at: r.try_get("expected_ready_at").map_err(db_err)?,
-                total_minor: (total * 100.0).round() as i64,
-                paid_minor: (paid * 100.0).round() as i64,
-                balance_minor: (total * 100.0).round() as i64 - (paid * 100.0).round() as i64,
-                piece_count: r.try_get("pieces").map_err(db_err)?,
-            })
-        })
-        .collect()
+    let rows = bind_scope(sqlx::query(&sql), &scope)
+        .bind(limit as i64)
+        .bind(offset as i64)
+        .fetch_all(db.writer_pool()?)
+        .await
+        .map_err(db_err)?;
+    rows.iter().map(order_summary).collect()
 }
+
+fn order_summary(row: &sqlx::sqlite::SqliteRow) -> Result<OrderSummary, String> {
+    let overdue: i64 = row.try_get("overdue").map_err(db_err)?;
+    Ok(OrderSummary {
+        id: row.try_get("id").map_err(db_err)?,
+        order_number: row.try_get("order_number").map_err(db_err)?,
+        customer_name: row.try_get("customer_name").map_err(db_err)?,
+        customer_phone: row.try_get("customer_phone").map_err(db_err)?,
+        status: row.try_get("status").map_err(db_err)?,
+        received_at: row.try_get("received_at").map_err(db_err)?,
+        promised_at: row.try_get("expected_ready_at").map_err(db_err)?,
+        total_minor: row.try_get("total_minor").map_err(db_err)?,
+        paid_minor: row.try_get("paid_minor").map_err(db_err)?,
+        balance_minor: row.try_get("balance_minor").map_err(db_err)?,
+        piece_count: row.try_get("piece_count").map_err(db_err)?,
+        payment_status: row.try_get("payment_status").map_err(db_err)?,
+        overdue: overdue == 1,
+        untagged_count: row.try_get("untagged_count").map_err(db_err)?,
+        match_reason: row.try_get("match_reason").map_err(db_err)?,
+    })
+}
+
+/// How many orders sit in each list segment (no search text). Each count is the length of the
+/// matching filtered list, and `balance_due_minor` is the sum of those balances.
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct QueueCounts {
+    pub ready: i64,
+    pub balance_due: i64,
+    pub overdue: i64,
+    pub in_process: i64,
+    pub today: i64,
+    pub all: i64,
+    pub balance_due_minor: i64,
+}
+
+pub async fn order_queue_counts(
+    db: &DatabaseState,
+    session: &CounterSession,
+) -> Result<QueueCounts, String> {
+    order_queue_counts_at(db, session, Utc::now()).await
+}
+
+/// `order_queue_counts` as of `now`.
+async fn order_queue_counts_at(
+    db: &DatabaseState,
+    session: &CounterSession,
+    now: chrono::DateTime<Utc>,
+) -> Result<QueueCounts, String> {
+    require_actor(session)?;
+    let count = |filter: OrderFilter| {
+        format!(
+            "COALESCE(SUM(CASE WHEN {} THEN 1 ELSE 0 END),0)",
+            filter.predicate()
+        )
+    };
+    let sql = format!(
+        "SELECT {} AS c_ready,{} AS c_balance_due,{} AS c_overdue,{} AS c_in_process,{} AS c_today,{} AS c_all,\
+COALESCE(SUM(CASE WHEN {} THEN m.balance_minor ELSE 0 END),0) AS c_balance_minor FROM ({}) m",
+        count(OrderFilter::Ready),
+        count(OrderFilter::BalanceDue),
+        count(OrderFilter::Overdue),
+        count(OrderFilter::InProcess),
+        count(OrderFilter::Today),
+        count(OrderFilter::All),
+        OrderFilter::BalanceDue.predicate(),
+        order_list_sql(),
+    );
+    let scope = ListScope::new("", now);
+    let row = bind_scope(sqlx::query(&sql), &scope)
+        .fetch_one(db.writer_pool()?)
+        .await
+        .map_err(db_err)?;
+    Ok(QueueCounts {
+        ready: row.try_get("c_ready").map_err(db_err)?,
+        balance_due: row.try_get("c_balance_due").map_err(db_err)?,
+        overdue: row.try_get("c_overdue").map_err(db_err)?,
+        in_process: row.try_get("c_in_process").map_err(db_err)?,
+        today: row.try_get("c_today").map_err(db_err)?,
+        all: row.try_get("c_all").map_err(db_err)?,
+        balance_due_minor: row.try_get("c_balance_minor").map_err(db_err)?,
+    })
+}
+
 pub async fn get_order(
     db: &DatabaseState,
     session: &CounterSession,
@@ -4377,7 +4640,9 @@ mod counter_tests {
                 "९८७६५४३२१०",
                 "SL",
             ] {
-                let found = search_orders(&db, &staff, query, 0, 50).await.unwrap();
+                let found = search_orders(&db, &staff, query, 0, 50, None)
+                    .await
+                    .unwrap();
                 assert!(
                     found.len() >= 3 || query == "SL",
                     "{query}: {}",
@@ -4409,34 +4674,934 @@ mod counter_tests {
             let staff = staff_fixture(&db).await;
             let first = save_with(&db, &staff, order_input(1), "s-1").await.unwrap();
             let second = save_with(&db, &staff, order_input(2), "s-2").await.unwrap();
-            let recent = search_orders(&db, &staff, "", 0, 50).await.unwrap();
+            let recent = search_orders(&db, &staff, "", 0, 50, None).await.unwrap();
             assert_eq!(
                 recent.iter().map(|o| o.id.as_str()).collect::<Vec<_>>(),
                 vec![second.order_id.as_str(), first.order_id.as_str()]
             );
             assert_eq!(
-                search_orders(&db, &staff, "  ", 0, 1).await.unwrap().len(),
+                search_orders(&db, &staff, "  ", 0, 1, None)
+                    .await
+                    .unwrap()
+                    .len(),
                 1,
                 "paging applies"
             );
-            assert!(search_orders(&db, &staff, "S", 0, 50)
+            assert!(search_orders(&db, &staff, "S", 0, 50, None)
                 .await
                 .unwrap()
                 .is_empty());
             for wildcard in ["%%", "__", "\\"] {
                 assert!(
-                    search_orders(&db, &staff, wildcard, 0, 50)
+                    search_orders(&db, &staff, wildcard, 0, 50, None)
                         .await
                         .unwrap()
                         .is_empty(),
                     "{wildcard} is literal"
                 );
             }
-            let by_number = search_orders(&db, &staff, &second.order_number, 0, 50)
+            let by_number = search_orders(&db, &staff, &second.order_number, 0, 50, None)
                 .await
                 .unwrap();
             assert_eq!(by_number.len(), 1);
-            assert!(search_orders(&db, &staff, "ab", 0, 0).await.is_err());
+            assert!(search_orders(&db, &staff, "ab", 0, 0, None).await.is_err());
+            cleanup(db, path).await;
+        });
+    }
+
+    /// An order for `name` and `phone` with one line of `service` (`svc-wash` is tagged, `svc-iron` is not).
+    fn customer_order(name: &str, phone: &str, service: &str, quantity: u32) -> OrderInput {
+        OrderInput {
+            customer: CustomerInput {
+                name: name.into(),
+                phone: phone.into(),
+                customer_id: None,
+            },
+            items: vec![LineInput {
+                garment_id: "g-shirt".into(),
+                service_id: service.into(),
+                quantity,
+            }],
+        }
+    }
+
+    async fn set_status_directly(db: &DatabaseState, order_id: &str, status: &str) {
+        sqlx::query("UPDATE orders SET status=? WHERE id=?")
+            .bind(status)
+            .bind(order_id)
+            .execute(db.writer_pool().unwrap())
+            .await
+            .unwrap();
+    }
+
+    /// Order ids in list order, for the given search text and filter as of `now`.
+    async fn listed_in_order(
+        db: &DatabaseState,
+        session: &CounterSession,
+        query: &str,
+        filter: Option<&str>,
+        now: chrono::DateTime<Utc>,
+    ) -> Vec<String> {
+        search_orders_at(db, session, query, 0, 100, filter, now)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|o| o.id)
+            .collect()
+    }
+
+    /// Order ids for the given search text and filter, sorted, for set comparisons.
+    async fn listed_ids(
+        db: &DatabaseState,
+        session: &CounterSession,
+        query: &str,
+        filter: Option<&str>,
+        now: chrono::DateTime<Utc>,
+    ) -> Vec<String> {
+        let mut ids = listed_in_order(db, session, query, filter, now).await;
+        ids.sort();
+        ids
+    }
+
+    fn sorted_ids(orders: &[&SavedOrder]) -> Vec<String> {
+        let mut ids: Vec<String> = orders.iter().map(|o| o.order_id.clone()).collect();
+        ids.sort();
+        ids
+    }
+
+    #[test]
+    fn each_list_segment_holds_exactly_the_orders_it_should() {
+        tauri::async_runtime::block_on(async {
+            let path = fixture_path();
+            let db = DatabaseState::open(path.clone()).await;
+            let admin = admin_fixture(&db).await;
+            let staff = staff_fixture(&db).await;
+            let now = ist_instant("2026-10-17T11:30:00+05:30");
+            let four_days_ago = now - Duration::days(4);
+            // Received today, nothing paid: balance due and in process.
+            let unpaid = save_at(
+                &db,
+                &staff,
+                customer_order("Anita", "9000000001", "svc-wash", 1),
+                "unpaid",
+                now,
+                None,
+            )
+            .await
+            .unwrap();
+            // Received today, part paid: balance due and in process.
+            let part = save_at(
+                &db,
+                &staff,
+                customer_order("Bina", "9000000002", "svc-wash", 1),
+                "part",
+                now,
+                pay(2000),
+            )
+            .await
+            .unwrap();
+            // Received today, paid in full, then ready for pickup.
+            let paid_ready = save_at(
+                &db,
+                &staff,
+                customer_order("Chetan", "9000000003", "svc-wash", 1),
+                "paid-ready",
+                now,
+                pay(5000),
+            )
+            .await
+            .unwrap();
+            update_order_status(&db, &staff, &paid_ready.order_id, "ready")
+                .await
+                .unwrap();
+            // Received four days ago, paid in full, still washing: in process and overdue.
+            let late = save_at(
+                &db,
+                &staff,
+                customer_order("Dev", "9000000004", "svc-wash", 1),
+                "late",
+                four_days_ago,
+                pay(5000),
+            )
+            .await
+            .unwrap();
+            update_order_status(&db, &staff, &late.order_id, "washing")
+                .await
+                .unwrap();
+            // Received four days ago, nothing paid, ready: owes money but is not overdue.
+            let ready_unpaid = save_at(
+                &db,
+                &staff,
+                customer_order("Esha", "9000000005", "svc-wash", 1),
+                "ready-unpaid",
+                four_days_ago,
+                None,
+            )
+            .await
+            .unwrap();
+            update_order_status(&db, &staff, &ready_unpaid.order_id, "ready")
+                .await
+                .unwrap();
+            // Collected: set directly here, because collecting needs every piece matched first.
+            let collected = save_at(
+                &db,
+                &staff,
+                customer_order("Farid", "9000000006", "svc-wash", 1),
+                "collected",
+                now,
+                pay(5000),
+            )
+            .await
+            .unwrap();
+            set_status_directly(&db, &collected.order_id, "collected").await;
+            // Cancelled after an advance: the advance is handed back, so nothing is owed.
+            let cancelled = save_at(
+                &db,
+                &staff,
+                customer_order("Gita", "9000000007", "svc-wash", 1),
+                "cancelled",
+                now,
+                pay(1000),
+            )
+            .await
+            .unwrap();
+            cancel_order(&db, &admin, &cancelled.order_id, "Customer cancelled")
+                .await
+                .unwrap();
+            // Ironing only: no tags, nothing paid, in process.
+            let iron = save_at(
+                &db,
+                &staff,
+                customer_order("Hari", "9000000008", "svc-iron", 1),
+                "iron",
+                now,
+                None,
+            )
+            .await
+            .unwrap();
+
+            let everything = [
+                &unpaid,
+                &part,
+                &paid_ready,
+                &late,
+                &ready_unpaid,
+                &collected,
+                &cancelled,
+                &iron,
+            ];
+            assert_eq!(
+                listed_ids(&db, &staff, "", None, now).await,
+                sorted_ids(&everything)
+            );
+            assert_eq!(
+                listed_ids(&db, &staff, "", Some("all"), now).await,
+                sorted_ids(&everything)
+            );
+            assert_eq!(
+                listed_ids(&db, &staff, "", Some("ready"), now).await,
+                sorted_ids(&[&paid_ready, &ready_unpaid])
+            );
+            assert_eq!(
+                listed_ids(&db, &staff, "", Some("balance_due"), now).await,
+                sorted_ids(&[&unpaid, &part, &ready_unpaid, &iron])
+            );
+            assert_eq!(
+                listed_ids(&db, &staff, "", Some("overdue"), now).await,
+                sorted_ids(&[&late])
+            );
+            assert_eq!(
+                listed_ids(&db, &staff, "", Some("in_process"), now).await,
+                sorted_ids(&[&unpaid, &part, &late, &iron])
+            );
+            assert_eq!(
+                listed_ids(&db, &staff, "", Some("today"), now).await,
+                sorted_ids(&[&unpaid, &part, &paid_ready, &collected, &cancelled, &iron])
+            );
+
+            // A search narrows a segment; it never widens one.
+            assert!(listed_ids(&db, &staff, "Anita", Some("ready"), now)
+                .await
+                .is_empty());
+            assert_eq!(
+                listed_ids(&db, &staff, "Anita", Some("balance_due"), now).await,
+                sorted_ids(&[&unpaid])
+            );
+
+            // The queue counts are the lengths of those lists, and the balance is their summed balance.
+            let counts = order_queue_counts_at(&db, &staff, now).await.unwrap();
+            assert_eq!(
+                counts,
+                QueueCounts {
+                    ready: 2,
+                    balance_due: 4,
+                    overdue: 1,
+                    in_process: 4,
+                    today: 6,
+                    all: 8,
+                    balance_due_minor: 5000 + 3000 + 5000 + 1000,
+                }
+            );
+            cleanup(db, path).await;
+        });
+    }
+
+    #[test]
+    fn today_is_the_shop_day_in_ist_not_utc() {
+        tauri::async_runtime::block_on(async {
+            let path = fixture_path();
+            let db = DatabaseState::open(path.clone()).await;
+            let _admin = admin_fixture(&db).await;
+            let staff = staff_fixture(&db).await;
+            // 23:59:59 on 16 October IST is 18:29:59 UTC on the 16th; 00:00 on 17 October IST is 18:30 UTC.
+            let last_second = ist_instant("2026-10-16T23:59:59+05:30");
+            let first_second = ist_instant("2026-10-17T00:00:00+05:30");
+            let yesterday = save_at(
+                &db,
+                &staff,
+                customer_order("Yesterday", "9000000011", "svc-wash", 1),
+                "yesterday",
+                last_second,
+                None,
+            )
+            .await
+            .unwrap();
+            let today = save_at(
+                &db,
+                &staff,
+                customer_order("Today", "9000000012", "svc-wash", 1),
+                "today",
+                first_second,
+                None,
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(
+                listed_ids(
+                    &db,
+                    &staff,
+                    "",
+                    Some("today"),
+                    ist_instant("2026-10-17T11:30:00+05:30")
+                )
+                .await,
+                sorted_ids(&[&today])
+            );
+            // Still the 17th at 23:59:59 IST, and over at 00:00 on the 18th.
+            assert_eq!(
+                listed_ids(
+                    &db,
+                    &staff,
+                    "",
+                    Some("today"),
+                    ist_instant("2026-10-17T23:59:59+05:30")
+                )
+                .await,
+                sorted_ids(&[&today])
+            );
+            assert!(listed_ids(
+                &db,
+                &staff,
+                "",
+                Some("today"),
+                ist_instant("2026-10-18T00:00:00+05:30")
+            )
+            .await
+            .is_empty());
+            // The 16th's order is not today's, but it is still listed under All.
+            assert_eq!(
+                listed_ids(
+                    &db,
+                    &staff,
+                    "",
+                    Some("all"),
+                    ist_instant("2026-10-17T11:30:00+05:30")
+                )
+                .await,
+                sorted_ids(&[&yesterday, &today])
+            );
+            cleanup(db, path).await;
+        });
+    }
+
+    #[test]
+    fn promised_time_orders_the_queues_with_unknown_times_last() {
+        tauri::async_runtime::block_on(async {
+            let path = fixture_path();
+            let db = DatabaseState::open(path.clone()).await;
+            let _admin = admin_fixture(&db).await;
+            let staff = staff_fixture(&db).await;
+            let now = ist_instant("2026-10-17T11:30:00+05:30");
+            let mut washing = Vec::new();
+            for (name, phone, days_ago) in [
+                ("Oldest", "9000000021", 6),
+                ("Middle", "9000000022", 4),
+                ("Newest", "9000000023", 0),
+                ("Unknown", "9000000024", 4),
+            ] {
+                let saved = save_at(
+                    &db,
+                    &staff,
+                    customer_order(name, phone, "svc-wash", 1),
+                    name,
+                    now - Duration::days(days_ago),
+                    None,
+                )
+                .await
+                .unwrap();
+                update_order_status(&db, &staff, &saved.order_id, "washing")
+                    .await
+                    .unwrap();
+                washing.push(saved);
+            }
+            // Its promised time is unknown, so it sorts after every dated promise.
+            sqlx::query("UPDATE orders SET expected_ready_at=NULL WHERE id=?")
+                .bind(&washing[3].order_id)
+                .execute(db.writer_pool().unwrap())
+                .await
+                .unwrap();
+            let order = |i: usize| washing[i].order_id.clone();
+            let expected_in_process = vec![order(0), order(1), order(2), order(3)];
+            assert_eq!(
+                listed_in_order(&db, &staff, "", Some("in_process"), now).await,
+                expected_in_process
+            );
+            assert_eq!(
+                listed_in_order(&db, &staff, "", Some("overdue"), now).await,
+                vec![order(0), order(1)]
+            );
+            cleanup(db, path).await;
+        });
+    }
+
+    #[test]
+    fn the_balance_queue_is_largest_first_and_recent_lists_are_newest_received_first() {
+        tauri::async_runtime::block_on(async {
+            let path = fixture_path();
+            let db = DatabaseState::open(path.clone()).await;
+            let _admin = admin_fixture(&db).await;
+            let staff = staff_fixture(&db).await;
+            let now = ist_instant("2026-10-17T11:30:00+05:30");
+            // Created in this order, but received in a different order: the list follows received time.
+            let recent = save_at(
+                &db,
+                &staff,
+                customer_order("Recent", "9000000031", "svc-wash", 1),
+                "recent",
+                now,
+                None,
+            )
+            .await
+            .unwrap();
+            let older = save_at(
+                &db,
+                &staff,
+                customer_order("Older", "9000000032", "svc-wash", 1),
+                "older",
+                now - Duration::days(2),
+                None,
+            )
+            .await
+            .unwrap();
+            let middle = save_at(
+                &db,
+                &staff,
+                customer_order("Middle", "9000000033", "svc-wash", 1),
+                "middle",
+                now - Duration::days(1),
+                None,
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                listed_in_order(&db, &staff, "", None, now).await,
+                vec![
+                    recent.order_id.clone(),
+                    middle.order_id.clone(),
+                    older.order_id.clone()
+                ]
+            );
+
+            let iron = save_at(
+                &db,
+                &staff,
+                customer_order("Iron", "9000000034", "svc-iron", 1),
+                "iron",
+                now,
+                None,
+            )
+            .await
+            .unwrap();
+            let part = save_at(
+                &db,
+                &staff,
+                customer_order("Part", "9000000035", "svc-wash", 1),
+                "part",
+                now,
+                pay(2000),
+            )
+            .await
+            .unwrap();
+            let full = save_at(
+                &db,
+                &staff,
+                customer_order("Full", "9000000036", "svc-wash", 1),
+                "full",
+                now,
+                None,
+            )
+            .await
+            .unwrap();
+            // Balances: Full 5000, Part 3000, Iron 1000 (plus the three unpaid orders above).
+            let balance = listed_in_order(&db, &staff, "", Some("balance_due"), now).await;
+            let position =
+                |order: &SavedOrder| balance.iter().position(|id| *id == order.order_id).unwrap();
+            assert!(position(&full) < position(&part));
+            assert!(position(&part) < position(&iron));
+            cleanup(db, path).await;
+        });
+    }
+
+    #[test]
+    fn a_two_to_four_digit_search_finds_todays_bill_first_and_still_finds_phone_matches() {
+        tauri::async_runtime::block_on(async {
+            let path = fixture_path();
+            let db = DatabaseState::open(path.clone()).await;
+            let _admin = admin_fixture(&db).await;
+            let staff = staff_fixture(&db).await;
+            let now = ist_instant("2026-10-17T11:30:00+05:30");
+            // Today's bills are ...0001, ...0002 and ...0003; yesterday's first bill is ...0001 of the 16th.
+            let todays_first = save_at(
+                &db,
+                &staff,
+                customer_order("Ledger", "9000010001", "svc-wash", 1),
+                "m1",
+                now,
+                None,
+            )
+            .await
+            .unwrap();
+            let todays_second = save_at(
+                &db,
+                &staff,
+                customer_order("Ledger 0001", "9000000002", "svc-wash", 1),
+                "m2",
+                now,
+                None,
+            )
+            .await
+            .unwrap();
+            let yesterdays = save_at(
+                &db,
+                &staff,
+                customer_order("Quill", "9000000003", "svc-wash", 1),
+                "m3",
+                now - Duration::days(1),
+                None,
+            )
+            .await
+            .unwrap();
+            let phone_only = save_at(
+                &db,
+                &staff,
+                customer_order("Ledger 0001 Two", "9100010002", "svc-wash", 1),
+                "m4",
+                now,
+                None,
+            )
+            .await
+            .unwrap();
+
+            let found = search_orders_at(&db, &staff, "0001", 0, 50, None, now)
+                .await
+                .unwrap();
+            assert_eq!(found.len(), 4, "every order that matches the text");
+            assert_eq!(
+                found[0].id, todays_first.order_id,
+                "today's bill ranks first"
+            );
+            let reason = |order: &SavedOrder| {
+                found
+                    .iter()
+                    .find(|o| o.id == order.order_id)
+                    .and_then(|o| o.match_reason.clone())
+            };
+            // Today's bill beats the phone and name matches on the same order.
+            assert_eq!(reason(&todays_first).as_deref(), Some("Today's bill"));
+            // A name match on its own.
+            assert_eq!(reason(&todays_second).as_deref(), Some("Name"));
+            // The bill number of another day that contains the digits.
+            assert_eq!(reason(&yesterdays).as_deref(), Some("Bill number"));
+            // A phone match beats a name match.
+            assert_eq!(reason(&phone_only).as_deref(), Some("Phone"));
+
+            // "02" is zero-padded to today's bill ...0002, which ranks first.
+            let padded = search_orders_at(&db, &staff, "02", 0, 50, None, now)
+                .await
+                .unwrap();
+            assert_eq!(padded[0].id, todays_second.order_id);
+            assert_eq!(padded[0].match_reason.as_deref(), Some("Today's bill"));
+
+            // Eight digits are a phone search, unchanged by the bill rule.
+            let by_phone = search_orders_at(&db, &staff, "90000100", 0, 50, None, now)
+                .await
+                .unwrap();
+            assert_eq!(
+                by_phone.iter().map(|o| o.id.clone()).collect::<Vec<_>>(),
+                vec![todays_first.order_id.clone()]
+            );
+            assert_eq!(by_phone[0].match_reason.as_deref(), Some("Phone"));
+            cleanup(db, path).await;
+        });
+    }
+
+    #[test]
+    fn legacy_and_new_tag_ids_find_their_order_and_nothing_else() {
+        tauri::async_runtime::block_on(async {
+            let path = fixture_path();
+            let db = DatabaseState::open(path.clone()).await;
+            let _admin = admin_fixture(&db).await;
+            let staff = staff_fixture(&db).await;
+            let now = ist_instant("2026-10-17T11:30:00+05:30");
+            // New tags: 2610170001-1 and 2610170001-2 for two tagged shirts.
+            let two = save_at(
+                &db,
+                &staff,
+                customer_order("Tag One", "9000000041", "svc-wash", 2),
+                "tag-1",
+                now,
+                None,
+            )
+            .await
+            .unwrap();
+            let legacy = save_at(
+                &db,
+                &staff,
+                customer_order("Tag Two", "9000000042", "svc-wash", 1),
+                "tag-2",
+                now,
+                None,
+            )
+            .await
+            .unwrap();
+            // Orders saved before the bill sequence carry a short legacy tag id.
+            sqlx::query("UPDATE order_pieces SET short_id='2600123-3' WHERE order_id=?")
+                .bind(&legacy.order_id)
+                .execute(db.writer_pool().unwrap())
+                .await
+                .unwrap();
+
+            let found = search_orders_at(&db, &staff, "2610170001-2", 0, 50, None, now)
+                .await
+                .unwrap();
+            assert_eq!(
+                found.iter().map(|o| o.id.clone()).collect::<Vec<_>>(),
+                vec![two.order_id.clone()]
+            );
+            assert_eq!(found[0].match_reason.as_deref(), Some("Tag ID"));
+
+            let found = search_orders_at(&db, &staff, "2600123-3", 0, 50, None, now)
+                .await
+                .unwrap();
+            assert_eq!(
+                found.iter().map(|o| o.id.clone()).collect::<Vec<_>>(),
+                vec![legacy.order_id.clone()]
+            );
+            assert_eq!(found[0].match_reason.as_deref(), Some("Tag ID"));
+
+            // A position that was never printed, and a dash with no position, match nothing.
+            assert!(
+                search_orders_at(&db, &staff, "2610170001-3", 0, 50, None, now)
+                    .await
+                    .unwrap()
+                    .is_empty()
+            );
+            assert!(
+                search_orders_at(&db, &staff, "2610170001-", 0, 50, None, now)
+                    .await
+                    .unwrap()
+                    .is_empty()
+            );
+            cleanup(db, path).await;
+        });
+    }
+
+    #[test]
+    fn name_search_ignores_case_and_matches_wildcard_characters_literally() {
+        tauri::async_runtime::block_on(async {
+            let path = fixture_path();
+            let db = DatabaseState::open(path.clone()).await;
+            let _admin = admin_fixture(&db).await;
+            let staff = staff_fixture(&db).await;
+            let now = ist_instant("2026-10-17T11:30:00+05:30");
+            let rita = save_at(
+                &db,
+                &staff,
+                customer_order("Rita Joshi", "9000000051", "svc-wash", 1),
+                "rita",
+                now,
+                None,
+            )
+            .await
+            .unwrap();
+            let _ritu = save_at(
+                &db,
+                &staff,
+                customer_order("Ritu Mehta", "9000000052", "svc-wash", 1),
+                "ritu",
+                now,
+                None,
+            )
+            .await
+            .unwrap();
+            let percent = save_at(
+                &db,
+                &staff,
+                customer_order("50% Off Club", "9000000053", "svc-wash", 1),
+                "percent",
+                now,
+                None,
+            )
+            .await
+            .unwrap();
+            let five_thousand = save_at(
+                &db,
+                &staff,
+                customer_order("5000 Club", "9000000054", "svc-wash", 1),
+                "five",
+                now,
+                None,
+            )
+            .await
+            .unwrap();
+            let underscore = save_at(
+                &db,
+                &staff,
+                customer_order("A_B Traders", "9000000055", "svc-wash", 1),
+                "underscore",
+                now,
+                None,
+            )
+            .await
+            .unwrap();
+            let _axb = save_at(
+                &db,
+                &staff,
+                customer_order("AXB Traders", "9000000056", "svc-wash", 1),
+                "axb",
+                now,
+                None,
+            )
+            .await
+            .unwrap();
+
+            for query in ["RITA", "rita", "Rita Jo"] {
+                let found = search_orders_at(&db, &staff, query, 0, 50, None, now)
+                    .await
+                    .unwrap();
+                assert_eq!(found.len(), 1, "{query}");
+                assert_eq!(found[0].id, rita.order_id, "{query}");
+                assert_eq!(found[0].match_reason.as_deref(), Some("Name"), "{query}");
+            }
+            let percent_hits = search_orders_at(&db, &staff, "50%", 0, 50, None, now)
+                .await
+                .unwrap();
+            assert_eq!(
+                percent_hits
+                    .iter()
+                    .map(|o| o.id.clone())
+                    .collect::<Vec<_>>(),
+                vec![percent.order_id.clone()],
+                "% is literal"
+            );
+            let underscore_hits = search_orders_at(&db, &staff, "A_B", 0, 50, None, now)
+                .await
+                .unwrap();
+            assert_eq!(
+                underscore_hits
+                    .iter()
+                    .map(|o| o.id.clone())
+                    .collect::<Vec<_>>(),
+                vec![underscore.order_id.clone()],
+                "_ is literal"
+            );
+            let club = listed_ids(&db, &staff, "Club", None, now).await;
+            assert_eq!(club, sorted_ids(&[&percent, &five_thousand]));
+            for wildcard in ["%%", "\\%", "\\_"] {
+                assert!(
+                    search_orders_at(&db, &staff, wildcard, 0, 50, None, now)
+                        .await
+                        .unwrap()
+                        .is_empty(),
+                    "{wildcard}"
+                );
+            }
+            cleanup(db, path).await;
+        });
+    }
+
+    #[test]
+    fn unknown_filters_and_short_or_wide_pages_are_refused_or_empty() {
+        tauri::async_runtime::block_on(async {
+            let path = fixture_path();
+            let db = DatabaseState::open(path.clone()).await;
+            let _admin = admin_fixture(&db).await;
+            let staff = staff_fixture(&db).await;
+            let now = ist_instant("2026-10-17T11:30:00+05:30");
+            for number in 1..=5 {
+                let name = format!("Page {number}");
+                let phone = format!("900000006{number}");
+                save_at(
+                    &db,
+                    &staff,
+                    customer_order(&name, &phone, "svc-wash", 1),
+                    &name,
+                    now,
+                    None,
+                )
+                .await
+                .unwrap();
+            }
+
+            let refused = search_orders_at(&db, &staff, "", 0, 10, Some("bogus"), now)
+                .await
+                .unwrap_err();
+            assert_eq!(refused, "Unknown order filter.");
+            assert!(
+                search_orders_at(&db, &staff, "", 0, 10, Some("OVERDUE"), now)
+                    .await
+                    .is_err(),
+                "filters are case sensitive"
+            );
+            assert!(
+                search_orders_at(&db, &staff, "", 0, 10, Some("  ready  "), now)
+                    .await
+                    .is_ok(),
+                "surrounding spaces are ignored"
+            );
+            assert!(
+                search_orders_at(&db, &staff, "", 0, 10, Some("  "), now)
+                    .await
+                    .is_ok(),
+                "a blank filter lists all orders"
+            );
+
+            assert!(search_orders_at(&db, &staff, "P", 0, 10, Some("all"), now)
+                .await
+                .unwrap()
+                .is_empty());
+
+            let everything = listed_in_order(&db, &staff, "", None, now).await;
+            assert_eq!(everything.len(), 5);
+            let middle_page = search_orders_at(&db, &staff, "", 2, 2, None, now)
+                .await
+                .unwrap();
+            assert_eq!(
+                middle_page.iter().map(|o| o.id.clone()).collect::<Vec<_>>(),
+                everything[2..4].to_vec()
+            );
+            assert!(search_orders_at(&db, &staff, "", 5, 2, None, now)
+                .await
+                .unwrap()
+                .is_empty());
+            assert!(search_orders_at(&db, &staff, "", 0, 0, None, now)
+                .await
+                .is_err());
+            assert!(search_orders_at(&db, &staff, "", 0, 101, None, now)
+                .await
+                .is_err());
+            cleanup(db, path).await;
+        });
+    }
+
+    #[test]
+    fn order_rows_report_untagged_pieces_payment_state_and_overdue() {
+        tauri::async_runtime::block_on(async {
+            let path = fixture_path();
+            let db = DatabaseState::open(path.clone()).await;
+            let admin = admin_fixture(&db).await;
+            let staff = staff_fixture(&db).await;
+            let now = ist_instant("2026-10-17T11:30:00+05:30");
+            let iron = save_at(
+                &db,
+                &staff,
+                customer_order("Iron Only", "9000000071", "svc-iron", 2),
+                "iron",
+                now,
+                None,
+            )
+            .await
+            .unwrap();
+            let part = save_at(
+                &db,
+                &staff,
+                customer_order("Part Paid", "9000000072", "svc-wash", 1),
+                "part",
+                now,
+                pay(2000),
+            )
+            .await
+            .unwrap();
+            let late = save_at(
+                &db,
+                &staff,
+                customer_order("Late", "9000000073", "svc-wash", 1),
+                "late",
+                now - Duration::days(4),
+                pay(5000),
+            )
+            .await
+            .unwrap();
+            update_order_status(&db, &staff, &late.order_id, "washing")
+                .await
+                .unwrap();
+            let cancelled = save_at(
+                &db,
+                &staff,
+                customer_order("Gone", "9000000074", "svc-iron", 1),
+                "gone",
+                now,
+                pay(1000),
+            )
+            .await
+            .unwrap();
+            cancel_order(&db, &admin, &cancelled.order_id, "Customer cancelled")
+                .await
+                .unwrap();
+
+            let found = search_orders_at(&db, &staff, "", 0, 50, None, now)
+                .await
+                .unwrap();
+            let row = |order: &SavedOrder| found.iter().find(|o| o.id == order.order_id).unwrap();
+
+            assert_eq!(
+                row(&iron).untagged_count,
+                2,
+                "both ironed pieces are untagged"
+            );
+            assert_eq!(row(&iron).payment_status, "unpaid");
+            assert_eq!(row(&iron).balance_minor, 2000);
+            assert!(!row(&iron).overdue);
+            assert_eq!(row(&iron).match_reason, None);
+
+            assert_eq!(row(&part).untagged_count, 0, "a wash is tagged");
+            assert_eq!(row(&part).payment_status, "partially_paid");
+            assert_eq!(row(&part).balance_minor, 3000);
+
+            assert_eq!(row(&late).payment_status, "paid");
+            assert!(row(&late).overdue, "washing past the promised time");
+            assert!(row(&late).promised_at.is_some());
+
+            assert_eq!(
+                row(&cancelled).payment_status,
+                "unpaid",
+                "a cancelled order is unpaid"
+            );
+            assert!(
+                !row(&cancelled).overdue,
+                "a cancelled order is never overdue"
+            );
             cleanup(db, path).await;
         });
     }
@@ -5669,13 +6834,18 @@ mod counter_tests {
             assert!(queue.iter().any(|job| {
                 job.order_id == order.order_id && job.order_number == order.order_number
             }));
-            assert!(
-                search_orders(&reopened, &reopened_session, &order.order_number, 0, 10)
-                    .await
-                    .unwrap()
-                    .iter()
-                    .any(|summary| summary.id == order.order_id)
-            );
+            assert!(search_orders(
+                &reopened,
+                &reopened_session,
+                &order.order_number,
+                0,
+                10,
+                None
+            )
+            .await
+            .unwrap()
+            .iter()
+            .any(|summary| summary.id == order.order_id));
             drop(reopened);
             let _ = std::fs::remove_dir_all(path.parent().unwrap());
         });

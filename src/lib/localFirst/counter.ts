@@ -128,6 +128,8 @@ export const matchOrderPieces = (orderId: string, stage: CounterMatchStage, piec
   call('counter_match_order_pieces', { orderId, stage, pieceIds });
 export const searchCounterOrders = (query: string, offset = 0, limit = 50, filter: CounterOrderFilter = 'all'): Promise<CounterOrderSummary[]> =>
   call('counter_search_orders', { query, offset, limit, filter });
+/** Counts for each order list segment, with no search text. */
+export const getCounterOrderQueueCounts = (): Promise<CounterQueueCounts> => call('counter_order_queue_counts');
 export const getCounterOrder = (orderId: string): Promise<CounterSavedOrder | null> => call('counter_get_order', { orderId });
 export const recordCounterPayment = (orderId: string, input: CounterRecordPaymentInput): Promise<CounterSavedOrder> => call('counter_record_payment', { orderId, input });
 export const updateCounterOrderStatus = (orderId: string, status: CounterProcessingStatus): Promise<CounterSavedOrder> => call('counter_update_order_status', { orderId, status });
