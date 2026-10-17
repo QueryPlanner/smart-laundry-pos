@@ -162,6 +162,11 @@ describe('HandoverPage layout and state', () => {
     expect(screen.getByText('Everything is ready')).toBeTruthy();
   });
 
+  it('does not use the status page class, whose grid layout would fight the flex column', () => {
+    const { container } = render(<HandoverPage {...props()} />);
+    expect(container.firstElementChild?.classList.contains('counter-status-page')).toBe(false);
+  });
+
   it('asks for the pickup check copy', () => {
     render(<HandoverPage {...props()} />);
     expect(screen.getByText('Check each garment with the customer')).toBeTruthy();
@@ -176,5 +181,10 @@ describe('HandoverPage done screen', () => {
     expect(screen.queryByRole('checkbox')).toBeNull();
     fireEvent.click(button('Next order'));
     expect(p.onNext).toHaveBeenCalledOnce();
+  });
+
+  it('does not use the status page class on the handed-over screen either', () => {
+    const { container } = render(<HandoverPage {...props({ done: true })} />);
+    expect(container.firstElementChild?.classList.contains('counter-status-page')).toBe(false);
   });
 });

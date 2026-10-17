@@ -86,6 +86,33 @@ describe('SalesChart', () => {
     expect(cellsOf(rows[2])).toEqual(['6 Mar', '0', money(0), money(3000), money(0)]);
   });
 
+  it('keeps a negative net point on the baseline while the table shows the negative amount', () => {
+    // Refunds of 80 exceed the 60 collected in advance that day, so the net advance is -20.
+    const points = [pointOf('2026-03-05', 10000, { advanceCollectedMinor: 6000, advanceRefundedMinor: 8000 })];
+    render(<SalesChart points={points} bucket="day" title="Refund day" />);
+    const chart = screen.getByRole('img');
+    // The plot area ends at PAD.top (16) + plotHeight (260 - 16 - 34 = 210) = 226.
+    const baselineY = '226';
+    const advanceLine = chart.querySelectorAll('polyline')[0].getAttribute('points') ?? '';
+    expect(advanceLine.split(' ').map(pair => pair.split(',')[1])).toEqual([baselineY]);
+    expect(chart.querySelector('circle')?.getAttribute('cy')).toBe(baselineY);
+    const rows = within(screen.getByRole('table', { hidden: true })).getAllByRole('row', { hidden: true });
+    expect(cellsOf(rows[1])).toEqual(['5 Mar', '1', money(10000), money(-2000), money(0)]);
+    expect(screen.getByRole('table', { hidden: true }).textContent).toContain(money(-2000));
+  });
+
+  it('does not let a negative net value set the top of the axis', () => {
+    // The only positive figure is 10 (advance). A net of -90 must not stretch the axis to 100.
+    const points = [
+      pointOf('2026-03-05', 0, { advanceCollectedMinor: 1000 }),
+      pointOf('2026-03-06', 0, { advanceRefundedMinor: 9000 }),
+    ];
+    const { container } = render(<SalesChart points={points} bucket="day" title="Refund day" />);
+    const labels = [...container.querySelectorAll('svg text')].map(node => node.textContent);
+    expect(labels).toContain('₹10');
+    expect(labels).not.toContain('₹100');
+  });
+
   it('lets the balance line set the top of the axis when it is the biggest figure', () => {
     const { container } = render(<SalesChart points={[pointOf('2026-03-05', 0, { balanceCollectedMinor: 120000 })]} bucket="day" title="Balance only" />);
     expect([...container.querySelectorAll('svg text')].map(node => node.textContent)).toContain('₹2K');

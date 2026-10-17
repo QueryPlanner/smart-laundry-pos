@@ -23,6 +23,12 @@ const niceMax = (value: number): number => {
   return (fraction <= 5 ? 5 : 10) * power;
 };
 
+/**
+ * The value drawn on the plot. A net below zero (refunds larger than collections) is drawn on the baseline,
+ * so it cannot sit under the axis labels. The true value still shows in the hover titles and the hidden table.
+ */
+const plotted = (minor: number): number => Math.max(0, minor);
+
 /** Axis label such as "₹1.2K": whole rupees, compact. */
 const axisMoney = (minor: number): string =>
   `₹${new Intl.NumberFormat('en-IN', { notation: 'compact', maximumFractionDigits: 1 }).format(minor / 100)}`;
@@ -34,7 +40,8 @@ const axisMoney = (minor: number): string =>
  */
 export const SalesChart = ({ points, bucket, title }: { points: SeriesPoint[]; bucket: SalesBucket; title: string }) => {
   const kinds = points.map(point => netByKind(point));
-  const peak = Math.max(0, ...points.map((point, index) => Math.max(point.netBilledMinor, kinds[index].advanceMinor, kinds[index].balanceMinor)));
+  const peak = Math.max(0, ...points.map((point, index) =>
+    Math.max(plotted(point.netBilledMinor), plotted(kinds[index].advanceMinor), plotted(kinds[index].balanceMinor))));
   if (peak === 0) return <EmptyState>No sales or payments in this period.</EmptyState>;
 
   const top = niceMax(peak);
@@ -51,8 +58,8 @@ export const SalesChart = ({ points, bucket, title }: { points: SeriesPoint[]; b
   const best = points.reduce((winner, point) => (point.netBilledMinor > winner.netBilledMinor ? point : winner), points[0]);
   const summary = `${title}. Billed ${money(billedTotal)}, advance collected ${money(advanceTotal)} and balance received ${money(balanceTotal)} `
     + `over ${points.length} ${UNIT[bucket]}. Highest billing ${money(best.netBilledMinor)} on ${bucketLabel(best.bucket, bucket)}.`;
-  const advanceLine = points.map((_, index) => `${x(index)},${y(kinds[index].advanceMinor)}`).join(' ');
-  const balanceLine = points.map((_, index) => `${x(index)},${y(kinds[index].balanceMinor)}`).join(' ');
+  const advanceLine = points.map((_, index) => `${x(index)},${y(plotted(kinds[index].advanceMinor))}`).join(' ');
+  const balanceLine = points.map((_, index) => `${x(index)},${y(plotted(kinds[index].balanceMinor))}`).join(' ');
 
   return (
     <figure className="counter-chart">
@@ -71,9 +78,9 @@ export const SalesChart = ({ points, bucket, title }: { points: SeriesPoint[]; b
         ))}
         <polyline points={advanceLine} className="counter-chart-line" fill="none" />
         <polyline points={balanceLine} fill="none" stroke={BALANCE_STROKE} strokeWidth={2.5} strokeDasharray={BALANCE_DASH} strokeLinejoin="round" />
-        {points.map((point, index) => <circle key={point.bucket} cx={x(index)} cy={y(kinds[index].advanceMinor)} r={3} className="counter-chart-dot" />)}
+        {points.map((point, index) => <circle key={point.bucket} cx={x(index)} cy={y(plotted(kinds[index].advanceMinor))} r={3} className="counter-chart-dot" />)}
         {points.map((point, index) => (
-          <rect key={`balance-${point.bucket}`} x={x(index) - 3} y={y(kinds[index].balanceMinor) - 3} width={6} height={6}
+          <rect key={`balance-${point.bucket}`} x={x(index) - 3} y={y(plotted(kinds[index].balanceMinor)) - 3} width={6} height={6}
             fill="#fff" stroke={BALANCE_STROKE} strokeWidth={2} />
         ))}
         {points.map((point, index) => index % tickEvery === 0 && (

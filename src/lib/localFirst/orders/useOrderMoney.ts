@@ -85,13 +85,17 @@ export const useOrderMoney = (o: {
   const [payments] = useState(() => new PaymentKey());
   const running = useRef(false);
 
-  const receive = async (): Promise<boolean> => {
+  /**
+   * Records a payment from the form. With `whole`, the whole balance is received whatever the form says, so a
+   * caller whose label names the whole balance (the hand-over button) always records that amount.
+   */
+  const receive = async (options?: { whole?: boolean }): Promise<boolean> => {
     if (running.current) return false;
     const order = o.order;
     if (!order || order.balanceMinor <= 0) return false;
 
     setError('');
-    const amountMinor = partial ? parsePaymentAmountMinor(amount) : order.balanceMinor;
+    const amountMinor = partial && !options?.whole ? parsePaymentAmountMinor(amount) : order.balanceMinor;
     if (amountMinor === null || amountMinor <= 0) {
       setError(AMOUNT_NOT_VALID);
       return false;

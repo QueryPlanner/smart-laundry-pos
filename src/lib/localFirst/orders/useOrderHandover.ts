@@ -13,7 +13,7 @@ export type HandoverAction = 'receive' | 'receive_and_handover' | 'handover' | '
  */
 export const useOrderHandover = (o: {
   order: CounterSavedOrder | null;
-  money: { receive(): Promise<boolean> };
+  money: { receive(options?: { whole?: boolean }): Promise<boolean> };
   onOrder(order: CounterSavedOrder): void;
   onError(error: unknown): void;
   onNotice(message: string): void;
@@ -43,9 +43,10 @@ export const useOrderHandover = (o: {
     if (order.balanceMinor < before) setReceivedNote(`${rupees(before - order.balanceMinor)} received`);
   }, [order]);
 
+  /** The hand-over button says "Receive <whole balance>", so it receives the whole balance even if a part payment is typed. */
   const receiveMoney = async (current: CounterSavedOrder): Promise<void> => {
     balanceBeforeReceive.current = current.balanceMinor;
-    const ok = await money.receive();
+    const ok = await money.receive({ whole: true });
     if (!ok) balanceBeforeReceive.current = null;
   };
 

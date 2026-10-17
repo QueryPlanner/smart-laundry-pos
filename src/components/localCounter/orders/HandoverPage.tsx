@@ -8,6 +8,14 @@ import { ReadinessPanel } from './ReadinessPanel';
 
 export type HandoverAction = 'receive' | 'receive_and_handover' | 'handover' | 'mark_ready';
 
+/**
+ * The page frame and heading the old `counter-status-page` class gave: centred, at most 1120px wide, 14px
+ * from the edge on phones, and an h1 with no margin at 24px. Written as utilities, because that class also
+ * sets `display: grid`, which fights this page's flex column.
+ */
+const PAGE_FRAME = 'mx-auto my-[26px] max-w-[1120px] max-[620px]:m-[14px]';
+const PAGE_HEADING = 'm-0 text-[24px] leading-[1.25]';
+
 /** The primary button's action for each enabled CTA kind. The other kinds are disabled and have none. */
 const ACTION_FOR_CTA: Partial<Record<HandoverCtaKind, HandoverAction>> = {
   receive: 'receive',
@@ -40,8 +48,8 @@ export const HandoverPage = ({
 }: HandoverPageProps) => {
   if (done) {
     return (
-      <section className="counter-status-page flex flex-col items-center gap-4 text-center">
-        <h1>{`Handed over ✓ ${order.orderNumber}`}</h1>
+      <section className={`${PAGE_FRAME} flex flex-col items-center gap-4 text-center`}>
+        <h1 className={PAGE_HEADING}>{`Handed over ✓ ${order.orderNumber}`}</h1>
         <Button size="lg" className="counter-touch" onClick={onNext}>Next order</Button>
       </section>
     );
@@ -57,12 +65,12 @@ export const HandoverPage = ({
   const showMarkReady = cta.kind === 'not_ready' && order.status !== 'cancelled';
 
   return (
-    <div className="counter-status-page flex flex-col gap-4 pb-6">
+    <div className={`${PAGE_FRAME} flex flex-col gap-4 pb-6`}>
       <div>
         <Button variant="outline" onClick={onBack}>{`← ${backLabel}`}</Button>
       </div>
       <header className="flex flex-col gap-1">
-        <h1>{order.orderNumber}</h1>
+        <h1 className={PAGE_HEADING}>{order.orderNumber}</h1>
         {customer && <p className="text-sm text-muted-foreground">{`${customer.name} · ${customer.phone}`}</p>}
       </header>
       <ol className="flex flex-wrap gap-2 text-sm font-medium">

@@ -77,6 +77,7 @@ describe('useOrderHandover receive', () => {
     await perform(result, 'receive');
 
     expect(money.receive).toHaveBeenCalledTimes(1);
+    expect(money.receive).toHaveBeenCalledWith({ whole: true });
     expect(api.collectCounterOrder).not.toHaveBeenCalled();
     expect(onOrder).not.toHaveBeenCalled();
 

@@ -35,9 +35,9 @@ const setup = (current: CounterSavedOrder | null = order()) => {
 };
 
 /** Runs `receive` inside `act` and returns what it resolved to. */
-const receive = async (result: { current: ReturnType<typeof useOrderMoney> }): Promise<boolean> => {
+const receive = async (result: { current: ReturnType<typeof useOrderMoney> }, options?: { whole?: boolean }): Promise<boolean> => {
   let ok = false;
-  await act(async () => { ok = await result.current.receive(); });
+  await act(async () => { ok = await result.current.receive(options); });
   return ok;
 };
 
@@ -189,6 +189,49 @@ describe('useOrderMoney receive', () => {
 
     await waitFor(() => expect(onNotice).toHaveBeenCalledWith('Payment saved.'));
     expect(api.recordCounterPayment).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('useOrderMoney receive whole balance', () => {
+  it.each([
+    ['a valid part amount', '5'],
+    ['an amount above the balance', '50'],
+    ['an invalid amount', 'abc'],
+  ])('records the whole balance and ignores %s when whole is asked for', async (_label, typed) => {
+    api.recordCounterPayment.mockResolvedValue(order({ balanceMinor: 0, paidMinor: 4000, paymentStatus: 'paid' }));
+    const { result, onNotice } = setup();
+    act(() => {
+      result.current.form.onPartial(true);
+      result.current.form.onAmount(typed);
+    });
+
+    await expect(receive(result, { whole: true })).resolves.toBe(true);
+
+    expect(api.recordCounterPayment).toHaveBeenCalledTimes(1);
+    expect(api.recordCounterPayment).toHaveBeenCalledWith('o-1', expect.objectContaining({ amountMinor: 4000 }));
+    expect(onNotice).toHaveBeenCalledWith('Payment saved.');
+  });
+
+  it('clears the typed part payment from the form once the whole balance is saved', async () => {
+    api.recordCounterPayment.mockResolvedValue(order({ balanceMinor: 0 }));
+    const { result } = setup();
+    act(() => {
+      result.current.form.onPartial(true);
+      result.current.form.onAmount('5');
+    });
+
+    await receive(result, { whole: true });
+
+    expect(result.current.form).toMatchObject({ partial: false, amount: '', error: '' });
+  });
+
+  it('refuses without calling the API when the order has no balance left', async () => {
+    const { result, onOrder } = setup(order({ balanceMinor: 0, paidMinor: 4000 }));
+
+    await expect(receive(result, { whole: true })).resolves.toBe(false);
+
+    expect(api.recordCounterPayment).not.toHaveBeenCalled();
+    expect(onOrder).not.toHaveBeenCalled();
   });
 });
 
