@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { Button } from '@/components/ui/button';
 import {
-  getSalesSeries, getSalesSummary, listSalesOrders, listSalesStaff, listSalesTransactions,
+  getSalesSeries, getSalesSummary, listSalesOrders, listSalesStaff, listSalesTransactions, netByKind,
   type SalesBucket, type SalesFilter, type SalesOrderRow, type SalesOrderStatus, type SalesPage as Page,
   type SalesPaymentMethod, type SalesSeries, type SalesStaffOption, type SalesSummary, type SalesTransaction,
 } from '@/lib/localFirst/insights';
@@ -211,6 +211,8 @@ export const SalesPage = ({ onError, onOpenOrder }: SectionProps) => {
             <StatCard label="Before discount" value={money(summary.grossMinor)} />
             <StatCard label="Discounts" value={money(summary.discountMinor)} />
             <StatCard label="Billed" value={money(summary.netBilledMinor)} hint={`Average ${money(summary.averageOrderMinor)} per order`} />
+            <StatCard label="Advance collected" value={money(netByKind(summary).advanceMinor)} hint="Taken when booked, after refunds" />
+            <StatCard label="Balance received" value={money(netByKind(summary).balanceMinor)} hint="Taken at pickup, after refunds" />
             <StatCard label="Collected" value={money(summary.collectedMinor)} hint="Payments taken" />
             <StatCard label="Refunded" value={money(summary.refundedMinor)} hint="Handed back" tone={summary.refundedMinor > 0 ? 'warn' : 'neutral'} />
             <StatCard label="Net collected" value={money(summary.netCollectedMinor)} tone="good" />
@@ -225,6 +227,7 @@ export const SalesPage = ({ onError, onOpenOrder }: SectionProps) => {
           </div>
           <ul className="counter-hints">
             <li>Billed counts orders created in the period; cancelled orders are left out unless you include them. Collected counts payments taken in the period, and a refund counts on the day the money was handed back.</li>
+            <li>Advance is the part paid when the order is booked; balance is what is paid at or after pickup.</li>
             <li>The staff filter follows who created each order, but for money it follows who took the payment.</li>
             <li>Expenses are kept by day, so any expense dated on a day the period touches is included.</li>
           </ul>

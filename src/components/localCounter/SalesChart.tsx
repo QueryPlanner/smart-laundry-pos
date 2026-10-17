@@ -1,4 +1,4 @@
-import type { SalesBucket, SeriesPoint } from '@/lib/localFirst/insights';
+import { netByKind, type SalesBucket, type SeriesPoint } from '@/lib/localFirst/insights';
 import { bucketLabel, bucketTick } from '@/lib/localFirst/salesRange';
 import { EmptyState, money } from './ui';
 
@@ -7,6 +7,12 @@ const HEIGHT = 260;
 const PAD = { left: 64, right: 16, top: 16, bottom: 34 };
 const MAX_TICKS = 8;
 const UNIT: Record<SalesBucket, string> = { hour: 'hours', day: 'days', month: 'months' };
+/**
+ * The advance line uses the amber line and round markers from index.css. The balance line is blue,
+ * dashed, with square markers, so the two lines stay apart without relying on colour alone.
+ */
+const BALANCE_STROKE = '#3566a8';
+const BALANCE_DASH = '7 4';
 
 /** Round a top value up to 1, 2 or 5 times a power of ten so the axis labels stay readable. */
 const niceMax = (value: number): number => {
@@ -22,12 +28,13 @@ const axisMoney = (minor: number): string =>
   `₹${new Intl.NumberFormat('en-IN', { notation: 'compact', maximumFractionDigits: 1 }).format(minor / 100)}`;
 
 /**
- * Bars for what was billed and a line for what was collected, one slot per bucket. Hand-rolled SVG:
- * the figure announces a one-line summary to screen readers and carries the same numbers in a
- * visually hidden table, and each bar has a hover title.
+ * Bars for what was billed and two lines for the net advance and balance collected, one slot per bucket.
+ * Hand-rolled SVG: the figure announces a one-line summary to screen readers and carries the same numbers
+ * in a visually hidden table, and each bar has a hover title.
  */
 export const SalesChart = ({ points, bucket, title }: { points: SeriesPoint[]; bucket: SalesBucket; title: string }) => {
-  const peak = Math.max(0, ...points.map(point => Math.max(point.netBilledMinor, point.collectedMinor)));
+  const kinds = points.map(point => netByKind(point));
+  const peak = Math.max(0, ...points.map((point, index) => Math.max(point.netBilledMinor, kinds[index].advanceMinor, kinds[index].balanceMinor)));
   if (peak === 0) return <EmptyState>No sales or payments in this period.</EmptyState>;
 
   const top = niceMax(peak);
@@ -39,11 +46,13 @@ export const SalesChart = ({ points, bucket, title }: { points: SeriesPoint[]; b
   const y = (minor: number): number => PAD.top + plotHeight * (1 - minor / top);
   const tickEvery = Math.ceil(points.length / MAX_TICKS);
   const billedTotal = points.reduce((sum, point) => sum + point.netBilledMinor, 0);
-  const collectedTotal = points.reduce((sum, point) => sum + point.collectedMinor, 0);
+  const advanceTotal = kinds.reduce((sum, kind) => sum + kind.advanceMinor, 0);
+  const balanceTotal = kinds.reduce((sum, kind) => sum + kind.balanceMinor, 0);
   const best = points.reduce((winner, point) => (point.netBilledMinor > winner.netBilledMinor ? point : winner), points[0]);
-  const summary = `${title}. Billed ${money(billedTotal)} and collected ${money(collectedTotal)} over ${points.length} ${UNIT[bucket]}. `
-    + `Highest billing ${money(best.netBilledMinor)} on ${bucketLabel(best.bucket, bucket)}.`;
-  const line = points.map((point, index) => `${x(index)},${y(point.collectedMinor)}`).join(' ');
+  const summary = `${title}. Billed ${money(billedTotal)}, advance collected ${money(advanceTotal)} and balance received ${money(balanceTotal)} `
+    + `over ${points.length} ${UNIT[bucket]}. Highest billing ${money(best.netBilledMinor)} on ${bucketLabel(best.bucket, bucket)}.`;
+  const advanceLine = points.map((_, index) => `${x(index)},${y(kinds[index].advanceMinor)}`).join(' ');
+  const balanceLine = points.map((_, index) => `${x(index)},${y(kinds[index].balanceMinor)}`).join(' ');
 
   return (
     <figure className="counter-chart">
@@ -57,27 +66,39 @@ export const SalesChart = ({ points, bucket, title }: { points: SeriesPoint[]; b
         {points.map((point, index) => (
           <rect key={point.bucket} x={x(index) - barWidth / 2} y={y(point.netBilledMinor)} width={barWidth}
             height={PAD.top + plotHeight - y(point.netBilledMinor)} rx={3} className="counter-chart-bar">
-            <title>{`${bucketLabel(point.bucket, bucket)}: billed ${money(point.netBilledMinor)}, collected ${money(point.collectedMinor)}`}</title>
+            <title>{`${bucketLabel(point.bucket, bucket)}: billed ${money(point.netBilledMinor)}, advance ${money(kinds[index].advanceMinor)}, balance ${money(kinds[index].balanceMinor)}`}</title>
           </rect>
         ))}
-        <polyline points={line} className="counter-chart-line" fill="none" />
-        {points.map((point, index) => <circle key={point.bucket} cx={x(index)} cy={y(point.collectedMinor)} r={3} className="counter-chart-dot" />)}
+        <polyline points={advanceLine} className="counter-chart-line" fill="none" />
+        <polyline points={balanceLine} fill="none" stroke={BALANCE_STROKE} strokeWidth={2.5} strokeDasharray={BALANCE_DASH} strokeLinejoin="round" />
+        {points.map((point, index) => <circle key={point.bucket} cx={x(index)} cy={y(kinds[index].advanceMinor)} r={3} className="counter-chart-dot" />)}
+        {points.map((point, index) => (
+          <rect key={`balance-${point.bucket}`} x={x(index) - 3} y={y(kinds[index].balanceMinor) - 3} width={6} height={6}
+            fill="#fff" stroke={BALANCE_STROKE} strokeWidth={2} />
+        ))}
         {points.map((point, index) => index % tickEvery === 0 && (
           <text key={point.bucket} x={x(index)} y={HEIGHT - 12} textAnchor="middle" className="counter-chart-axis">{bucketTick(point.bucket, bucket)}</text>
         ))}
       </svg>
       <figcaption className="counter-chart-legend">
         <span><i className="counter-chart-key bar" />Billed</span>
-        <span><i className="counter-chart-key line" />Collected</span>
+        <span><i className="counter-chart-key line" />Advance</span>
+        <span>
+          <svg width="18" height="10" viewBox="0 0 18 10" aria-hidden="true" focusable="false">
+            <line x1="0" y1="5" x2="18" y2="5" stroke={BALANCE_STROKE} strokeWidth={2.5} strokeDasharray={BALANCE_DASH} />
+            <rect x="6" y="2" width="6" height="6" fill="#fff" stroke={BALANCE_STROKE} strokeWidth={2} />
+          </svg>
+          Balance
+        </span>
       </figcaption>
       <table className="counter-visually-hidden">
         <caption>{title}</caption>
-        <thead><tr><th scope="col">Period</th><th scope="col">Orders</th><th scope="col">Billed</th><th scope="col">Collected</th><th scope="col">Refunded</th></tr></thead>
+        <thead><tr><th scope="col">Period</th><th scope="col">Orders</th><th scope="col">Billed</th><th scope="col">Advance</th><th scope="col">Balance</th></tr></thead>
         <tbody>
-          {points.map(point => (
+          {points.map((point, index) => (
             <tr key={point.bucket}>
               <th scope="row">{bucketLabel(point.bucket, bucket)}</th><td>{point.orders}</td>
-              <td>{money(point.netBilledMinor)}</td><td>{money(point.collectedMinor)}</td><td>{money(point.refundedMinor)}</td>
+              <td>{money(point.netBilledMinor)}</td><td>{money(kinds[index].advanceMinor)}</td><td>{money(kinds[index].balanceMinor)}</td>
             </tr>
           ))}
         </tbody>
