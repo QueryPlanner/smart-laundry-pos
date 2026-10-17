@@ -59,7 +59,6 @@ type Destination = Page | 'lock';
 
 /** The words for the Back button of an order opened from `from`, or nothing for the order's own pages. */
 const originLabel = (from: Page): string | undefined => {
-  if (from === 'prints') return 'Print progress';
   if (from === 'orders') return 'Orders';
   return NAV_GROUPS.flatMap(group => group.sections).find(section => section.id === from)?.label;
 };
@@ -275,7 +274,6 @@ export const CounterApp = () => {
     if (destination === 'lock') { void logout(); return; }
     if (destination === 'order') { clearDraft(); setSaved(null); }
     if (destination === 'queue') void refreshJobs();
-    if (destination === 'prints') void refreshJobs((saved as CounterSavedOrder).orderId);
     setPage(destination);
   };
   /** Goes there at once, or asks first when it would walk away from an order that is being taken. */
