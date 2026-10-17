@@ -36,3 +36,15 @@ export const advanceProblem = (text: string, totalMinor: number): string | null 
   if (amountMinor > totalMinor) return ADVANCE_ABOVE_TOTAL;
   return null;
 };
+
+/**
+ * The advance to send with a save, in paise: 0 for "nothing now", and always 0 for an order with nothing to
+ * pay. It throws the explanation when the text cannot be sent, so an order is never saved quietly without
+ * the money the cashier typed.
+ */
+export const advanceToSend = (text: string, totalMinor: number): number => {
+  if (totalMinor === 0) return 0;
+  const problem = advanceProblem(text, totalMinor);
+  if (problem) throw new Error(problem);
+  return parsePaymentAmountMinor(text) as number;
+};

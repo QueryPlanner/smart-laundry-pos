@@ -35,13 +35,18 @@ interface PrintProgressProps {
   onReprintTags: () => void;
   onRetry: (job: CounterPrintJob) => void;
   onResume: (job: CounterPrintJob) => void;
+  /** Back to the order's page. */
+  onBack: () => void;
 }
 
 /** Print state of one order, with targeted reprints. */
-export const PrintProgress = ({ orderNumber, promisedAt, jobs, pieces, selected, onSelected, reprintBusy, onReprintBill, onReprintTags, onRetry, onResume }: PrintProgressProps) => {
+export const PrintProgress = ({ orderNumber, promisedAt, jobs, pieces, selected, onSelected, reprintBusy, onReprintBill, onReprintTags, onRetry, onResume, onBack }: PrintProgressProps) => {
   const [confirming, setConfirming] = useState<string | null>(null);
+  // Only tagged pieces have a tag to reprint; plain ironing gets none.
+  const taggedPieces = pieces.filter(piece => piece.tagged);
   return (
     <section className="counter-panel counter-status-page">
+      <div><Button variant="outline" onClick={onBack}>← Order</Button></div>
       <h1>{orderNumber} · Print progress</h1>
       <p>Ready by {istFormat.format(new Date(promisedAt))} IST</p>
       {jobs.map(job => (
@@ -66,9 +71,10 @@ export const PrintProgress = ({ orderNumber, promisedAt, jobs, pieces, selected,
       <div className="counter-targeted-reprint">
         <h2>Reprint saved output</h2>
         <Button variant="outline" disabled={reprintBusy} onClick={onReprintBill}>Reprint customer bill</Button>
+        {taggedPieces.length === 0 ? <p>No tags needed for this order.</p> : <>
         <p>Select only the physical pieces that need replacement tags. IDs and saved garment/service details are reused.</p>
         <div className="counter-piece-list">
-          {pieces.map(piece => (
+          {taggedPieces.map(piece => (
             <label key={piece.id}>
               <input
                 type="checkbox"
@@ -81,6 +87,7 @@ export const PrintProgress = ({ orderNumber, promisedAt, jobs, pieces, selected,
           ))}
         </div>
         <Button disabled={reprintBusy || selected.length === 0} onClick={onReprintTags}>Reprint selected tags ({selected.length})</Button>
+        </>}
       </div>
     </section>
   );

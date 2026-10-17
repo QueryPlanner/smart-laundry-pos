@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ADVANCE_ABOVE_TOTAL, ADVANCE_NOT_AMOUNT, advanceProblem, halfOf, parsePaymentAmountMinor, rupeesText } from './payment';
+import { ADVANCE_ABOVE_TOTAL, ADVANCE_NOT_AMOUNT, advanceProblem, advanceToSend, halfOf, parsePaymentAmountMinor, rupeesText } from './payment';
 
 describe('parsePaymentAmountMinor', () => {
   it('reads every paise amount from 0.00 to 1,000.00 exactly (no float rounding)', () => {
@@ -83,5 +83,25 @@ describe('advanceProblem', () => {
   it('refuses an advance above the total, including any advance when the total is zero', () => {
     expect(advanceProblem('12.01', 1200)).toBe(ADVANCE_ABOVE_TOTAL);
     expect(advanceProblem('0.01', 0)).toBe(ADVANCE_ABOVE_TOTAL);
+  });
+});
+
+describe('advanceToSend', () => {
+  it('turns what was typed into paise, and nothing typed into zero', () => {
+    expect(advanceToSend('', 10000)).toBe(0);
+    expect(advanceToSend('0', 10000)).toBe(0);
+    expect(advanceToSend('30', 10000)).toBe(3000);
+    expect(advanceToSend('100.50', 10050)).toBe(10050);
+  });
+
+  it('is always zero for an order with nothing to pay, whatever was typed before', () => {
+    expect(advanceToSend('30', 0)).toBe(0);
+    expect(advanceToSend('abc', 0)).toBe(0);
+  });
+
+  it('refuses, with the reason, text that is not an amount and an amount above the total', () => {
+    expect(() => advanceToSend('12.345', 10000)).toThrow(ADVANCE_NOT_AMOUNT);
+    expect(() => advanceToSend('abc', 10000)).toThrow(ADVANCE_NOT_AMOUNT);
+    expect(() => advanceToSend('100.01', 10000)).toThrow(ADVANCE_ABOVE_TOTAL);
   });
 });
