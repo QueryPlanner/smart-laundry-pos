@@ -103,26 +103,20 @@ async fn marker_value(state: &DatabaseState, key: &str) -> Option<String> {
         .map(str::to_string)
 }
 
+/// Builds a database file at `version` by running the real migration steps in order, so fixtures
+/// can never drift from what the app itself creates.
 async fn create_schema_file(path: &Path, version: i64) {
     let pool = connect_writer_pool(path, false, 1)
         .await
         .expect("temporary schema database should open");
     let mut connection = pool.acquire().await.expect("connection should open");
-    sqlx::raw_sql(MIGRATION_SQL)
-        .execute(&mut *connection)
-        .await
-        .expect("initial migration should create the schema");
-    if version >= 2 {
-        sqlx::raw_sql(MIGRATION_V2_SQL)
-            .execute(&mut *connection)
-            .await
-            .expect("v2 migration should add counter data");
-    }
-    if version >= 3 {
-        sqlx::raw_sql(MIGRATION_V3_SQL)
-            .execute(&mut *connection)
-            .await
-            .expect("v3 migration should add the default rate card");
+    for &(step, sql, name) in MIGRATION_STEPS {
+        if step <= version {
+            sqlx::raw_sql(sql)
+                .execute(&mut *connection)
+                .await
+                .unwrap_or_else(|error| panic!("the {name} fixture should apply: {error}"));
+        }
     }
     sqlx::query(&format!("PRAGMA user_version = {version}"))
         .execute(&mut *connection)
@@ -132,6 +126,8 @@ async fn create_schema_file(path: &Path, version: i64) {
     pool.close().await;
 }
 
+/// Like `create_schema_file`, but the version 1 tables come from `schema` (a deliberately altered
+/// copy of the migration); the later steps still come from the real migrations.
 async fn create_schema_file_from_sql(path: &Path, schema: &str, version: i64) {
     let pool = connect_writer_pool(path, false, 1)
         .await
@@ -140,17 +136,13 @@ async fn create_schema_file_from_sql(path: &Path, schema: &str, version: i64) {
         .execute(&pool)
         .await
         .expect("fixture schema should execute");
-    if version >= 2 {
-        sqlx::raw_sql(MIGRATION_V2_SQL)
-            .execute(&pool)
-            .await
-            .expect("v2 fixture migration should execute");
-    }
-    if version >= 3 {
-        sqlx::raw_sql(MIGRATION_V3_SQL)
-            .execute(&pool)
-            .await
-            .expect("v3 fixture migration should execute");
+    for &(step, sql, name) in MIGRATION_STEPS.iter().filter(|(step, _, _)| *step >= 2) {
+        if step <= version {
+            sqlx::raw_sql(sql)
+                .execute(&pool)
+                .await
+                .unwrap_or_else(|error| panic!("the {name} fixture should apply: {error}"));
+        }
     }
     sqlx::query(&format!("PRAGMA user_version = {version}"))
         .execute(&pool)
@@ -326,15 +318,20 @@ fn fresh_database_migrates_seeds_and_repairs_device_identifier_once() {
 fn version_zero_complete_legacy_database_migrates_without_losing_rows() {
     tauri::async_runtime::block_on(async {
         let temporary = TempDatabase::new();
-        let state = open(&temporary.path).await;
-        seed_marker(&state, "legacy-marker", "keep-me").await;
-        let mut connection = state.pools().unwrap().writer.acquire().await.unwrap();
-        sqlx::query("PRAGMA user_version = 0")
-            .execute(&mut *connection)
+        // A complete version 3 schema whose version was never recorded: its user_version is 0.
+        create_schema_file(&temporary.path, 3).await;
+        let setup = connect_writer_pool(&temporary.path, false, 1)
             .await
             .unwrap();
-        drop(connection);
-        drop(state);
+        sqlx::query("INSERT INTO app_settings(key,value,updated_at) VALUES('legacy-marker','keep-me',CURRENT_TIMESTAMP)")
+            .execute(&setup)
+            .await
+            .unwrap();
+        sqlx::query("PRAGMA user_version = 0")
+            .execute(&setup)
+            .await
+            .unwrap();
+        setup.close().await;
 
         let migrated = open(&temporary.path).await;
         assert_eq!(migrated.info().error, None);
@@ -444,8 +441,8 @@ fn upgrading_a_v1_database_first_keeps_a_verified_copy_that_pruning_never_remove
             .fetch_one(&copy)
             .await
             .unwrap();
-        assert!(
-            old_version < SCHEMA_VERSION,
+        assert_eq!(
+            old_version, 1,
             "the copy is the original v1 database, not the upgraded one"
         );
         let marker: String =
@@ -730,6 +727,429 @@ fn a_database_with_counter_tables_but_no_recorded_version_is_upgraded_and_copied
         assert_eq!(user_version(&copy).await, 0);
         assert_eq!(garment_count(&copy).await, 19);
         copy.close().await;
+    });
+}
+
+const RECEIVED_AT: &str = "2026-10-01T10:00:00+05:30";
+const LATER_AT: &str = "2026-10-03T18:30:00+05:30";
+
+/// One order received at `RECEIVED_AT` with two pieces, an advance recorded at the moment it was
+/// received, and a settlement recorded later. Uses only columns that exist from version 2 on, so
+/// it works on a version 3 file and on a version 4 file alike; the advance is then labelled by
+/// the version 4 backfill, or by the test itself.
+async fn seed_order_with_payments(pool: &SqlitePool) {
+    sqlx::query("INSERT INTO local_users(id,full_name,pin_hash,pin_salt,role,created_at,updated_at) VALUES('staff-1','Staff','hash','salt','admin',?,?)")
+        .bind(RECEIVED_AT)
+        .bind(RECEIVED_AT)
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO orders(id,order_number,customer_name,customer_phone,order_type,received_at,created_by,created_at,updated_at,origin_device_id) VALUES('order-1','LA-2026-00001','Asha','9800000001','piece',?,'staff-1',?,?,'device-1')")
+        .bind(RECEIVED_AT)
+        .bind(RECEIVED_AT)
+        .bind(RECEIVED_AT)
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO order_items(id,order_id,item_name,service_name,service_type,created_at) VALUES('item-1','order-1','Shirt','Wash','piece',?)")
+        .bind(RECEIVED_AT)
+        .execute(pool)
+        .await
+        .unwrap();
+    for position in [1, 2] {
+        sqlx::query("INSERT INTO order_pieces(id,short_id,order_id,order_item_id,garment_snapshot,service_snapshot,position,total,created_at) VALUES(?,?,'order-1','item-1','{}','{}',?,2,?)")
+            .bind(format!("piece-{position}"))
+            .bind(format!("2610010001-{position}"))
+            .bind(position)
+            .bind(RECEIVED_AT)
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+    for (id, amount, method, at) in [
+        ("pay-advance", 40.0, "cash", RECEIVED_AT),
+        ("pay-later", 60.0, "upi", LATER_AT),
+    ] {
+        sqlx::query("INSERT INTO payments(id,order_id,amount,method,recorded_at,recorded_by,created_at,updated_at,origin_device_id) VALUES(?,'order-1',?,?,?,'staff-1',?,?,'device-1')")
+            .bind(id)
+            .bind(amount)
+            .bind(method)
+            .bind(at)
+            .bind(at)
+            .bind(at)
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+    sqlx::query("INSERT INTO app_settings (key, value, updated_at) VALUES ('shop-marker', 'kept', CURRENT_TIMESTAMP)")
+        .execute(pool)
+        .await
+        .unwrap();
+}
+
+async fn seed_v3_database(path: &Path) {
+    create_schema_file(path, 3).await;
+    let pool = connect_writer_pool(path, false, 1).await.unwrap();
+    seed_order_with_payments(&pool).await;
+    pool.close().await;
+}
+
+async fn table_exists_in(pool: &SqlitePool, table: &str) -> bool {
+    sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?",
+    )
+    .bind(table)
+    .fetch_one(pool)
+    .await
+    .unwrap()
+        == 1
+}
+
+async fn column_exists_in(pool: &SqlitePool, table: &str, column: &str) -> bool {
+    sqlx::query_scalar::<_, i64>(&format!(
+        "SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = ?"
+    ))
+    .bind(column)
+    .fetch_one(pool)
+    .await
+    .unwrap()
+        == 1
+}
+
+#[test]
+fn the_migration_steps_are_numbered_in_order_and_the_last_is_the_schema_version() {
+    let numbers = MIGRATION_STEPS
+        .iter()
+        .map(|(number, _, _)| *number)
+        .collect::<Vec<_>>();
+    assert_eq!(numbers, (1..=SCHEMA_VERSION).collect::<Vec<_>>());
+    assert_eq!(
+        MIGRATION_STEPS.last().map(|(number, _, _)| *number),
+        Some(SCHEMA_VERSION)
+    );
+}
+
+#[test]
+fn a_v3_database_is_upgraded_to_v4_and_its_orders_and_payments_are_kept() {
+    tauri::async_runtime::block_on(async {
+        let temporary = TempDatabase::new();
+        seed_v3_database(&temporary.path).await;
+
+        let upgraded = open(&temporary.path).await;
+        assert_eq!(upgraded.info().error, None);
+        let pool = &upgraded.pools().unwrap().writer;
+        assert_eq!(user_version(pool).await, 4);
+        assert!(table_exists_in(pool, "order_day_sequences").await);
+
+        let pieces: Vec<(String, i64)> =
+            sqlx::query_as("SELECT id, tagged FROM order_pieces ORDER BY id")
+                .fetch_all(pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            pieces,
+            vec![("piece-1".to_string(), 1), ("piece-2".to_string(), 1)],
+            "every existing piece stays tagged"
+        );
+
+        let payments: Vec<(String, String, f64)> =
+            sqlx::query_as("SELECT id, kind, amount FROM payments ORDER BY id")
+                .fetch_all(pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            payments,
+            vec![
+                ("pay-advance".to_string(), "advance".to_string(), 40.0),
+                ("pay-later".to_string(), "settlement".to_string(), 60.0),
+            ],
+            "a payment recorded when the order was received is an advance; later ones are settlements"
+        );
+
+        let order: (String, String, String) = sqlx::query_as(
+            "SELECT order_number, received_at, status FROM orders WHERE id = 'order-1'",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            order,
+            (
+                "LA-2026-00001".to_string(),
+                RECEIVED_AT.to_string(),
+                "received".to_string()
+            )
+        );
+        assert_eq!(
+            marker_value(&upgraded, "shop-marker").await.as_deref(),
+            Some("kept")
+        );
+        let item_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM order_items")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        assert_eq!(item_count, 1);
+    });
+}
+
+#[test]
+fn a_v3_database_keeps_a_verified_v3_copy_before_the_v4_upgrade() {
+    tauri::async_runtime::block_on(async {
+        let temporary = TempDatabase::new();
+        seed_v3_database(&temporary.path).await;
+
+        let upgraded = open(&temporary.path).await;
+        assert_eq!(upgraded.info().error, None);
+        drop(upgraded);
+
+        let copies = pre_upgrade_copies_for(&temporary.directory, 3);
+        assert_eq!(
+            copies.len(),
+            1,
+            "exactly one v3 safety copy before the upgrade"
+        );
+        validate_database(&copies[0])
+            .await
+            .expect("the copy is a complete v3 database and validates as one");
+        let copy = connect_reader_pool(&copies[0], 1).await.unwrap();
+        assert_eq!(user_version(&copy).await, 3);
+        assert!(!table_exists_in(&copy, "order_day_sequences").await);
+        assert!(!column_exists_in(&copy, "payments", "kind").await);
+        assert!(!column_exists_in(&copy, "order_pieces", "tagged").await);
+        let copy_marker: String =
+            sqlx::query_scalar("SELECT value FROM app_settings WHERE key = 'shop-marker'")
+                .fetch_one(&copy)
+                .await
+                .unwrap();
+        assert_eq!(copy_marker, "kept");
+        copy.close().await;
+    });
+}
+
+#[test]
+fn older_backups_can_be_restored_and_upgrade_to_v4_on_the_next_start() {
+    tauri::async_runtime::block_on(async {
+        for version in [2, 3] {
+            let live = TempDatabase::new();
+            let source = TempDatabase::new();
+            create_database_with_marker(&live.path, "original").await;
+            create_schema_file(&source.path, version).await;
+            let setup = connect_writer_pool(&source.path, false, 1).await.unwrap();
+            seed_order_with_payments(&setup).await;
+            setup.close().await;
+
+            let live_state = open(&live.path).await;
+            let message = live_state
+                .restore_database(source.path.to_string_lossy().to_string())
+                .apply()
+                .await
+                .unwrap_or_else(|error| {
+                    panic!("a v{version} backup should pass validation and stage: {error}")
+                });
+            assert!(message.contains("Close and reopen"), "{message}");
+            drop(live_state);
+
+            let restored = open(&live.path).await;
+            assert_eq!(restored.info().error, None, "v{version} backup");
+            assert!(!restored.info().restore_pending);
+            let pool = &restored.pools().unwrap().writer;
+            assert_eq!(user_version(pool).await, 4, "v{version} backup");
+            assert!(table_exists_in(pool, "order_day_sequences").await);
+            let advance_kind: String =
+                sqlx::query_scalar("SELECT kind FROM payments WHERE id = 'pay-advance'")
+                    .fetch_one(pool)
+                    .await
+                    .unwrap();
+            assert_eq!(advance_kind, "advance", "v{version} backup");
+            assert_eq!(
+                marker_value(&restored, "shop-marker").await.as_deref(),
+                Some("kept")
+            );
+            assert_eq!(
+                marker_value(&restored, "restore-marker").await,
+                None,
+                "the replaced database's own data is gone"
+            );
+        }
+    });
+}
+
+#[test]
+fn a_v4_backup_can_be_taken_and_restored_with_its_advance_and_tag_data() {
+    tauri::async_runtime::block_on(async {
+        let source = TempDatabase::new();
+        let live = TempDatabase::new();
+        create_database_with_marker(&live.path, "original").await;
+
+        let source_state = open(&source.path).await;
+        let source_pool = &source_state.pools().unwrap().writer;
+        seed_order_with_payments(source_pool).await;
+        sqlx::query("UPDATE payments SET kind = 'advance' WHERE id = 'pay-advance'")
+            .execute(source_pool)
+            .await
+            .unwrap();
+        let backup = source_state.backup_database().await.unwrap();
+        let backup_path = PathBuf::from(&backup);
+        validate_database(&backup_path)
+            .await
+            .expect("a v4 backup should pass full validation");
+        drop(source_state);
+
+        let live_state = open(&live.path).await;
+        live_state
+            .restore_database(backup_path.to_string_lossy().to_string())
+            .apply()
+            .await
+            .expect("a v4 backup should stage");
+        drop(live_state);
+
+        let restored = open(&live.path).await;
+        assert_eq!(restored.info().error, None);
+        let pool = &restored.pools().unwrap().writer;
+        assert_eq!(user_version(pool).await, 4);
+        let kinds: Vec<(String, String)> =
+            sqlx::query_as("SELECT id, kind FROM payments ORDER BY id")
+                .fetch_all(pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            kinds,
+            vec![
+                ("pay-advance".to_string(), "advance".to_string()),
+                ("pay-later".to_string(), "settlement".to_string()),
+            ]
+        );
+        let tags: Vec<i64> = sqlx::query_scalar("SELECT tagged FROM order_pieces ORDER BY id")
+            .fetch_all(pool)
+            .await
+            .unwrap();
+        assert_eq!(tags, vec![1, 1]);
+    });
+}
+
+#[test]
+fn a_database_from_a_newer_app_is_refused_and_its_file_is_left_unchanged() {
+    tauri::async_runtime::block_on(async {
+        let temporary = TempDatabase::new();
+        let newer = SCHEMA_VERSION + 1;
+        create_schema_file(&temporary.path, newer).await;
+        let before = fs::read(&temporary.path).unwrap();
+
+        let refused = open(&temporary.path).await;
+        assert_eq!(
+            refused.info().error,
+            Some(unsupported_schema_version(newer)),
+            "the newer file gets the unsupported-version message"
+        );
+        drop(refused);
+
+        assert_eq!(
+            fs::read(&temporary.path).unwrap(),
+            before,
+            "a newer database must not be modified"
+        );
+        assert!(
+            !temporary.directory.join("backups").exists(),
+            "no safety copy is made for a file this app does not upgrade"
+        );
+    });
+}
+
+#[test]
+fn a_database_claiming_version_four_without_the_version_four_tables_is_refused() {
+    tauri::async_runtime::block_on(async {
+        let temporary = TempDatabase::new();
+        create_schema_file(&temporary.path, 3).await;
+        let setup = connect_writer_pool(&temporary.path, false, 1)
+            .await
+            .unwrap();
+        sqlx::query("PRAGMA user_version = 4")
+            .execute(&setup)
+            .await
+            .unwrap();
+        setup.close().await;
+
+        let refused = open(&temporary.path).await;
+        let error = refused
+            .info()
+            .error
+            .expect("a version 4 file without the version 4 tables must not open");
+        assert!(
+            error.contains("missing table order_day_sequences"),
+            "{error}"
+        );
+    });
+}
+
+#[test]
+fn version_four_check_constraints_reject_unknown_payment_kinds_and_tag_values() {
+    tauri::async_runtime::block_on(async {
+        let temporary = TempDatabase::new();
+        let state = open(&temporary.path).await;
+        let pool = &state.pools().unwrap().writer;
+        seed_order_with_payments(pool).await;
+
+        let bad_kind = sqlx::query("UPDATE payments SET kind = 'bogus' WHERE id = 'pay-advance'")
+            .execute(pool)
+            .await
+            .expect_err("payments.kind must reject values other than advance and settlement");
+        assert!(
+            bad_kind.to_string().contains("CHECK constraint failed"),
+            "{bad_kind}"
+        );
+
+        let bad_tag = sqlx::query("UPDATE order_pieces SET tagged = 2 WHERE id = 'piece-1'")
+            .execute(pool)
+            .await
+            .expect_err("order_pieces.tagged must be 0 or 1");
+        assert!(
+            bad_tag.to_string().contains("CHECK constraint failed"),
+            "{bad_tag}"
+        );
+
+        let kind: String = sqlx::query_scalar("SELECT kind FROM payments WHERE id = 'pay-advance'")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        assert_eq!(kind, "settlement", "the rejected update changed nothing");
+        let tag: i64 = sqlx::query_scalar("SELECT tagged FROM order_pieces WHERE id = 'piece-1'")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        assert_eq!(tag, 1, "the rejected update changed nothing");
+    });
+}
+
+#[test]
+fn day_sequences_hand_out_consecutive_numbers_for_each_day() {
+    tauri::async_runtime::block_on(async {
+        let temporary = TempDatabase::new();
+        let state = open(&temporary.path).await;
+        let pool = &state.pools().unwrap().writer;
+
+        // The same statement a bill number allocation runs: insert 2 on a new day, otherwise add
+        // one; the number handed out is next_number - 1.
+        let allocate = |day: &'static str| async move {
+            sqlx::query("INSERT INTO order_day_sequences (day, next_number) VALUES (?, 2) ON CONFLICT(day) DO UPDATE SET next_number = next_number + 1")
+                .bind(day)
+                .execute(pool)
+                .await
+                .unwrap();
+            sqlx::query_scalar::<_, i64>(
+                "SELECT next_number - 1 FROM order_day_sequences WHERE day = ?",
+            )
+            .bind(day)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+        };
+        assert_eq!(allocate("20261017").await, 1);
+        assert_eq!(allocate("20261017").await, 2);
+        assert_eq!(
+            allocate("20261018").await,
+            1,
+            "a new shop day starts again at 1"
+        );
     });
 }
 
@@ -2412,10 +2832,12 @@ fn restore_schema_normalization_accepts_ignored_comments_case_and_whitespace() {
             .execute(&pool)
             .await
             .expect("case, comments, and spacing should be accepted by SQLite");
-        sqlx::raw_sql(MIGRATION_V2_SQL)
-            .execute(&pool)
-            .await
-            .expect("v2 schema should be added");
+        for &(_, sql, name) in MIGRATION_STEPS.iter().filter(|(step, _, _)| *step >= 2) {
+            sqlx::raw_sql(sql)
+                .execute(&pool)
+                .await
+                .unwrap_or_else(|error| panic!("the {name} step should apply: {error}"));
+        }
         sqlx::query(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))
             .execute(&pool)
             .await
