@@ -645,3 +645,120 @@ All colors MUST be HSL.
 .counter-staff-list{display:grid}
 .counter-printer-settings{flex-wrap:wrap}
 /* --- end Visual QA fixes --- */
+
+/* --- Orders / Pickup, order detail and payment (components/localCounter/orders, OrderSummary) --- */
+/* Touch targets: 48px minimum height. Button sizes set a fixed height (h-9/h-10/h-11), so those release to min-height. */
+.counter-touch{min-height:48px;padding-left:16px;padding-right:16px;font-size:15px}
+.counter-touch.h-9,.counter-touch.h-10,.counter-touch.h-11{height:auto}
+.counter-touch.w-10{width:48px;padding-left:0;padding-right:0}
+/* Toggle buttons (aria-pressed) look like filter chips. The selected one is filled dark with bold white text,
+   so the selected state does not depend on colour alone. */
+.counter-touch[aria-pressed]{display:inline-flex;align-items:center;gap:6px;border:1px solid #cddbd4;border-radius:999px;background:#fff;padding:8px 16px;font-weight:650;color:#34483f;cursor:pointer;transition:background-color .15s,border-color .15s,color .15s}
+.counter-touch[aria-pressed=true]{background:#14694d;border-color:#14694d;color:#fff;font-weight:800;box-shadow:inset 0 0 0 1px #0d4f38}
+/* Quick-amount buttons in the order summary have no toggle state: style them as outline buttons. */
+.counter-payment button.counter-touch:not([aria-pressed]){border:1px solid #cddbd4;border-radius:9px;background:#fff;color:#24694f;font-weight:650;cursor:pointer}
+.counter-payment button.counter-touch:not([aria-pressed]):disabled{opacity:.4;cursor:not-allowed}
+@media (prefers-reduced-motion:reduce){.counter-touch[aria-pressed]{transition:none}}
+/* Keyboard focus is always visible on the new controls: 2px outline in the theme's dark ring colour. */
+.counter-touch:focus-visible,.counter-page :is(button,input):focus-visible,.counter-order-detail :is(button,input,textarea):focus-visible,.counter-stepper-panel button:focus-visible,.counter-money :is(button,input,textarea):focus-visible,.counter-payment button:focus-visible{outline:2px solid hsl(var(--ring));outline-offset:2px}
+
+/* Filter segments (Ready, Balance due, Overdue, ...) sit on one wrapping row. */
+.counter-segments{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.counter-segment-count{display:inline-block;min-width:1.75em;padding:1px 7px;border-radius:999px;background:#eef4f1;color:#1c2a25;font-size:13px;font-weight:750;text-align:center;font-variant-numeric:tabular-nums}
+.counter-touch[aria-pressed=true] .counter-segment-count{background:#fff;color:#14694d}
+.counter-search-mode{display:flex;flex-wrap:wrap;align-items:center;gap:10px 14px;padding:10px 14px;border:1px solid #d7e4dd;border-radius:10px;background:#f1f8f5;color:#34483f;font-weight:650;font-size:14px}
+.counter-search-hint{margin:0;color:#5f6f68;font-size:13px}
+.counter-load-more{display:flex;justify-content:center}
+
+/* Order list: one row per order. Wide: head, customer, money and the action button on one line.
+   Narrower: the action button moves to a third column, then the row stacks with the action last. */
+.counter-order-list{display:grid;gap:10px;margin:0;padding:0;list-style:none}
+.counter-order-row{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1.3fr) minmax(0,1fr) auto;grid-template-areas:"head customer money action" "match match match action";align-items:center;gap:8px 18px;padding:14px 16px;border:1px solid #e1e9e5;border-radius:12px;background:#fff;box-shadow:0 4px 18px #152b2310}
+.counter-order-head{grid-area:head;display:flex;flex-wrap:wrap;align-items:center;gap:8px;min-width:0}
+.counter-order-head .counter-badge{gap:4px}
+.counter-order-head svg{width:14px;height:14px;flex:none}
+.counter-order-customer{grid-area:customer;display:grid;gap:2px;min-width:0}
+.counter-order-customer strong{font-size:15px;color:#1c2a25;overflow-wrap:anywhere}
+.counter-order-customer span{font-size:13px;color:#5f6f68;overflow-wrap:anywhere}
+.counter-order-money{grid-area:money;display:grid;gap:6px;justify-items:start;min-width:0}
+.counter-order-money>span:first-child{font-size:13px;color:#5f6f68}
+.counter-match-reason{grid-area:match;font-size:12px;font-weight:650;color:#4f6159}
+.counter-order-row>.counter-touch{grid-area:action;justify-self:end;min-width:9.5rem}
+@media (max-width:1100px){.counter-order-row{grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto;grid-template-areas:"head customer action" "money money action" "match match action"}}
+@media (max-width:900px){.counter-order-row{grid-template-columns:minmax(0,1fr);grid-template-areas:"head" "customer" "money" "match" "action"}.counter-order-row>.counter-touch{justify-self:stretch;min-width:0}}
+
+/* Bill number: the date part (first 8 digits) small and muted, the sequence (last 4 digits) large and bold, on one baseline. */
+.counter-bill-number{display:inline-flex;align-items:baseline;gap:1px;color:#1c2a25;font-size:16px;font-weight:700;font-variant-numeric:tabular-nums;white-space:nowrap}
+.counter-bill-small{font-size:12px;font-weight:500;letter-spacing:.04em;color:#5f6f68}
+.counter-bill-large{font-size:24px;font-weight:800;color:#1c2a25}
+
+/* Money chips: the text states the money state; the border style and weight add a second cue besides colour.
+   Balance due is dashed; cancelled has a heavier border. Colours are the .counter-badge palette (all at least 4.5:1). */
+.counter-money-chip{display:inline-flex;align-items:center;gap:6px;padding:4px 11px;border:1px solid #cfd6dd;border-radius:999px;background:#eef1f4;color:#3e4a54;font-size:13px;font-weight:700;white-space:nowrap}
+.counter-money-chip svg{width:15px;height:15px;flex:none}
+.counter-money-chip.good{background:#e4f5ec;color:#176344;border-color:#a9dcc3}
+.counter-money-chip.warn{background:#fff3d6;color:#7a5200;border-color:#e8c97a;border-style:dashed;font-weight:800}
+.counter-money-chip.bad{background:#fff0ed;color:#9a3e2f;border:2px solid #d98a7b;padding:3px 10px;font-weight:800}
+
+/* Order detail: heading block, then stage stepper, money and the rarer actions. */
+.counter-order-detail{display:grid;gap:14px;min-width:0}
+.counter-order-detail>p{margin:0;color:#34483f;font-size:14px}
+.counter-order-detail>p[role=status] svg{width:18px;height:18px;vertical-align:-4px;color:#176344}
+.counter-detail-head{display:flex;flex-wrap:wrap;align-items:flex-start;gap:12px 18px}
+.counter-detail-head>div{flex:1 1 280px;display:grid;gap:4px;min-width:0}
+.counter-detail-head h1{margin:0;font-size:24px;font-weight:700;color:#1c2a25;overflow-wrap:anywhere}
+.counter-detail-head p{margin:0;color:#5f6f68;font-size:14px}
+/* Cancelled: heavy frame and thick left bar, uppercase title. Distinct from the balance banner. */
+.counter-cancelled-banner{display:grid;gap:4px;padding:14px 16px 14px 20px;border:2px solid #9a3e2f;border-left-width:10px;border-radius:12px;background:#fff0ed;color:#7a2c20}
+.counter-cancelled-banner strong{font-size:18px;font-weight:800;text-transform:uppercase;letter-spacing:.06em}
+.counter-cancelled-banner p{margin:0;font-size:15px;font-weight:600}
+
+/* Stage stepper: a wrapping horizontal list. Done = check mark and the word Done; current = bold, underlined, framed;
+   upcoming = plain and muted. The three states differ by shape and text as well as colour. */
+.counter-stepper-panel{display:grid;gap:14px;padding:16px;border:1px solid #e1e9e5;border-radius:16px;background:#fff;box-shadow:0 4px 18px #152b2310}
+.counter-stepper{display:flex;flex-wrap:wrap;gap:8px;margin:0;padding:0;list-style:none}
+.counter-stepper li{flex:1 1 130px;display:grid;gap:4px;align-content:start;padding:10px 12px;border:1px solid #dfe7e3;border-radius:10px;background:#f8faf9;color:#5f6f68;font-size:14px;font-weight:500}
+.counter-stepper li:has(.counter-stage-done){background:#eff7f3;border-color:#a9dcc3;color:#1c2a25;font-weight:600}
+.counter-stepper li[aria-current=step]{background:#fff;border:2px solid #14694d;padding:9px 11px;color:#1c2a25;font-weight:800}
+.counter-stepper li[aria-current=step]>span:first-child{text-decoration:underline;text-decoration-thickness:2px;text-underline-offset:5px}
+.counter-stage-done{display:inline-flex;align-items:center;gap:4px;font-size:12px;font-weight:750;color:#176344}
+.counter-stage-done svg{width:14px;height:14px;flex:none}
+.counter-stepper-actions{display:flex;flex-wrap:wrap;gap:10px}
+.counter-stepper-panel>div[role=group]{display:flex;flex-wrap:wrap;align-items:center;gap:10px}
+.counter-stepper-panel>div[role=group] p{flex-basis:100%;margin:0;color:#34483f;font-size:14px;font-weight:650}
+
+/* Money panel: banner first, then totals, payment history and the receive form. */
+.counter-money{display:grid;gap:12px;min-width:0;padding:16px 18px;border:1px solid #e1e9e5;border-radius:16px;background:#fff;box-shadow:0 4px 18px #152b2310}
+.counter-money.compact{gap:10px;padding:12px 14px;box-shadow:none}
+.counter-money>div:not(.counter-money-banner):not(.counter-money-form){display:flex;justify-content:space-between;align-items:baseline;gap:12px;font-size:14px}
+.counter-money>div:not(.counter-money-banner):not(.counter-money-form)>span{color:#5f6f68}
+.counter-money>div:not(.counter-money-banner):not(.counter-money-form)>strong{font-size:16px;color:#1c2a25;font-variant-numeric:tabular-nums}
+.counter-money>p{margin:0;color:#5f6f68;font-size:14px}
+.counter-money h3{margin:4px 0 0;font-size:15px;font-weight:700;color:#1c2a25}
+.counter-money ul{margin:0;padding:0;list-style:none}
+.counter-money li{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 12px;padding:8px 0;border-bottom:1px solid #edf1ef;color:#34483f;font-size:14px}
+.counter-money li:last-child{border-bottom:0}
+.counter-money li>strong{margin-left:auto;color:#1c2a25;font-variant-numeric:tabular-nums}
+.counter-money li>small{flex-basis:100%;color:#5f6f68;font-size:12px}
+/* Balance banner: large text in a bordered box with the icon aligned to the text. */
+.counter-money-banner{display:flex;align-items:center;gap:12px;padding:16px 18px;border:2px solid #b7c8c0;border-radius:14px;background:#f8fbfa;color:#1c2a25;font-size:20px;line-height:1.3}
+.counter-money-banner svg{width:28px;height:28px;flex:none}
+.counter-money-banner strong{font-size:20px;font-weight:800}
+.counter-money.compact .counter-money-banner{padding:12px 14px;font-size:17px}
+.counter-money.compact .counter-money-banner strong{font-size:17px}
+.counter-money-form{display:grid;gap:10px;padding-top:14px;border-top:1px dashed #cddbd4}
+.counter-money-form label{font-weight:600;font-size:13px;color:#4f6159}
+.counter-money-form input{height:44px;border:1px solid #cddbd4;border-radius:9px;padding:0 11px;background:#fff;font-size:16px}
+.counter-money-form>button[aria-pressed]{justify-self:start}
+.counter-money-form>button:last-child{width:100%}
+
+/* More actions: a disclosure whose panel holds the rarer actions. The cancel confirmation is a labelled group. */
+.counter-more-actions{display:grid;gap:10px;justify-items:start;min-width:0}
+.counter-more-panel{display:grid;gap:10px;justify-items:start;width:min(100%,560px);padding:14px;border:1px solid #dce7e1;border-radius:12px;background:#f9fbfa}
+.counter-more-panel>p,.counter-more-panel [role=group]>p{margin:0;color:#4f6159;font-size:13px;line-height:1.5}
+.counter-more-panel [role=group]{display:grid;gap:10px;justify-items:start;width:100%;padding-top:12px;border-top:1px dashed #cddbd4}
+.counter-more-panel textarea{width:100%;min-height:84px;padding:10px 11px;border:1px solid #cddbd4;border-radius:9px;background:#fff;font:inherit;color:#202d29}
+.counter-more-panel [role=alert]{margin:0;color:#9a3e2f;font-size:13px;font-weight:650}
+/* The destructive button's default colour is too light for white text; this darker red passes AA. */
+.counter-more-panel [role=group] button[class*="bg-destructive"]{background:#9a3e2f;color:#fff}
+/* --- end Orders / Pickup --- */
