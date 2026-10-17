@@ -3,6 +3,7 @@ import React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { CounterApp } from './CounterApp';
+import { ADVANCE_ABOVE_TOTAL, ADVANCE_NOT_AMOUNT } from '@/lib/localFirst/payment';
 import type { CounterAccount, CounterCatalogue, CounterOrderInput, CounterOrderSummary, CounterPiece, CounterPrintJob, CounterSavedOrder } from '@/lib/localFirst/counter';
 
 const api = vi.hoisted(() => ({
@@ -60,6 +61,9 @@ const openOrdersAndFirstOrder = async (results = [summary(1)]) => {
   fireEvent.click(screen.getAllByRole('button', { name: 'Open order' })[0]);
   await screen.findByText(`${results[0].orderNumber} · Order details`);
 };
+const saveButton = () => screen.getByRole('button', { name: 'Save & Print' }) as HTMLButtonElement;
+const advanceInput = () => screen.getByLabelText('Advance received now') as HTMLInputElement;
+const saveNow = () => fireEvent.click(screen.getByRole('button', { name: 'Save & Print' }));
 const startOrder = async () => {
   fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Rita Joshi' } });
   fireEvent.click(screen.getByRole('button', { name: 'Add Shirt' }));
@@ -223,26 +227,76 @@ describe('taking and saving an order', () => {
     expect(screen.getAllByText('Waiting to print').length).toBe(2);
   });
 
-  it('collects the full discounted amount and sends no payment when nothing is due', async () => {
+  it('sends no payment when nothing is paid now, including after an advance was typed and cleared', async () => {
+    await signIn();
+    await startOrder();
+    fireEvent.change(advanceInput(), { target: { value: '50' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Nothing now' }));
+    expect(advanceInput().value).toBe('');
+    saveNow();
+    await waitFor(() => expect(api.saveCounterOrder).toHaveBeenCalledTimes(1));
+    expect(api.saveCounterOrder.mock.calls[0][0]).not.toHaveProperty('payment');
+  });
+
+  it('sends the advance in rupees as paise with the method chosen, and nothing else', async () => {
+    await signIn();
+    api.quoteCounterOrder.mockImplementation(async (input: CounterOrderInput) => quoteFor(input, 20000));
+    await startOrder();
+    fireEvent.change(advanceInput(), { target: { value: '100.50' } });
+    fireEvent.click(screen.getByRole('button', { name: 'UPI' }));
+    expect(screen.getByText('Balance to pay at pickup ₹99.50')).toBeTruthy();
+    saveNow();
+    await waitFor(() => expect(api.saveCounterOrder).toHaveBeenCalledTimes(1));
+    expect(api.saveCounterOrder.mock.calls[0][0].payment).toEqual({ amountMinor: 10050, method: 'upi' });
+  });
+
+  it('fills the advance with half of the total when Half is chosen, then saves that amount', async () => {
     await signIn();
     api.quoteCounterOrder.mockImplementation(async (input: CounterOrderInput) => quoteFor(input, 1800));
     await startOrder();
-    fireEvent.change(screen.getByLabelText('Paid by'), { target: { value: 'upi' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Save & Print' }));
-    await waitFor(() => expect(api.saveCounterOrder).toHaveBeenCalledWith(expect.objectContaining({ payment: { amountMinor: 1800, method: 'upi' } })));
-    cleanup();
-    vi.clearAllMocks();
-    api.getCounterCatalogue.mockResolvedValue(catalogue);
-    api.searchCounterCustomers.mockResolvedValue([]);
-    api.listPrintJobs.mockResolvedValue([]);
-    api.dispatchPrintJobs.mockResolvedValue([]);
-    api.saveCounterOrder.mockResolvedValue(savedOrder({ totalMinor: 0, paidMinor: 0, balanceMinor: 0 }));
-    api.quoteCounterOrder.mockImplementation(async (input: CounterOrderInput) => quoteFor(input, 0));
+    fireEvent.click(screen.getByRole('button', { name: 'Half' }));
+    expect(advanceInput().value).toBe('9.00');
+    saveNow();
+    await waitFor(() => expect(api.saveCounterOrder).toHaveBeenCalledTimes(1));
+    expect(api.saveCounterOrder.mock.calls[0][0].payment).toEqual({ amountMinor: 900, method: 'cash' });
+  });
+
+  it('fills the advance with the whole total when Full is chosen, then saves that amount', async () => {
+    await signIn();
+    api.quoteCounterOrder.mockImplementation(async (input: CounterOrderInput) => quoteFor(input, 1800));
+    await startOrder();
+    fireEvent.click(screen.getByRole('button', { name: 'Full' }));
+    expect(advanceInput().value).toBe('18.00');
+    saveNow();
+    await waitFor(() => expect(api.saveCounterOrder).toHaveBeenCalledTimes(1));
+    expect(api.saveCounterOrder.mock.calls[0][0].payment).toEqual({ amountMinor: 1800, method: 'cash' });
+  });
+
+  it('blocks Save while the advance is not an amount or is more than the amount to collect', async () => {
     await signIn();
     await startOrder();
-    fireEvent.click(screen.getByRole('button', { name: 'Save & Print' }));
+    fireEvent.change(advanceInput(), { target: { value: '12.345' } });
+    expect(screen.getByRole('alert').textContent).toBe(ADVANCE_NOT_AMOUNT);
+    expect(saveButton().disabled).toBe(true);
+    fireEvent.change(advanceInput(), { target: { value: '25' } });
+    expect(screen.getByRole('alert').textContent).toBe(ADVANCE_ABOVE_TOTAL);
+    expect(saveButton().disabled).toBe(true);
+    fireEvent.change(advanceInput(), { target: { value: '20' } });
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(saveButton().disabled).toBe(false);
+  });
+
+  it('sends no payment for an order with nothing to pay, even if an advance was typed before its total dropped to zero', async () => {
+    await signIn();
+    api.quoteCounterOrder.mockImplementation(async (input: CounterOrderInput) => quoteFor(input, 0));
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Rita Joshi' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add Shirt' }));
+    fireEvent.change(advanceInput(), { target: { value: '5' } });
+    await screen.findByText('No payment due');
+    await waitFor(() => expect(saveButton().disabled).toBe(false));
+    saveNow();
     await waitFor(() => expect(api.saveCounterOrder).toHaveBeenCalledTimes(1));
-    expect(api.saveCounterOrder.mock.calls[0][0].payment).toBeUndefined();
+    expect(api.saveCounterOrder.mock.calls[0][0]).not.toHaveProperty('payment');
   });
 
   it('shows a quote problem instead of an amount, and recovers when the draft changes', async () => {
@@ -751,7 +805,7 @@ describe('saving failures that need a clear next step', () => {
     await waitFor(() => expect((screen.getByRole('button', { name: 'Save & Print' }) as HTMLButtonElement).disabled).toBe(false));
     await saveAndWaitForPrints();
     expect(api.saveCounterOrder.mock.calls[1][0].reviewedQuote.totalMinor).toBe(2400);
-    expect(api.saveCounterOrder.mock.calls[1][0].payment.amountMinor).toBe(2400);
+    expect(api.saveCounterOrder.mock.calls[1][0]).not.toHaveProperty('payment');
   });
 
   it('keeps a save error visible when the quote itself is fine, and shows quote and save problems separately', async () => {
@@ -764,6 +818,100 @@ describe('saving failures that need a clear next step', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Add Shirt' }));
     await waitFor(() => expect(screen.getAllByRole('alert').length).toBe(2));
     expect(screen.getByText('The price could not be worked out. See the message above.')).toBeTruthy();
+  });
+});
+
+describe('the advance and the request key of a new order', () => {
+  type RequestKey = ReturnType<typeof crypto.randomUUID>;
+  let uuidSpy: { mockRestore: () => void } | null = null;
+  // Until issueFreshKeys is called every key is 'stale-key', so a test can see whether a key was replaced.
+  // Renders also call randomUUID, which is why the test does not count calls.
+  let fresh = false;
+  const stubRequestKeys = () => {
+    let issued = 0;
+    fresh = false;
+    uuidSpy = vi.spyOn(crypto, 'randomUUID').mockImplementation(() => (fresh ? `key-${++issued}` : 'stale-key') as RequestKey);
+  };
+  const issueFreshKeys = () => { fresh = true; };
+  afterEach(() => {
+    uuidSpy?.mockRestore();
+    uuidSpy = null;
+  });
+
+  it('keeps the request key from sign-in when nothing about the payment is changed before saving', async () => {
+    stubRequestKeys();
+    await signIn();
+    await startOrder();
+    saveNow();
+    await waitFor(() => expect(api.saveCounterOrder).toHaveBeenCalledTimes(1));
+    expect(api.saveCounterOrder.mock.calls[0][0].idempotencyKey).toBe('stale-key');
+  });
+
+  it('issues a new request key when the advance changes before any save', async () => {
+    stubRequestKeys();
+    await signIn();
+    await startOrder();
+    issueFreshKeys();
+    fireEvent.change(advanceInput(), { target: { value: '5' } });
+    saveNow();
+    await waitFor(() => expect(api.saveCounterOrder).toHaveBeenCalledTimes(1));
+    expect(api.saveCounterOrder.mock.calls[0][0].idempotencyKey).not.toBe('stale-key');
+  });
+
+  it('issues a new request key when the method changes before any save', async () => {
+    stubRequestKeys();
+    await signIn();
+    await startOrder();
+    issueFreshKeys();
+    fireEvent.change(advanceInput(), { target: { value: '5' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Card' }));
+    saveNow();
+    await waitFor(() => expect(api.saveCounterOrder).toHaveBeenCalledTimes(1));
+    expect(api.saveCounterOrder.mock.calls[0][0].payment).toEqual({ amountMinor: 500, method: 'card' });
+    expect(api.saveCounterOrder.mock.calls[0][0].idempotencyKey).not.toBe('stale-key');
+  });
+
+  it('keeps the request key after a failed save, so a changed advance is sent with the same key and reported as possibly saved', async () => {
+    stubRequestKeys();
+    await signIn();
+    await startOrder();
+    issueFreshKeys();
+    fireEvent.change(advanceInput(), { target: { value: '5' } });
+    api.saveCounterOrder.mockRejectedValueOnce(new Error('This request key was already used for a different order draft.'));
+    saveNow();
+    expect((await screen.findByRole('alert')).textContent).toBe(SAVED_BUT_QUIET);
+    fireEvent.change(advanceInput(), { target: { value: '6' } });
+    api.saveCounterOrder.mockRejectedValueOnce(new Error('This request key was already used for a different order draft.'));
+    saveNow();
+    await waitFor(() => expect(api.saveCounterOrder).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toBe(SAVED_BUT_QUIET));
+    const [first, second] = api.saveCounterOrder.mock.calls.map(call => call[0]);
+    expect(second.idempotencyKey).toBe(first.idempotencyKey);
+    expect(first.payment).toEqual({ amountMinor: 500, method: 'cash' });
+    expect(second.payment).toEqual({ amountMinor: 600, method: 'cash' });
+  });
+
+  it('clears the advance and the method after a successful save, and starts the next order with no advance', async () => {
+    stubRequestKeys();
+    await signIn();
+    await startOrder();
+    issueFreshKeys();
+    fireEvent.change(advanceInput(), { target: { value: '5' } });
+    fireEvent.click(screen.getByRole('button', { name: 'UPI' }));
+    saveNow();
+    await screen.findByText(/Order SL-1 saved/);
+    nav('New order');
+    await screen.findByText('Choose service');
+    expect(advanceInput().value).toBe('');
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Asha Rao' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add Shirt' }));
+    await waitFor(() => expect(saveButton().disabled).toBe(false));
+    expect(advanceInput().value).toBe('');
+    expect(screen.queryByRole('group', { name: 'Payment method' })).toBeNull();
+    saveNow();
+    await waitFor(() => expect(api.saveCounterOrder).toHaveBeenCalledTimes(2));
+    expect(api.saveCounterOrder.mock.calls[1][0]).not.toHaveProperty('payment');
+    expect(api.saveCounterOrder.mock.calls[1][0].idempotencyKey).not.toBe(api.saveCounterOrder.mock.calls[0][0].idempotencyKey);
   });
 });
 

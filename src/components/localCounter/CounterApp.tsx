@@ -77,12 +77,17 @@ export const CounterApp = () => {
   const [pendingLeave, setPendingLeave] = useState<Destination | null>(null);
   const [payment, setPayment] = useState('');
   const [paymentMethod, setPaymentMethod] = useState<'cash' | 'upi' | 'card' | 'bank_transfer' | 'other'>('cash');
+  /** The advance the customer pays on the new order, in rupees as typed. Empty means nothing is paid now. */
+  const [advance, setAdvance] = useState('');
   const [saved, setSaved] = useState<Awaited<ReturnType<typeof saveCounterOrder>> | null>(null);
   const [jobs, setJobs] = useState<CounterPrintJob[]>([]);
   const [pieces, setPieces] = useState<CounterPiece[]>([]);
   const [pieceChecks, setPieceChecks] = useState<string[]>([]);
   const [printers, setPrinters] = useState<NativePrinter[]>([]);
   const idempotencyKey = useRef(crypto.randomUUID());
+  // Set when a save starts. Until then the request key follows the advance and method, because the
+  // native submission includes the payment; after an attempt the key stays so a retry cannot duplicate the order.
+  const saveAttempted = useRef(false);
   const reprintRequestKeys = useRef<Record<string, string>>({});
   const [reprintBusy, setReprintBusy] = useState(false);
   const [selectedReprintPieces, setSelectedReprintPieces] = useState<string[]>([]);
@@ -181,19 +186,32 @@ export const CounterApp = () => {
     paymentRequestId.current = crypto.randomUUID(); collectionRequestId.current = crypto.randomUUID();
   };
   const clearDraft = () => {
-    setCustomer({ name: '', phone: '' }); setLines({}); setPaymentMethod('cash'); setServiceId(defaultServiceId(catalogue));
+    setCustomer({ name: '', phone: '' }); setLines({}); setPaymentMethod('cash'); setAdvance(''); setServiceId(defaultServiceId(catalogue));
     setQuote(null); setQuoteError(''); reviewedQuote.current = null;
     setReprintBusy(false); resetOrderScopedState();
-    idempotencyKey.current = crypto.randomUUID();
+    idempotencyKey.current = crypto.randomUUID(); saveAttempted.current = false;
     setError(''); setNotice('');
+  };
+  /** Before any save, a different advance or method is a different submission, so it gets a new request key. */
+  const changeAdvance = (text: string) => {
+    setAdvance(text);
+    if (!saveAttempted.current) idempotencyKey.current = crypto.randomUUID();
+  };
+  const changePaymentMethod = (method: 'cash' | 'upi' | 'card' | 'bank_transfer' | 'other') => {
+    setPaymentMethod(method);
+    if (!saveAttempted.current) idempotencyKey.current = crypto.randomUUID();
   };
   const save = async () => {
     // The Save button is only enabled with a quote for exactly this draft, and the native save
     // rejects any quote that does not match the order, so a stale quote can never be charged.
     const quoteToSave = reviewedQuote.current as CounterQuote;
+    saveAttempted.current = true;
     setBusy(true); setError(''); setNotice('');
+    // Save is disabled while the advance is invalid, so the parsed amount is a valid number here.
+    // An order with nothing to pay ignores any advance typed before its total dropped to zero.
+    const advanceMinor = quoteToSave.totalMinor > 0 ? parsePaymentAmountMinor(advance) : 0;
     try {
-      const result = await saveCounterOrder({ customer, items: orderItems, reviewedQuote: quoteToSave, idempotencyKey: idempotencyKey.current, ...(quoteToSave.totalMinor > 0 ? { payment: { amountMinor: quoteToSave.totalMinor, method: paymentMethod } } : {}) });
+      const result = await saveCounterOrder({ customer, items: orderItems, reviewedQuote: quoteToSave, idempotencyKey: idempotencyKey.current, ...(advanceMinor > 0 ? { payment: { amountMinor: advanceMinor, method: paymentMethod } } : {}) });
       setSaved(result); clearDraft(); setPage('prints');
       try {
         const dispatched = await dispatchPrintJobs(result.orderId);
@@ -375,7 +393,7 @@ export const CounterApp = () => {
     {quoteError && <p className="counter-error" role="alert">{quoteError}</p>}
     {restoreWaiting && <RestorePendingBanner />}
     {startupWarning && <p className="counter-error" role="status">{startupWarning}</p>}
-    {page === 'order' && <fieldset className="counter-fieldset" disabled={busy}><div className="counter-layout"><main className="counter-main"><CustomerEntry customer={customer} onChange={setCustomer} search={searchCounterCustomers} /><section className="counter-panel"><div className="counter-services" role="tablist" aria-label="Service"><span className="counter-section-label">Choose service</span>{catalogue?.services.filter(x => x.active).map(s => <button key={s.id} role="tab" aria-selected={s.id === serviceId} className={s.id === serviceId ? 'selected' : ''} onClick={() => setServiceId(s.id)}>{s.name}</button>)}</div><GarmentGrid catalogue={catalogue} serviceId={serviceId} lines={lines} onAdd={id => addGarment(id)} onQuantity={setQuantity} /></section></main><aside className="counter-aside"><OrderSummary catalogue={catalogue} lines={lines} quote={quote} quoteFailed={quoteError !== ''} customer={customer} paymentMethod={paymentMethod} onPaymentMethod={setPaymentMethod} onRemove={(id, sid) => setQuantity(id, 0, sid)} onQuantity={setQuantity} onSave={() => void save()} busy={busy} /></aside></div></fieldset>}
+    {page === 'order' && <fieldset className="counter-fieldset" disabled={busy}><div className="counter-layout"><main className="counter-main"><CustomerEntry customer={customer} onChange={setCustomer} search={searchCounterCustomers} /><section className="counter-panel"><div className="counter-services" role="tablist" aria-label="Service"><span className="counter-section-label">Choose service</span>{catalogue?.services.filter(x => x.active).map(s => <button key={s.id} role="tab" aria-selected={s.id === serviceId} className={s.id === serviceId ? 'selected' : ''} onClick={() => setServiceId(s.id)}>{s.name}</button>)}</div><GarmentGrid catalogue={catalogue} serviceId={serviceId} lines={lines} onAdd={id => addGarment(id)} onQuantity={setQuantity} /></section></main><aside className="counter-aside"><OrderSummary catalogue={catalogue} lines={lines} quote={quote} quoteFailed={quoteError !== ''} customer={customer} advance={advance} onAdvance={changeAdvance} paymentMethod={paymentMethod} onPaymentMethod={changePaymentMethod} onRemove={(id, sid) => setQuantity(id, 0, sid)} onQuantity={setQuantity} onSave={() => void save()} busy={busy} /></aside></div></fieldset>}
     {page === 'orders' && <section className="counter-panel counter-status-page">
       <h1>Orders / Pickup</h1>
       <Label htmlFor="counter-order-search">Search bill number or customer mobile<Input id="counter-order-search" value={orderSearch} onChange={event => setOrderSearch(event.target.value)} placeholder="Bill number or mobile" /></Label>

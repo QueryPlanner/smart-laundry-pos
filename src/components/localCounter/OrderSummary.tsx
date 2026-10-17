@@ -1,11 +1,20 @@
 import { CalendarClock, Minus, Plus, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import type { CounterCatalogue, CounterPaymentMethod, CounterQuote } from '@/lib/localFirst/counter';
 import { formatPercentBp } from '@/lib/localFirst/discount';
+import { advanceProblem, halfOf, parsePaymentAmountMinor, rupeesText } from '@/lib/localFirst/payment';
 
 const money = (minor: number) => new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR' }).format(minor / 100);
 const promiseFormat = new Intl.DateTimeFormat('en-IN', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Asia/Kolkata' });
+const METHODS: Array<{ value: CounterPaymentMethod; label: string }> = [
+  { value: 'cash', label: 'Cash' },
+  { value: 'upi', label: 'UPI' },
+  { value: 'card', label: 'Card' },
+  { value: 'bank_transfer', label: 'Bank transfer' },
+  { value: 'other', label: 'Other' },
+];
 
 interface OrderSummaryProps {
   catalogue: CounterCatalogue | null;
@@ -14,6 +23,9 @@ interface OrderSummaryProps {
   /** The price request was rejected (as opposed to still being calculated). */
   quoteFailed: boolean;
   customer: { name: string; phone: string };
+  /** The advance the customer pays now, typed in rupees. An empty string means nothing is paid now. */
+  advance: string;
+  onAdvance: (text: string) => void;
   paymentMethod: CounterPaymentMethod;
   onPaymentMethod: (method: CounterPaymentMethod) => void;
   onRemove: (garmentId: string, serviceId: string) => void;
@@ -22,13 +34,20 @@ interface OrderSummaryProps {
   busy: boolean;
 }
 
-/** Summary of the order being taken. Payment is always collected in full, so there is no amount field. */
-export const OrderSummary = ({ catalogue, lines, quote, quoteFailed, customer, paymentMethod, onPaymentMethod, onRemove, onQuantity, onSave, busy }: OrderSummaryProps) => {
+/** Summary of the order being taken. The customer may pay any advance now, including nothing; the rest is due at pickup. */
+export const OrderSummary = ({ catalogue, lines, quote, quoteFailed, customer, advance, onAdvance, paymentMethod, onPaymentMethod, onRemove, onQuantity, onSave, busy }: OrderSummaryProps) => {
   const items = Object.entries(lines).filter(([, quantity]) => quantity > 0);
   const hasDiscount = (quote?.discountMinor ?? 0) > 0;
   const nothingToPay = quote !== null && quote.totalMinor === 0;
   // Never show 0.00 while there is no price: that reads as "free".
   const amount = (pick: (q: CounterQuote) => number) => (quote ? money(pick(quote)) : '—');
+  const advanceError = quote && !nothingToPay ? advanceProblem(advance, quote.totalMinor) : null;
+  const advanceMinor = parsePaymentAmountMinor(advance);
+  const balanceText = quote && !nothingToPay && advanceError === null ? `Balance to pay at pickup ${money(quote.totalMinor - advanceMinor)}` : null;
+  const methodsShown = !nothingToPay && advanceMinor !== null && advanceMinor > 0;
+  const fillAdvance = (amountOf: (totalMinor: number) => number) => {
+    if (quote) onAdvance(rupeesText(amountOf(quote.totalMinor)));
+  };
   const saveBlocker = (): string => {
     if (!customer.name.trim()) return 'Enter the customer name';
     if (items.length === 0) return 'Add at least one garment';
@@ -79,20 +98,24 @@ export const OrderSummary = ({ catalogue, lines, quote, quoteFailed, customer, p
       </div>
       <div className="counter-payment">
         {nothingToPay
-          ? <p>Nothing to collect for this order.</p>
+          ? <p>No payment due</p>
           : <>
-            <p>Collect the full amount before saving.</p>
-            <Label htmlFor="payment-method">Paid by</Label>
-            <select id="payment-method" value={paymentMethod} onChange={event => onPaymentMethod(event.target.value as CounterPaymentMethod)}>
-              <option value="cash">Cash</option>
-              <option value="upi">UPI</option>
-              <option value="card">Card</option>
-              <option value="bank_transfer">Bank transfer</option>
-              <option value="other">Other</option>
-            </select>
+            <p>Any amount can be paid now. The rest is due at pickup.</p>
+            <Label htmlFor="advance-received">Advance received now</Label>
+            <Input id="advance-received" inputMode="decimal" placeholder="0.00" value={advance} onChange={event => onAdvance(event.target.value)} />
+            <div className="flex flex-wrap gap-2" role="group" aria-label="Quick amounts">
+              <button type="button" className="counter-touch" onClick={() => onAdvance('')}>Nothing now</button>
+              <button type="button" className="counter-touch" disabled={!quote} onClick={() => fillAdvance(halfOf)}>Half</button>
+              <button type="button" className="counter-touch" disabled={!quote} onClick={() => fillAdvance(total => total)}>Full</button>
+            </div>
+            {advanceError && <p role="alert" className="text-sm font-semibold text-red-700">{advanceError}</p>}
+            {balanceText && <p>{balanceText}</p>}
+            {methodsShown && <div className="flex flex-wrap gap-2" role="group" aria-label="Payment method">
+              {METHODS.map(method => <button key={method.value} type="button" className="counter-touch" aria-pressed={paymentMethod === method.value} onClick={() => onPaymentMethod(method.value)}>{method.label}</button>)}
+            </div>}
           </>}
       </div>
-      <Button className="counter-save" disabled={busy || !quote || items.length === 0 || !customer.name.trim()} onClick={onSave}>{busy ? 'Saving and dispatching…' : 'Save & Print'}</Button>
+      <Button className="counter-save" disabled={busy || !quote || items.length === 0 || !customer.name.trim() || advanceError !== null} onClick={onSave}>{busy ? 'Saving and dispatching…' : 'Save & Print'}</Button>
       {blocker && <p className="counter-save-reason">{blocker}</p>}
       <p className="counter-summary-note">Saves the order and independently dispatches the customer bill and garment tags.</p>
     </section>
