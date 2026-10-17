@@ -278,8 +278,9 @@ async fn counter_collect_order(
     order_id: String,
     piece_ids: Vec<String>,
     request_id: String,
+    payment: Option<counter::RecordPaymentInput>,
 ) -> Result<counter::SavedOrder, String> {
-    counter::collect_order(&state, &session, &order_id, piece_ids, &request_id).await
+    counter::collect_order(&state, &session, &order_id, piece_ids, &request_id, payment).await
 }
 
 #[tauri::command]

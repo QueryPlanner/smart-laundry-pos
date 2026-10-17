@@ -558,6 +558,7 @@ fn seed_demo_month() {
                         &sim.id,
                         sim.piece_ids.clone(),
                         &format!("collect-{index}"),
+                        None,
                     )
                     .await
                     .unwrap();

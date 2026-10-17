@@ -54,7 +54,8 @@ export interface CounterPayment {
 }
 export interface CounterPrintJob { id: string; kind: CounterJobKind; state: CounterJobState; printerId: string | null; osJobId: string | null; lastError: string | null; orderId: string; orderNumber: string }
 export interface CounterSavedOrder {
-  orderId: string; orderNumber: string; receivedAt: string; promisedAt: string; status: string;
+  orderId: string; orderNumber: string; customerName: string; customerPhone: string;
+  receivedAt: string; promisedAt: string; status: string;
   totalMinor: number; paidMinor: number; balanceMinor: number;
   paymentStatus: CounterPaymentStatus; collectedAt: string | null;
   /** > 0 only on a cancelled order that had payments. */
