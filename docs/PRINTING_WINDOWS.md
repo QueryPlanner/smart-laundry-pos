@@ -1,6 +1,6 @@
 # Printing: setup and document contract
 
-The app prints two things for every saved order: a customer bill on a Canon laser printer (A4) and one tag per physical piece on a TSC TE244 label printer (50 mm stock). Admin saves one Windows queue for each in Admin > Printers. The app sends documents to those queues through the operating system and never changes the Windows default printer.
+The app prints two things for every saved order: a customer bill on a Canon laser printer (A4) and one tag per tagged piece on a TSC TE244 label printer (50 mm stock). A garment ordered as Iron only gets no tag. Admin saves one Windows queue for each in Admin > Printers. The app sends documents to those queues through the operating system and never changes the Windows default printer.
 
 Important limits, stated once here:
 
@@ -67,7 +67,7 @@ Retrying an `uncertain` job needs two steps in the app: "Review uncertain job", 
 
 ### Bill (Canon, A4 landscape)
 
-The app requests A4 landscape and uses a 24 pt (about 8.5 mm) safe margin. The configurable laundry name, address, phone and optional message are centered above the order details. The bill number and received time share a row; customer and optional phone, ready-by time, payment summary, piece count, and a full-width table with Particulars, Service, Qty, Rate and Amount follow. Totals and configurable multiline footer/terms finish the bill. Text and rules are positioned against measured printer-font widths; long values wrap, and totals move to another page when needed.
+The app requests A4 landscape and uses a 24 pt (about 8.5 mm) safe margin. The configurable laundry name, address, phone and optional message are centered above the order details. The bill number and received time share a row; customer and optional phone, ready-by time, payment summary, piece count, and a full-width table with Particulars, Service, Qty, Rate and Amount follow. Totals and configurable multiline footer/terms finish the bill, followed by the fixed line "* terms and conditions apply", which is always printed last and is not configurable. Text and rules are positioned against measured printer-font widths; long values wrap, and totals move to another page when needed.
 
 Admin > Shop settings lets the admin choose whether the shop name, address, shop phone, customer phone, received time and ready-by time appear, and set the centered message and multiline footer/terms. The order number, customer name, garment and service rows, piece count, totals and payment remain on the bill. Shop identity, message, footer and visibility choices are copied into each new bill so reprints retain their original content. Old bills keep the legacy visible fields. A bill saved before shop settings existed prints the built-in title "SMART LAUNDRY" and footer "Thank you". An existing installation starts with "Smart Laundry" and "Thank you for choosing us." until the admin edits them.
 
@@ -77,17 +77,19 @@ The bill must pass a money check before printing: every line total equals unit p
 
 ### Tags (TSC, 50 mm wide continuous roll)
 
-One continuous strip contains the tags for a batch, so a bill with N pieces prints N tag positions (a pair of shoes is one piece). The 30 mm default pitch is configurable from 30–200 mm. The batch adds a single 10 mm trailing feed after the piece that physically exits last; the current TSC output order makes Piece 1 exit last. Each tag shows only:
+One continuous strip contains the tags for a batch, so a bill prints one tag position for each tagged piece (a pair of shoes is one piece). Pieces ordered as Iron only are not tagged and take no position; a bill with no tagged pieces prints no tags at all. The 30 mm default pitch is configurable from 30–200 mm. The batch adds a single 10 mm trailing feed after the piece that physically exits last; the current TSC output order makes Piece 1 exit last. Each tag shows:
 
 ```
-Bill LA-2026-00123
+Bill 202610170001
+Rita Joshi
+98765 43210
 Shirt
 Wash + Iron
 Piece 3/5
-ID 2600123-3
+ID 2610170001-3
 ```
 
-The ID is two digits of the year, the bill's sequence number and the piece position, for example `2600123-3`. Tags show no customer name, phone number, date, barcode or QR code. The admin may add the shop name and a short tag line. Text starts 10 mm from the roll's left edge and keeps about 3 mm clear at the right edge. The configurable pitch and shop branding are saved with each new tag document; old saved tag documents retain their prior 101.6 mm fallback.
+The customer name and phone number always print on the tag. The ID is two digits each for the year, month and day, the bill's running number for that day and the piece position, for example `2610170001-3`. Tags show no date, barcode or QR code. The admin may add the shop name and a short tag line. Text starts 10 mm from the roll's left edge and keeps about 3 mm clear at the right edge. The configurable pitch and shop branding are saved with each new tag document; old saved tag documents retain their prior 101.6 mm fallback.
 
 The tag layout uses smaller type and checks each piece's text against the configured pitch; the piece ID remains at least 8 pt. It rejects text that cannot fit, a page narrower than about 21 mm, a pitch below the supported range, a strip exceeding the printer's signed page-length limit, and any reported width wider than about 4.6 inches. A document holds at most 500 tags.
 

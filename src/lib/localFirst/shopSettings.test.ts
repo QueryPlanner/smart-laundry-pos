@@ -41,13 +41,9 @@ describe('shop settings wrappers', () => {
 });
 
 describe('shop settings form checks', () => {
-  it('normalises the prefix like the native side', () => {
-    expect(shop.normalizeOrderPrefix('  sr1 ')).toBe('SR1');
-  });
-
   const cases: Array<[string, Partial<shop.ShopSettings>, string | null]> = [
     ['valid values', {}, null],
-    ['limits are inclusive', { shopName: 'n'.repeat(60), shopAddress: 'a'.repeat(120), shopPhone: '1'.repeat(20), receiptFooter: 'f'.repeat(600), receiptMessage: 'm'.repeat(120), orderPrefix: 'ab12cd' }, null],
+    ['limits are inclusive', { shopName: 'n'.repeat(60), shopAddress: 'a'.repeat(120), shopPhone: '1'.repeat(20), receiptFooter: 'f'.repeat(600), receiptMessage: 'm'.repeat(120) }, null],
     ['blank name', { shopName: '  ' }, 'Enter the shop name.'],
     ['long name', { shopName: 'n'.repeat(61) }, 'Shop name must be 60 characters or fewer.'],
     ['long address', { shopAddress: 'a'.repeat(121) }, 'Address must be 120 characters or fewer.'],
@@ -59,12 +55,23 @@ describe('shop settings form checks', () => {
     ['long tag line', { tagLine: 't'.repeat(41) }, 'Tag line must be 40 characters or fewer.'],
     ['name line break', { shopName: 'a\nb' }, 'Shop name cannot contain control characters.'],
     ['footer control character', { receiptFooter: 'a\u0007b' }, 'Bill footer / terms cannot contain control characters.'],
-    ['blank prefix', { orderPrefix: ' ' }, 'The bill number prefix must be 1 to 6 letters or digits.'],
-    ['long prefix', { orderPrefix: 'ABCDEFG' }, 'The bill number prefix must be 1 to 6 letters or digits.'],
-    ['hyphen prefix', { orderPrefix: 'A-B' }, 'The bill number prefix must be 1 to 6 letters or digits.'],
+    ['delete character', { shopAddress: 'a\u007fb' }, 'Address cannot contain control characters.'],
+    ['C1 control character', { shopPhone: '1\u0085' }, 'Phone cannot contain control characters.'],
+    ['tag length at the minimum', { tagLengthMm: 30 }, null],
+    ['tag length at the maximum', { tagLengthMm: 200 }, null],
+    ['tag length with one decimal place', { tagLengthMm: 30.1 }, null],
+    ['tag length just below the minimum', { tagLengthMm: 29.9 }, 'Tag cut length must be between 30 and 200 mm.'],
+    ['tag length just above the maximum', { tagLengthMm: 200.1 }, 'Tag cut length must be between 30 and 200 mm.'],
+    ['tag length not a number', { tagLengthMm: Number.NaN }, 'Tag cut length must be between 30 and 200 mm.'],
+    ['tag length infinite', { tagLengthMm: Number.POSITIVE_INFINITY }, 'Tag cut length must be between 30 and 200 mm.'],
+    ['tag length with two decimal places', { tagLengthMm: 30.25 }, 'Tag cut length can have at most one decimal place.'],
   ];
   it.each(cases)('%s', (_name, patch, problem) => {
     expect(shop.shopSettingsProblem({ ...valid, ...patch })).toBe(problem);
+  });
+
+  it.each(['', '  ', 'ABCDEFGHIJ', 'A-B', 'lower'])('does not check the retired bill prefix (%j)', prefix => {
+    expect(shop.shopSettingsProblem({ ...valid, orderPrefix: prefix })).toBeNull();
   });
 
   it('counts characters, not UTF-16 units', () => {

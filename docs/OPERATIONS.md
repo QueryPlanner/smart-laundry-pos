@@ -38,7 +38,7 @@ There is one screen layout for everyone. The menu under the title bar has four g
 | Create staff accounts, deactivate them, reset PINs | No | Yes |
 | Choose printers | No | Yes |
 | Back up now, set the USB folder, restore a backup | No | Yes |
-| Change shop name, address, phone, bill footer and bill number prefix | No | Yes |
+| Change shop name, address, phone, bill footer and tag settings | No | Yes |
 | Cancel an order | No | Yes |
 | **Delete** a customer, expense, inventory item or machine | No | Yes |
 
@@ -98,7 +98,7 @@ Shop > **Machines** is a list of your washers, dryers and irons with when each w
 
 ## Shop settings
 
-Admin group > **Shop settings** (admin only). Set the laundry name, address, phone, centered message line, and multiline bill footer/terms, then choose which optional fields appear on bills. The order number, customer name, garment lines, piece count and payment totals always print. You can also choose whether tags show the laundry name, add an optional short tag line, and set the per-tag pitch for the 50 mm-wide continuous TSC roll (30–200 mm; new installations start at 30 mm). The batch adds one 10 mm trailing feed after the tag that physically exits last. The previews show content and pitch before saving. Each new order keeps its print choices so reprints match the original; changes apply to new orders. If the footer is blank the bill ends with "Thank you". An existing installation starts with shop name "Smart Laundry" and footer "Thank you for choosing us.", so change them to your own. Set the bill number prefix to 1 to 6 capital letters or digits (for example `LA`, no hyphen); it applies to bills numbered after you save it. Bills print on A4 landscape. The old settings for GST number, receipt width and default completion days were not carried over; ready time remains two days at 5:00 PM.
+Admin group > **Shop settings** (admin only). Set the laundry name, address, phone, centered message line, and multiline bill footer/terms, then choose which optional fields appear on bills. The order number, customer name, garment lines, piece count and payment totals always print. You can also choose whether tags show the laundry name, add an optional short tag line, and set the per-tag pitch for the 50 mm-wide continuous TSC roll (30–200 mm; new installations start at 30 mm). The batch adds one 10 mm trailing feed after the tag that physically exits last. The previews show content and pitch before saving. Each new order keeps its print choices so reprints match the original; changes apply to new orders. If the footer is blank the bill ends with "Thank you". Every bill then prints "* terms and conditions apply" as its last line; that line is fixed and cannot be changed. An existing installation starts with shop name "Smart Laundry" and footer "Thank you for choosing us.", so change them to your own. Bill numbers no longer use a prefix, so there is nothing to set for them. Bills print on A4 landscape. The old settings for GST number, receipt width and default completion days were not carried over; ready time remains two days at 5:00 PM.
 
 ## Taking an order
 
@@ -108,9 +108,9 @@ Admin group > **Shop settings** (admin only). Set the laundry name, address, pho
 4. Check the summary on the right: the lines, the number of pieces, **Ready by** (received date plus two days, 5:00 PM, always), and the **Amount to collect**. Until a price is worked out the amounts show a dash, not 0. Under the Save button, a short note says what is still missing.
 5. Take the full amount from the customer, choose **Paid by** (cash, UPI, card, bank transfer or other), and press **Save & Print**. Payment is always taken in full at this point, so there is nothing owing later. The screen is locked while it saves.
 
-If rates or a discount changed while the order was open, the program refuses to save and shows the new total. Check it and press Save again. The program saves the order and then prints the bill on the Canon and one tag for each piece on the TSC. A pair of shoes is one piece and gets one tag. Stick or tie each tag to its garment.
+If rates or a discount changed while the order was open, the program refuses to save and shows the new total. Check it and press Save again. The program saves the order and then prints the bill on the Canon and one tag for each piece on the TSC. A garment ordered as Iron only gets no tag, and if every garment is Iron only no tags print at all. A pair of shoes is one piece and gets one tag. Each tag shows the customer's name and phone number, the bill number, the garment, the service and the piece number. Stick or tie each tag to its garment.
 
-Bill numbers look like `LA-2026-00123`: a prefix, the year and a running number that starts again each year. Tag IDs look like `2600123-3`: the year, the bill's running number and the piece number.
+Bill numbers look like `202610170001`: the date (year, month, day, shop time) followed by a running number for that day, which starts again at 0001 each day. Tag IDs look like `2610170001-3`: the year, month and day in two digits each, the bill's running number and the piece number. Bills saved before this change keep their old numbers, such as `LA-2026-00123`.
 
 If the program shows "Order save did not complete", nothing is saved twice; press Save again. If it says the order may already be saved, open Orders / Pickup and look for the bill before saving again. If it says the order is saved but printing failed, go to **Print queue**.
 
@@ -165,6 +165,8 @@ From then on every backup is also copied into that subfolder (the newest 90 are 
 ## Restoring a backup
 
 Restore replaces everything on the laptop with the contents of a backup. Orders and payments entered after that backup was made are lost from the program. **It also brings back the accounts and PINs from that backup: a staff member who was deactivated since then can sign in again, and a staff PIN or the admin PIN that was changed since then goes back to the old one.** Only restore when you must, and make sure no one is taking orders. Only an admin can restore.
+
+Bill numbers are a date plus a running number for the day. Restoring a backup made earlier the same day can therefore re-issue bill numbers that were already printed on paper, so check the paper bills from that day before you take new orders.
 
 1. Sign in as admin. Admin > **Backups** > **Restore from backup...**
 2. Choose the backup file (`laundry-....db`) from the `backups` folder or from the `SmartLaundry-backups-...` folder on the USB drive, then confirm in the box that appears.
