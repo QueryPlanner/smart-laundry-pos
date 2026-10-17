@@ -50,6 +50,23 @@ jobs:
       - name: Install locked npm dependencies
         run: npm ci
 
+      # Production package (identifier com.smartlaundry.pos). Unsigned, amd64.
+      - name: Build production Ubuntu package
+        run: npm run tauri:build:linux
+
+      # Copy out immediately so the review build below cannot overwrite it.
+      - name: Stage production Ubuntu package
+        run: |
+          mkdir -p staging/production
+          cp src-tauri/target/release/bundle/deb/*.deb staging/production/
+
+      - name: Upload production Ubuntu package
+        uses: actions/upload-artifact@v4
+        with:
+          name: smart-laundry-pos-ubuntu
+          path: staging/production/*.deb
+          if-no-files-found: error
+
       - name: Build isolated Ubuntu review package
         run: npm run tauri:build:linux-review
 

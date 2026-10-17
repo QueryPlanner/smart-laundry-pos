@@ -68,6 +68,15 @@
     margin: 0.75rem 0 0;
     font-size: 1rem;
   }
+  .others {
+    margin: 1.25rem 0 0;
+    padding: 0;
+    list-style: none;
+    font-size: 1rem;
+  }
+  .others li { margin: 0 0 0.5rem; }
+  .others a { color: var(--ink); text-underline-offset: 3px; }
+  .others a:focus-visible { outline: 3px solid var(--ink); outline-offset: 3px; }
   .notes {
     margin: 4rem 0 0;
     font-size: 1rem;
@@ -83,9 +92,14 @@
       <p class="lead">Laundry counter software for Windows</p>
       <a class="download" href="https://pub-27046f6f7d4846ad8e1f30901696fd07.r2.dev/latest/Smart-Laundry-POS-setup.exe" download>Download for Windows</a>
       <p class="requirement">Version 0.2.1 &middot; Windows 10 or 11</p>
+      <ul class="others">
+        <li><a href="https://pub-27046f6f7d4846ad8e1f30901696fd07.r2.dev/latest/Smart-Laundry-POS-macos-arm64.dmg" download>macOS (Apple silicon, .dmg)</a></li>
+        <li><a href="https://pub-27046f6f7d4846ad8e1f30901696fd07.r2.dev/latest/Smart-Laundry-POS-linux-amd64.deb" download>Linux (Ubuntu or Debian, amd64, .deb)</a></li>
+      </ul>
       <div class="notes">
         <p>The installer is not code-signed yet, so Windows may show a SmartScreen warning: choose More info, then Run anyway.</p>
         <p>Updating? Run the new installer over the old one. Your data is kept.</p>
+        <p>macOS and Linux builds are unsigned: on macOS, right-click the app and choose Open the first time. Linux: <code>sudo apt install ./Smart-Laundry-POS-linux-amd64.deb</code>. The macOS build is for Apple silicon Macs only.</p>
       </div>
     </div>
   </main>

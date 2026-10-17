@@ -15,6 +15,7 @@
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
+    "tauri:build:linux": "tauri build --bundles deb",
     "tauri:build:linux-review": "tauri build --config src-tauri/tauri.review.linux.conf.json",
     "dev:desktop": "vite --config vite.desktop.config.ts",
     "build:desktop": "vite build --config vite.desktop.config.ts",
