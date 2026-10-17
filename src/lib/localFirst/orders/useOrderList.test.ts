@@ -299,6 +299,26 @@ describe('reloading', () => {
   });
 });
 
+describe('resetting', () => {
+  it('forgets the text, the segment, the counts and the orders, and lets the automatic choice happen again', async () => {
+    api.getCounterOrderQueueCounts.mockResolvedValue(countsOf({ ready: 0 }));
+    const { result } = setup();
+    await settle();
+    await settle();
+    act(() => result.current.setQuery('rita'));
+    act(() => result.current.setSegment('today'));
+    await settle(180);
+    expect(result.current.segment).toBe('today');
+    api.searchCounterOrders.mockResolvedValue(page(50));
+    act(() => result.current.reset());
+    expect(result.current).toMatchObject({ query: '', segment: 'ready', counts: null, results: [], hasMore: false });
+    await settle();
+    await settle();
+    // Nothing was ready, and the cashier has not chosen anything since the reset: In process opens again.
+    expect(result.current.segment).toBe('in_process');
+  });
+});
+
 describe('failures', () => {
   it('reports a counts failure and keeps going', async () => {
     api.getCounterOrderQueueCounts.mockRejectedValue(new Error('counts down'));

@@ -29,6 +29,8 @@ export interface OrderList {
   loadMore(): void;
   /** Fetch the counts and the first page again, for example after an order changed. */
   reload(): void;
+  /** Forget everything shown, for example when another person signs in. */
+  reset(): void;
 }
 
 export const useOrderList = ({ active, onError, debounceMs = 180 }: OrderListOptions): OrderList => {
@@ -114,5 +116,16 @@ export const useOrderList = ({ active, onError, debounceMs = 180 }: OrderListOpt
     hasMore,
     loadMore,
     reload: () => setReloads(current => current + 1),
+    reset: () => {
+      chosen.current = false;
+      countsSeen.current = false;
+      setQuery('');
+      setSegmentState('ready');
+      setCounts(null);
+      setResults([]);
+      setHasMore(false);
+      // While the page is showing, fetch the counts and the list again for the fresh state.
+      setReloads(current => current + 1);
+    },
   };
 };

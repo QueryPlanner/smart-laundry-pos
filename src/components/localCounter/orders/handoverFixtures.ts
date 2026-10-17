@@ -26,7 +26,7 @@ export const allChecked = {
 
 /** A ready order that is fully paid, with all four pieces. Override the status or money as needed. */
 export const order = (overrides: Partial<CounterSavedOrder> = {}): CounterSavedOrder => ({
-  orderId: 'o-1', orderNumber: '202610170001',
+  orderId: 'o-1', orderNumber: '202610170001', customerName: 'Rita Joshi', customerPhone: '9876543210',
   receivedAt: '2026-10-17T09:00:00+05:30', promisedAt: '2026-10-17T17:00:00+05:30',
   status: 'ready', totalMinor: 4800, paidMinor: 4800, balanceMinor: 0,
   paymentStatus: 'paid', collectedAt: null, refundDueMinor: 0, payments: [],

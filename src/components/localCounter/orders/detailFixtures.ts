@@ -14,7 +14,7 @@ export const detailPayment = (over: Partial<CounterPayment> = {}): CounterPaymen
 });
 
 export const detailOrder = (over: Partial<CounterSavedOrder> = {}): CounterSavedOrder => ({
-  orderId: 'o-1', orderNumber: '202610170001', receivedAt: '2026-10-15T06:00:00Z', promisedAt: '2026-10-17T11:30:00Z',
+  orderId: 'o-1', orderNumber: '202610170001', customerName: 'Rita Mehta', customerPhone: '9876543210', receivedAt: '2026-10-15T06:00:00Z', promisedAt: '2026-10-17T11:30:00Z',
   status: 'ready', totalMinor: 4000, paidMinor: 0, balanceMinor: 4000, paymentStatus: 'unpaid', collectedAt: null,
   refundDueMinor: 0, payments: [], pieces: [detailPiece(1), detailPiece(2), detailPiece(3)], printJobs: [], ...over,
 });
