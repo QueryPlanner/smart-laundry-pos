@@ -92,9 +92,6 @@ jobs:
       - name: Install locked npm dependencies
         run: npm ci
 
-      - name: Run existing test suite
-        run: npm test
-
       - name: Require complete desktop JavaScript coverage
         run: npm run test:desktop:coverage
 
@@ -106,9 +103,6 @@ jobs:
 
       - name: Build desktop frontend
         run: npm run build:desktop
-
-      - name: Check legacy web build compatibility
-        run: npm run build
 
       - name: Set up Rust stable components
         run: |

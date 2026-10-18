@@ -1,6 +1,6 @@
 # Desktop app: architecture and development
 
-Smart Laundry POS Desktop is a Tauri 2 app: a Rust native layer with a SQLite database, and a React user interface in a webview. It runs offline and keeps all records on one computer. It does not use the web app's Supabase account and does not sync anywhere. The browser and Android builds of this repository keep their own entries and are not covered here.
+Smart Laundry POS Desktop is a Tauri 2 app: a Rust native layer with a SQLite database, and a React user interface in a webview. It runs offline and keeps all records on one computer. It uses no server account and does not sync anywhere. (An earlier browser/PWA version of the POS was removed from this repository; it survives only in the git history.)
 
 The target installation is one Windows laptop in a shop with a Canon laser printer (A4 bills) and a TSC TE244 label printer (50 mm tags). Linux and macOS are development platforms only. See [DESKTOP_ACCEPTANCE.md](DESKTOP_ACCEPTANCE.md) for what has and has not been verified, [OPERATIONS.md](OPERATIONS.md) for the shop owner's guide, and [PRINTING_WINDOWS.md](PRINTING_WINDOWS.md) for printers.
 
@@ -113,13 +113,11 @@ The webview can only call the registered `counter_*` commands. Each one checks t
 ```sh
 npm ci                          # install locked dependencies
 npm run tauri:dev               # run the desktop app (starts the Vite entry on 127.0.0.1:8080)
-npm run build:desktop           # build the frontend into dist-desktop/
-npm test                        # full JavaScript test run
-npm run test:desktop            # desktop JavaScript tests only
-npm run test:desktop:coverage   # same tests with a 100% coverage gate
-npm run lint:desktop            # eslint on the desktop entry, local-first code and counter components
-npm run typecheck:desktop       # tsc with tsconfig.desktop.json
-npm run build                   # legacy web build, to check it still compiles
+npm run build                   # build the frontend into dist-desktop/
+npm test                        # JavaScript tests
+npm run test:coverage           # same tests with a 100% coverage gate
+npm run lint                    # eslint on the desktop entry, local-first code and counter components
+npm run typecheck               # tsc with tsconfig.desktop.json
 
 cd src-tauri
 cargo fmt --all -- --check
@@ -150,7 +148,7 @@ The default `tauri.conf.json` still lists `app` and `dmg` bundle targets with an
 
 `.github/workflows/desktop.yml` runs only on pull requests to `main` and on pushes to `codex/**` branches. A push to any other branch (such as `claude/**`) does not start it until a pull request exists. It has three jobs:
 
-- `desktop` (macOS): `npm ci`, `npm test`, coverage gate, lint, typecheck, desktop and web builds, `cargo fmt --check`, `cargo test`, `cargo clippy -D warnings`, review app build and signature check.
+- `desktop` (macOS): `npm ci`, coverage gate, lint, typecheck, frontend build, `cargo fmt --check`, `cargo test`, `cargo clippy -D warnings`, review app build and signature check.
 - `linux-package` (Ubuntu 24.04): builds the review `.deb` and uploads it.
 - `windows-package` (Windows 2022): desktop JavaScript tests, `cargo check`, `cargo test` and `cargo clippy` on Windows, then builds and uploads both the production installer (`smart-laundry-pos-windows`) and the review installer (`smart-laundry-pos-windows-review`). Neither is signed.
 
