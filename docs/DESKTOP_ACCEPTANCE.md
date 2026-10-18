@@ -110,7 +110,7 @@ Do this on the real laptop with the real Canon and TSC, using an installer built
 - [ ] Set a 100% discount: the order saves with nothing to collect.
 - [ ] As admin, cancel a saved, paid order with a reason: payments show voided, the screen tells you to hand back the money, and the order cannot be collected.
 - [ ] Bill number format: the first order saved on a day (shop time, IST) prints as the date plus `0001`, for example `202610170001` for 17 Oct 2026, and the next order that day is `202610170002`. The tag IDs for that bill read `2610170001-n`.
-- [ ] Every printed bill ends with the four Marathi terms (अटी व शर्ती) below the footer or the "Thank you" line, the Devanagari text prints correctly (no broken conjuncts or empty boxes) on the shop's A4 printer, and the terms cannot be changed in Shop settings.
+- [ ] Every printed bill carries the four Marathi terms (अटी व शर्ती) in small type to the left of the totals, a bill of up to six items still fits one A5 page, the Devanagari text prints correctly (no broken conjuncts or empty boxes) on the shop's A4 printer, and the terms cannot be changed in Shop settings.
 - [ ] Take an order where every garment is Iron only: no tag prints, the Print progress screen says "No tags needed", and the Print queue has no tags job for that order.
 
 **Printing**

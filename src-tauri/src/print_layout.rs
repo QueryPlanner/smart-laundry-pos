@@ -260,7 +260,12 @@ pub const BILL_TERMS: [&str; 5] = [
     "4. नियम व अटी लागू.",
 ];
 
-/// Everything that closes a bill: the footer lines, then the fixed terms last.
+/// Terms are printed smaller than the footer (9 pt), beside the totals, so they fit on A5.
+const TERMS_SIZE_PT: f32 = 7.0;
+/// Distance between terms lines. Devanagari needs more than the font size for its marks.
+const TERMS_PITCH_PT: f32 = 9.5;
+
+/// Everything that closes a bill as text: the footer lines, then the fixed terms last.
 pub fn bill_closing_lines(header: &BillHeader) -> Vec<String> {
     let mut lines = bill_footer_lines(header);
     lines.extend(BILL_TERMS.iter().map(|line| (*line).to_string()));
@@ -587,11 +592,26 @@ fn layout_bill(
     }
     // The closing lines (footer, then the terms) are part of `needed`, so the rows shrink
     // or paginate to leave room for them.
-    let footer: Vec<String> = bill_closing_lines(&bill.header)
+    let footer: Vec<String> = bill_footer_lines(&bill.header)
         .into_iter()
         .flat_map(|line| wrap_text(&line, width, 9.0, false, meter))
         .collect();
-    let needed = totals.len() as f32 * 15.0 + footer.len() as f32 * 12.0 + 32.0;
+    // The fixed terms sit in the empty space to the left of the totals, small and tightly spaced,
+    // so they add little or no height and a bill still fits one A5 page.
+    let totals_left = totals
+        .iter()
+        .map(|(label, value, bold)| {
+            let size = if *bold { 12.0 } else { 10.0 };
+            right_x(&format!("{label}: {value}"), right, size, *bold, meter)
+        })
+        .fold(right, f32::min);
+    let terms_width = (totals_left - left - 14.0).max(120.0);
+    let terms: Vec<String> = BILL_TERMS
+        .iter()
+        .flat_map(|line| wrap_text(line, terms_width, TERMS_SIZE_PT, false, meter))
+        .collect();
+    let totals_height = (totals.len() as f32 * 15.0).max(terms.len() as f32 * TERMS_PITCH_PT);
+    let needed = totals_height + footer.len() as f32 * 12.0 + 32.0;
 
     // Every item row wrapped at one size; row height and the gap after it scale with the size.
     let wrap_rows = |size: f32| -> Vec<(Vec<String>, Vec<String>)> {
@@ -694,6 +714,16 @@ fn layout_bill(
     }
     let last_page = pages.last_mut().unwrap();
     add_rule(last_page, left, right, y - 5.0);
+    for (index, line) in terms.iter().enumerate() {
+        add_line(
+            last_page,
+            line.clone(),
+            TERMS_SIZE_PT,
+            false,
+            left,
+            y + index as f32 * TERMS_PITCH_PT,
+        );
+    }
     for (index, (label, value, bold)) in totals.iter().enumerate() {
         let line = format!("{label}: {value}");
         let size = if *bold { 12.0 } else { 10.0 };
@@ -706,7 +736,7 @@ fn layout_bill(
             y + index as f32 * 15.0,
         );
     }
-    let footer_y = y + totals.len() as f32 * 15.0 + 12.0;
+    let footer_y = y + totals_height + 12.0;
     add_rule(last_page, left, right, footer_y - 5.0);
     for (index, line) in footer.into_iter().enumerate() {
         add_line(
@@ -1023,12 +1053,39 @@ mod tests {
         page.lines.iter().map(|l| l.text.as_str()).collect()
     }
 
-    /// A bill page ends with its footer line and then the fixed Marathi terms, in that order.
+    /// The last page of a bill ends with its footer line, and carries the fixed Marathi terms in a
+    /// block that starts level with the totals, to their left, and ends above the footer.
     fn assert_ends_with_footer_then_terms(page: &LaidOutPage, footer: &str) {
         let lines = texts(page);
-        let terms_start = lines.len() - BILL_TERMS.len();
-        assert_eq!(&lines[terms_start..], &BILL_TERMS[..], "{lines:?}");
-        assert_eq!(lines[terms_start - 1], footer, "{lines:?}");
+        assert_eq!(lines.last(), Some(&footer), "{lines:?}");
+        let terms: Vec<&StyledLine> = BILL_TERMS
+            .iter()
+            .map(|term| {
+                page.lines
+                    .iter()
+                    .find(|line| line.text == *term)
+                    .unwrap_or_else(|| panic!("terms line {term:?} is missing: {lines:?}"))
+            })
+            .collect();
+        let footer_line = page.lines.last().unwrap();
+        assert!(terms.windows(2).all(|pair| pair[0].y_pt < pair[1].y_pt));
+        assert!(
+            terms.last().unwrap().y_pt < footer_line.y_pt,
+            "terms end above the footer"
+        );
+        let total = page
+            .lines
+            .iter()
+            .find(|line| line.text.starts_with("Total: "))
+            .unwrap();
+        assert!(
+            terms.iter().all(|term| term.size_pt < footer_line.size_pt),
+            "terms are smaller than the footer"
+        );
+        assert!(
+            terms[0].y_pt <= total.y_pt + 0.1,
+            "terms start level with the totals"
+        );
     }
 
     fn assert_within(page: &LaidOutPage, spec: PageSpec) {
@@ -1788,8 +1845,8 @@ mod tests {
     }
 
     #[test]
-    fn a_short_bill_stays_on_one_a5_page_at_the_normal_size() {
-        for items in 1..=1 {
+    fn a_bill_with_a_few_items_stays_on_one_a5_page_at_the_normal_size() {
+        for items in 1..=4 {
             let pages = layout_bill(&a5_bill(items), A5_LANDSCAPE, &FakeMeter).unwrap();
             assert_eq!(pages.len(), 1, "{items} items");
             assert_eq!(item_row_size(&pages), Some(10.0), "{items} items");
@@ -1799,14 +1856,14 @@ mod tests {
 
     #[test]
     fn a_bill_that_does_not_fit_at_the_normal_size_shrinks_its_rows_to_stay_on_one_page() {
-        // Two items are the most that fit one A5 page once the five terms lines take their room
-        // (A4, the real bill size, fits eleven at the normal size); three continue onto a second page.
-        let pages = layout_bill(&a5_bill(2), A5_LANDSCAPE, &FakeMeter).unwrap();
+        // Six items are the most that fit one A5 page at the smallest row size once the terms
+        // (beside the totals) take their room; seven items continue onto a second page.
+        let pages = layout_bill(&a5_bill(6), A5_LANDSCAPE, &FakeMeter).unwrap();
         assert_eq!(pages.len(), 1);
         let size = item_row_size(&pages).unwrap();
         assert!((7.0..10.0).contains(&size), "row size {size}");
         assert_within(&pages[0], A5_LANDSCAPE);
-        assert_eq!(garment_count(&pages), 2);
+        assert_eq!(garment_count(&pages), 6);
         let lines = texts(&pages[0]);
         assert!(lines.contains(&"Example Cleaners"), "header is on the page");
         assert!(lines.contains(&"Visit again soon"), "footer is on the page");
@@ -1815,7 +1872,7 @@ mod tests {
             "totals are on the page"
         );
         assert_eq!(
-            layout_bill(&a5_bill(3), A5_LANDSCAPE, &FakeMeter)
+            layout_bill(&a5_bill(7), A5_LANDSCAPE, &FakeMeter)
                 .unwrap()
                 .len(),
             2
