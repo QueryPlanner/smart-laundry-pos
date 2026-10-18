@@ -776,3 +776,21 @@ All colors MUST be HSL.
 .counter-trash-requests li{display:flex;flex-wrap:wrap;align-items:center;gap:8px 10px}
 .counter-trash-requests li>div{flex:1 1 280px;display:grid;gap:3px}
 .counter-trash-requests li span{font-size:13px;color:#5f6f68}
+
+/* Garment cards with the services along the bottom (all garments visible at once). */
+.counter-garment-grid{grid-template-columns:repeat(auto-fill,minmax(210px,1fr))}
+.counter-garment{display:flex;flex-direction:column}
+.counter-garment-picture{cursor:default;height:104px}
+.counter-garment-picture img{position:absolute;inset:0;box-sizing:border-box;width:100%;height:100%;object-fit:contain;padding:6px}
+.counter-service-buttons{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:auto;padding-top:10px}
+.counter-service-chip{position:relative;display:flex;align-items:stretch;min-width:0;border:1px solid #cddbd4;border-radius:10px;background:#fff}
+.counter-service-chip.selected{border-color:#1b7051;background:#e2f3ec}
+.counter-service-chip.off{background:#f3f5f4;border-style:dashed;opacity:.65}
+.counter-chip-add{flex:1;min-width:0;min-height:48px;display:grid;align-content:center;padding:5px 8px;border:0;background:transparent;text-align:left;cursor:pointer;color:#202d29}
+.counter-chip-add:disabled{cursor:not-allowed}
+.counter-chip-add span{font-size:12px;font-weight:650;color:#4f6159}
+.counter-chip-add strong{font-size:14px}
+.counter-chip-add em{position:absolute;top:-8px;right:-6px;min-width:22px;height:22px;padding:0 5px;border-radius:11px;background:#14694d;color:#fff;font-style:normal;font-weight:750;font-size:12px;line-height:22px;text-align:center}
+.counter-chip-minus{width:34px;border:0;border-right:1px solid #b4dfce;border-radius:9px 0 0 9px;background:#d6ece3;color:#14694d;display:grid;place-items:center;cursor:pointer}
+.counter-chip-minus svg{width:15px}
+@media(max-width:620px){.counter-garment-grid{grid-template-columns:repeat(1,minmax(0,1fr))}}
