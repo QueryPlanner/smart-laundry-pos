@@ -905,6 +905,96 @@ pub async fn set_rate(
     tx.commit().await.map_err(db_err)?;
     Ok(())
 }
+/// Longest name an administrator may give a garment they add to the rate card.
+const MAX_GARMENT_NAME_CHARS: usize = 40;
+
+/// Adds a garment that is not in the default rate card (for example a leather jacket). It gets one
+/// unset, unavailable rate for every service, so it can be sold only for the services the
+/// administrator later prices on the rate card.
+pub async fn add_garment(
+    db: &DatabaseState,
+    session: &CounterSession,
+    name: &str,
+) -> Result<(), String> {
+    require_admin(session, "add a garment")?;
+    let name = name.split_whitespace().collect::<Vec<_>>().join(" ");
+    if name.is_empty() || name.chars().count() > MAX_GARMENT_NAME_CHARS {
+        return Err(format!(
+            "Give the garment a name of 1 to {MAX_GARMENT_NAME_CHARS} characters."
+        ));
+    }
+    let mut tx = db.begin_counter_write().await?;
+    let actor = require_admin_in_tx(&mut tx, session, "add a garment").await?;
+    let taken: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM garments WHERE LOWER(name_en)=LOWER(?)")
+            .bind(&name)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(db_err)?;
+    if taken > 0 {
+        return Err("A garment with this name already exists.".into());
+    }
+    let id = format!("g-custom-{}", Uuid::new_v4());
+    let now = Utc::now().to_rfc3339();
+    sqlx::query("INSERT INTO garments(id,garment_key,name_en,name_mr,category,image_key,billing_unit,sort_order) VALUES(?1,?1,?2,'','custom',?1,'piece',(SELECT COALESCE(MAX(sort_order),0)+1 FROM garments))")
+        .bind(&id).bind(&name).execute(&mut *tx).await.map_err(db_err)?;
+    sqlx::query("INSERT INTO garment_service_rates(garment_id,service_id,price_minor,configured,available,version,updated_at,updated_by) SELECT ?1,id,NULL,0,0,1,?2,?3 FROM service_methods")
+        .bind(&id).bind(&now).bind(&actor.id).execute(&mut *tx).await.map_err(db_err)?;
+    audit_details(
+        &mut tx,
+        &actor.id,
+        "garment_added",
+        "garment",
+        &id,
+        &now,
+        &serde_json::json!({ "name": name }),
+    )
+    .await?;
+    tx.commit().await.map_err(db_err)
+}
+
+/// Moves an order to the trash. Nothing is deleted: the order, its payments and its audit trail stay
+/// in the database, but lists, the dashboard, sales and customer totals no longer count it.
+pub async fn trash_order(
+    db: &DatabaseState,
+    session: &CounterSession,
+    order_id: &str,
+) -> Result<(), String> {
+    require_admin(session, "move an order to the trash")?;
+    let mut tx = db.begin_counter_write().await?;
+    let actor = require_admin_in_tx(&mut tx, session, "move an order to the trash").await?;
+    let state: Option<(Option<String>, String)> =
+        sqlx::query_as("SELECT trashed_at,status FROM orders WHERE id=?")
+            .bind(order_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(db_err)?;
+    let (trashed_at, status) = state.ok_or("Order not found.".to_string())?;
+    if trashed_at.is_some() {
+        return Err("This order is already in the trash.".into());
+    }
+    let now = Utc::now().to_rfc3339();
+    sqlx::query("UPDATE orders SET trashed_at=?,trashed_by=?,updated_at=? WHERE id=?")
+        .bind(&now)
+        .bind(&actor.id)
+        .bind(&now)
+        .bind(order_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(db_err)?;
+    audit_details(
+        &mut tx,
+        &actor.id,
+        "order_trashed",
+        "order",
+        order_id,
+        &now,
+        &serde_json::json!({ "status": status }),
+    )
+    .await?;
+    tx.commit().await.map_err(db_err)
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DiscountRule {
@@ -1199,11 +1289,11 @@ pub const ADMIN_PIN_RESET_FILE: &str = "reset-admin-pin.txt";
 /// UTF-16 that PowerShell's `>` and Notepad's "Unicode" produce.
 fn decode_text_file(bytes: &[u8]) -> Result<String, String> {
     let utf16 = |rest: &[u8], big_endian: bool| -> Result<String, String> {
-        if rest.len() % 2 != 0 {
+        if rest.len() & 1 != 0 {
             return Err("the text file is cut off".into());
         }
         let units: Vec<u16> = rest
-            .chunks_exact(2)
+            .chunks(2)
             .map(|pair| {
                 if big_endian {
                     u16::from_be_bytes([pair[0], pair[1]])
@@ -1772,7 +1862,7 @@ CAST(ROUND(o.total_amount*100) AS INTEGER) AS total_minor,\
 COALESCE((SELECT SUM(CAST(ROUND(p.amount*100) AS INTEGER)) FROM payments p WHERE p.order_id=o.id AND p.voided_at IS NULL),0) AS paid_minor,\
 (SELECT COUNT(*) FROM order_pieces op WHERE op.order_id=o.id) AS piece_count,\
 (SELECT COUNT(*) FROM order_pieces op WHERE op.order_id=o.id AND op.tagged=0) AS untagged_count \
-FROM orders o";
+FROM orders o WHERE o.trashed_at IS NULL";
 
 /// `ORDER_ROWS` plus the balance, the overdue flag and the search reason (alias `m` in the callers).
 /// Reasons are checked in this order: Tag ID, Today's bill, Bill number, Phone, Name. `?1` is the
@@ -3510,6 +3600,142 @@ mod counter_tests {
                 ),
                 (2500, 1000, 2998, 0)
             );
+            cleanup(db, path).await;
+        });
+    }
+
+    #[test]
+    fn an_admin_adds_a_garment_that_is_sellable_only_for_priced_services() {
+        tauri::async_runtime::block_on(async {
+            let path = fixture_path();
+            let db = DatabaseState::open(path.clone()).await;
+            let admin = admin_fixture(&db).await;
+            let staff = staff_fixture(&db).await;
+            let before = catalogue(&db, &admin).await.unwrap().garments.len();
+
+            assert!(add_garment(&db, &staff, "Leather jacket")
+                .await
+                .unwrap_err()
+                .contains("Administrator access"));
+            assert!(add_garment(&db, &admin, "   ").await.is_err());
+            assert!(add_garment(&db, &admin, &"x".repeat(41)).await.is_err());
+            add_garment(&db, &admin, "  Leather   jacket ")
+                .await
+                .unwrap();
+            assert!(add_garment(&db, &admin, "leather JACKET")
+                .await
+                .unwrap_err()
+                .contains("already exists"));
+
+            let cat = catalogue(&db, &admin).await.unwrap();
+            assert_eq!(cat.garments.len(), before + 1);
+            let jacket = cat.garments.last().unwrap();
+            assert_eq!(jacket["nameEn"], "Leather jacket");
+            let id = jacket["id"].as_str().unwrap().to_string();
+            let rates: Vec<_> = cat
+                .rates
+                .iter()
+                .filter(|r| r["garmentId"] == id.as_str())
+                .collect();
+            assert_eq!(rates.len(), cat.services.len());
+            assert!(rates
+                .iter()
+                .all(|r| r["available"] == 0 && r["configured"] == 0));
+
+            let order = |service: &str| OrderInput {
+                customer: CustomerInput {
+                    name: "Fixture Customer".into(),
+                    phone: "9990000000".into(),
+                    customer_id: None,
+                },
+                items: vec![LineInput {
+                    garment_id: id.clone(),
+                    service_id: service.into(),
+                    quantity: 1,
+                }],
+            };
+            assert!(quote(&db, &staff, &order("svc-wash")).await.is_err());
+            set_rate(&db, &admin, &id, "svc-wash", Some(30000), true)
+                .await
+                .unwrap();
+            let quoted = quote(&db, &staff, &order("svc-wash")).await.unwrap();
+            assert_eq!(quoted.total_minor, 30000);
+            assert!(quote(&db, &staff, &order("svc-iron")).await.is_err());
+            cleanup(db, path).await;
+        });
+    }
+
+    #[test]
+    fn a_trashed_order_is_kept_but_leaves_lists_sales_and_customer_totals() {
+        tauri::async_runtime::block_on(async {
+            let path = fixture_path();
+            let db = DatabaseState::open(path.clone()).await;
+            let admin = admin_fixture(&db).await;
+            let staff = staff_fixture(&db).await;
+            let kept = save_with(&db, &staff, order_input(1), "keep")
+                .await
+                .unwrap();
+            let test = save_with(&db, &staff, order_input(3), "test")
+                .await
+                .unwrap();
+            let filter = crate::insights::SalesFilter {
+                from: "2020-01-01T00:00".into(),
+                to: "2030-01-01T00:00".into(),
+                payment_methods: vec![],
+                statuses: vec![],
+                staff_id: None,
+                search: None,
+                discounted_only: false,
+                include_cancelled: true,
+            };
+            let both = crate::insights::sales_summary(&db, &admin, &filter)
+                .await
+                .unwrap();
+            assert_eq!(both.orders, 2);
+
+            assert!(trash_order(&db, &staff, &test.order_id)
+                .await
+                .unwrap_err()
+                .contains("Administrator access"));
+            assert!(trash_order(&db, &admin, "missing")
+                .await
+                .unwrap_err()
+                .contains("not found"));
+            trash_order(&db, &admin, &test.order_id).await.unwrap();
+            assert!(trash_order(&db, &admin, &test.order_id)
+                .await
+                .unwrap_err()
+                .contains("already in the trash"));
+
+            let listed = search_orders(&db, &admin, "", 0, 50, None).await.unwrap();
+            assert_eq!(
+                listed.iter().map(|o| o.id.as_str()).collect::<Vec<_>>(),
+                vec![kept.order_id.as_str()]
+            );
+            assert_eq!(order_queue_counts(&db, &admin).await.unwrap().all, 1);
+            let after = crate::insights::sales_summary(&db, &admin, &filter)
+                .await
+                .unwrap();
+            assert_eq!(after.orders, 1);
+            assert_eq!(after.collected_minor, kept.total_minor);
+            let overview = crate::insights::dashboard_overview_at(&db, &admin, Utc::now())
+                .await
+                .unwrap();
+            assert_eq!(overview.today.orders, 1);
+            assert_eq!(overview.month_to_date.orders, 1);
+            assert_eq!(overview.queue.received, 1);
+
+            let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM orders WHERE trashed_at IS NOT NULL AND trashed_by='fixture-admin'")
+                .fetch_one(db.writer_pool().unwrap()).await.unwrap();
+            assert_eq!(rows, 1);
+            let audited: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM counter_audit WHERE action='order_trashed' AND entity_id=?",
+            )
+            .bind(&test.order_id)
+            .fetch_one(db.writer_pool().unwrap())
+            .await
+            .unwrap();
+            assert_eq!(audited, 1);
             cleanup(db, path).await;
         });
     }

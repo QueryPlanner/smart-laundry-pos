@@ -18,15 +18,17 @@ export interface MoreActionsProps {
   onReprintTags(): void;
   onOpenPrints(): void;
   onCancel(reason: string): void;
+  onTrash(): void;
 }
 
 /**
  * Less-used actions behind a disclosure: reprints, the print status screen, and admin-only cancel.
  * Cancel is hidden once an order is collected or cancelled; staff see a hint to ask an admin instead.
  */
-export const MoreActions = ({ status, taggedCount, paidMinor, isAdmin, busy, onReprintBill, onReprintTags, onOpenPrints, onCancel }: MoreActionsProps) => {
+export const MoreActions = ({ status, taggedCount, paidMinor, isAdmin, busy, onReprintBill, onReprintTags, onOpenPrints, onCancel, onTrash }: MoreActionsProps) => {
   const [open, setOpen] = useState(false);
   const [cancelling, setCancelling] = useState(false);
+  const [trashing, setTrashing] = useState(false);
   const [reason, setReason] = useState('');
   const [problem, setProblem] = useState('');
   const regionId = useId();
@@ -36,6 +38,7 @@ export const MoreActions = ({ status, taggedCount, paidMinor, isAdmin, busy, onR
   const toggle = () => {
     setOpen(!open);
     setCancelling(false);
+    setTrashing(false);
     setReason('');
     setProblem('');
   };
@@ -77,6 +80,13 @@ export const MoreActions = ({ status, taggedCount, paidMinor, isAdmin, busy, onR
                 <Button variant="outline" disabled={busy} onClick={keep}>Keep order</Button>
               </div>
               : <Button variant="outline" disabled={busy} onClick={() => setCancelling(true)}>Cancel order</Button>)}
+          {isAdmin && (trashing
+            ? <div role="group" aria-label="Move this order to the trash">
+              <p>The order will no longer count in sales or the dashboard. Nothing is deleted.</p>
+              <Button variant="destructive" disabled={busy} onClick={onTrash}>Confirm move to trash</Button>
+              <Button variant="outline" disabled={busy} onClick={() => setTrashing(false)}>Keep order</Button>
+            </div>
+            : <Button variant="outline" disabled={busy} onClick={() => setTrashing(true)}>Move to trash</Button>)}
         </div>
       )}
     </div>

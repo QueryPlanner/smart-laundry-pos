@@ -5,7 +5,7 @@ import { Label } from '@/components/ui/label';
 import { CounterBackups } from './CounterBackups';
 import { CounterDiscounts } from './CounterDiscounts';
 import { parsePaymentAmountMinor } from '@/lib/localFirst/payment';
-import { createCounterStaff, enumeratePrinters, getCounterCatalogue, getPrinterProfiles, listCounterStaff, resetCounterStaffPin, setCounterRate, setCounterStaffActive, setPrinterProfiles, type CounterAccount, type CounterCatalogue, type NativePrinter } from '@/lib/localFirst/counter';
+import { addCounterGarment, createCounterStaff, enumeratePrinters, getCounterCatalogue, getPrinterProfiles, listCounterStaff, resetCounterStaffPin, setCounterRate, setCounterStaffActive, setPrinterProfiles, type CounterAccount, type CounterCatalogue, type NativePrinter } from '@/lib/localFirst/counter';
 
 type AdminTab = 'rates' | 'discounts' | 'staff' | 'printers' | 'backups';
 const TAB_LABEL: Record<AdminTab, string> = { rates: 'Rate card', discounts: 'Discounts', staff: 'Staff', printers: 'Printers', backups: 'Backups' };
@@ -25,6 +25,7 @@ export const CounterAdmin = ({ catalogue, onCatalogue, printers, onReloadPrinter
   const [staff, setStaff] = useState<CounterAccount[]>([]);
   const [name, setName] = useState('');
   const [pin, setPin] = useState('');
+  const [garmentName, setGarmentName] = useState('');
   const [profiles, setProfiles] = useState({ billPrinterId: '', tagPrinterId: '' });
   const [knownPrinters, setKnownPrinters] = useState<NativePrinter[]>(printers);
 
@@ -50,6 +51,15 @@ export const CounterAdmin = ({ catalogue, onCatalogue, printers, onReloadPrinter
     } catch (e) { onError(e); }
   };
 
+  const addGarment = async () => {
+    try {
+      await addCounterGarment(garmentName);
+      setGarmentName('');
+      onCatalogue(await getCounterCatalogue());
+      onNotice('Garment added. Set a rate for each service it should be sold with.');
+    } catch (e) { onError(e); }
+  };
+
   return <section className="counter-panel counter-admin">
     <div className="counter-admin-heading">
       <div><span className="counter-section-label">Admin controls</span><h1>Rates, staff & printers</h1></div>
@@ -60,6 +70,11 @@ export const CounterAdmin = ({ catalogue, onCatalogue, printers, onReloadPrinter
     {tab === 'rates' && <div className="counter-rates">
       <p className="counter-rate-warning">The starting prices are estimates. Check every price before using the app with customers.</p>
       <p>Only administrator-set rates can be sold. Empty rates remain unavailable; changing a rate affects future orders.</p>
+      <form className="counter-add-staff" onSubmit={e => { e.preventDefault(); void addGarment(); }}>
+        <Label>New garment<Input value={garmentName} maxLength={40} placeholder="For example, Leather jacket" onChange={e => setGarmentName(e.target.value)} /></Label>
+        <Button type="submit" disabled={!garmentName.trim()}>Add garment</Button>
+      </form>
+      <p>A new garment can be sold only for services you give a rate. Leave a service empty to make it unavailable.</p>
       <div className="counter-rate-head"><span>Garment</span><span>Service</span><span>Rate ₹</span><span>Available</span></div>
       {catalogue?.garments.filter(g => g.active).flatMap(g => catalogue.services.filter(s => s.active).map(s => {
         const r = catalogue.rates.find(x => x.garmentId === g.id && x.serviceId === s.id);

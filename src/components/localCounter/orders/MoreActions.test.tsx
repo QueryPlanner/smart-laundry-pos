@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { MoreActions, type MoreActionsProps } from './MoreActions';
 
-const handlers = () => ({ onReprintBill: vi.fn(), onReprintTags: vi.fn(), onOpenPrints: vi.fn(), onCancel: vi.fn() });
+const handlers = () => ({ onReprintBill: vi.fn(), onReprintTags: vi.fn(), onOpenPrints: vi.fn(), onCancel: vi.fn(), onTrash: vi.fn() });
 const renderActions = (over: Partial<MoreActionsProps> = {}) => {
   const callbacks = handlers();
   const props: MoreActionsProps = { status: 'ready', taggedCount: 2, paidMinor: 0, isAdmin: true, busy: false, ...callbacks, ...over };
@@ -19,6 +19,37 @@ const openCancelForm = () => {
 const reasonBox = () => screen.getByLabelText('Reason for cancelling') as HTMLTextAreaElement;
 
 afterEach(cleanup);
+
+describe('MoreActions trash', () => {
+  const openTrash = () => { openDisclosure(); fireEvent.click(button('Move to trash') as HTMLButtonElement); };
+
+  it('moves the order to the trash only after the admin confirms, whatever its status', () => {
+    const { onTrash } = renderActions({ status: 'collected' });
+    openTrash();
+    expect(onTrash).not.toHaveBeenCalled();
+    expect(screen.getByText(/Nothing is deleted/)).not.toBeNull();
+    fireEvent.click(button('Confirm move to trash') as HTMLButtonElement);
+    expect(onTrash).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the order when the admin backs out, and closing the panel resets the prompt', () => {
+    const { onTrash } = renderActions();
+    openTrash();
+    fireEvent.click(button('Keep order') as HTMLButtonElement);
+    expect(onTrash).not.toHaveBeenCalled();
+    expect(button('Move to trash')).not.toBeNull();
+    fireEvent.click(button('Move to trash') as HTMLButtonElement);
+    openDisclosure();
+    openDisclosure();
+    expect(button('Confirm move to trash')).toBeNull();
+  });
+
+  it('is not offered to staff', () => {
+    renderActions({ isAdmin: false });
+    openDisclosure();
+    expect(button('Move to trash')).toBeNull();
+  });
+});
 
 describe('MoreActions disclosure', () => {
   it('stays closed until opened, and closes again when the same button is pressed', () => {
@@ -118,7 +149,7 @@ describe('MoreActions admin cancel', () => {
   it('disables the cancel confirmation while busy', () => {
     const { rerender } = renderActions();
     openCancelForm();
-    rerender(<MoreActions status="ready" taggedCount={2} paidMinor={0} isAdmin busy onReprintBill={vi.fn()} onReprintTags={vi.fn()} onOpenPrints={vi.fn()} onCancel={vi.fn()} />);
+    rerender(<MoreActions status="ready" taggedCount={2} paidMinor={0} isAdmin busy onReprintBill={vi.fn()} onReprintTags={vi.fn()} onOpenPrints={vi.fn()} onCancel={vi.fn()} onTrash={vi.fn()} />);
     expect((button('Confirm cancel order') as HTMLButtonElement).disabled).toBe(true);
   });
 

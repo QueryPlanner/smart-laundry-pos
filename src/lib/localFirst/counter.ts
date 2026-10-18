@@ -108,6 +108,10 @@ export const getCounterCatalogue = (): Promise<CounterCatalogue> => call('counte
 export const searchCounterCustomers = (phone: string): Promise<Array<{id: string; name: string; phone: string}>> => call('counter_search_customers', { phone });
 export const setCounterRate = (garmentId: string, serviceId: string, priceMinor: number | null, available: boolean): Promise<void> =>
   call('counter_set_rate', { garmentId, serviceId, priceMinor, available });
+/** Admin only. Adds a garment with no rates; it can be sold only for the services priced on the rate card. */
+export const addCounterGarment = (name: string): Promise<void> => call('counter_add_garment', { name });
+/** Admin only. Hides the order from lists, sales and the dashboard. Nothing is deleted. */
+export const trashCounterOrder = (orderId: string): Promise<void> => call('counter_trash_order', { orderId });
 export const listCounterDiscounts = (): Promise<CounterDiscountRule[]> => call('counter_list_discounts');
 /** `customerId` null sets the shop-wide rule; otherwise that customer's own rule. Admin only. */
 export const setCounterDiscount = (customerId: string | null, percentBp: number, active: boolean, label: string): Promise<void> =>

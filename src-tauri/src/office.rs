@@ -240,7 +240,7 @@ pub struct CustomerDetail {
 
 /// Orders belonging to customer `c`: linked by id, or (older rows with no link) by phone number.
 const OWN_ORDER: &str =
-    "(o.customer_id=c.id OR (o.customer_id IS NULL AND o.customer_phone=c.phone))";
+    "(o.trashed_at IS NULL AND (o.customer_id=c.id OR (o.customer_id IS NULL AND o.customer_phone=c.phone)))";
 
 fn customer_select(filter: &str) -> String {
     format!(
@@ -342,7 +342,7 @@ pub async fn get_customer(
          COALESCE((SELECT COUNT(*) FROM order_pieces p WHERE p.order_id=o.id AND p.tagged=0),0) AS untagged,\
          o.payment_status,\
          CASE WHEN o.status IN ('received','washing','drying','ironing','quality_check','packing') AND CAST(strftime('%s',o.expected_ready_at) AS INTEGER) < CAST(strftime('%s','now') AS INTEGER) THEN 1 ELSE 0 END AS overdue \
-         FROM orders o WHERE o.customer_id=?1 OR (o.customer_id IS NULL AND o.customer_phone=?2) \
+         FROM orders o WHERE o.trashed_at IS NULL AND (o.customer_id=?1 OR (o.customer_id IS NULL AND o.customer_phone=?2)) \
          ORDER BY o.created_at DESC LIMIT ?3",
     )
     .bind(customer_id)
