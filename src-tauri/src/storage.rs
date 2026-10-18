@@ -21,6 +21,8 @@ const MIGRATION_V2_SQL: &str = include_str!("../migrations/002_counter_domain.sq
 const MIGRATION_V3_SQL: &str = include_str!("../migrations/003_default_rate_card.sql");
 const MIGRATION_V4_SQL: &str = include_str!("../migrations/004_advance_daily_tags.sql");
 const MIGRATION_V5_SQL: &str = include_str!("../migrations/005_order_trash.sql");
+const MIGRATION_V6_SQL: &str = include_str!("../migrations/006_simplified_rate_card.sql");
+const MIGRATION_V7_SQL: &str = include_str!("../migrations/007_trash_requests.sql");
 /// Every schema step, oldest first: its version number, its SQL and a name for error messages.
 /// Startup, the schema contract and the test fixtures all read this one list, so a new step is
 /// added here once and nowhere else.
@@ -34,8 +36,10 @@ const MIGRATION_STEPS: &[(i64, &str, &str)] = &[
         "v4 advance payments, daily bills and tags",
     ),
     (5, MIGRATION_V5_SQL, "v5 order trash"),
+    (6, MIGRATION_V6_SQL, "v6 simplified rate card"),
+    (7, MIGRATION_V7_SQL, "v7 trash requests"),
 ];
-const SCHEMA_VERSION: i64 = 5;
+const SCHEMA_VERSION: i64 = 7;
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const WRITER_CONNECTIONS: u32 = 1;
 const READER_CONNECTIONS: u32 = 4;
@@ -255,6 +259,16 @@ const REQUIRED_TABLES_V4: &[(&str, &[&str])] = &[
 
 /// Columns that schema version 5 added. Checked only for databases at version 5 or later.
 const REQUIRED_TABLES_V5: &[(&str, &[&str])] = &[("orders", &["trashed_at", "trashed_by"])];
+
+/// Columns that schema version 7 added. Checked only for databases at version 7 or later.
+const REQUIRED_TABLES_V7: &[(&str, &[&str])] = &[(
+    "orders",
+    &[
+        "trash_requested_at",
+        "trash_requested_by",
+        "trash_request_reason",
+    ],
+)];
 
 const REQUIRED_FOREIGN_KEYS: &[(&str, &str, &str, &str)] = &[
     ("orders", "customers", "customer_id", "SET NULL"),
@@ -1181,6 +1195,9 @@ async fn validate_schema(
     }
     if version >= 5 {
         require_tables_and_columns(connection, REQUIRED_TABLES_V5).await?;
+    }
+    if version >= 7 {
+        require_tables_and_columns(connection, REQUIRED_TABLES_V7).await?;
     }
 
     for (table, parent, column, on_delete) in REQUIRED_FOREIGN_KEYS {

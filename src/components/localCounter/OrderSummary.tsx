@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { CalendarClock, Minus, Plus, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -30,12 +31,35 @@ interface OrderSummaryProps {
   onPaymentMethod: (method: CounterPaymentMethod) => void;
   onRemove: (garmentId: string, serviceId: string) => void;
   onQuantity: (garmentId: string, quantity: number, serviceId?: string) => void;
+  /** Change the price of one line for this bill only; `undefined` restores the rate-card price. */
+  onPrice: (garmentId: string, serviceId: string, priceMinor: number | undefined) => void;
   onSave: () => void;
   busy: boolean;
 }
 
+/**
+ * Price of one piece for this bill. Anyone at the counter can change it; typing the rate-card price (or
+ * clearing the box) puts the line back on the rate card. It keeps its own text so "12." can be typed.
+ */
+const PriceField = ({ label, chargedMinor, listMinor, onChange }: { label: string; chargedMinor: number; listMinor: number; onChange: (priceMinor: number | undefined) => void }) => {
+  const [text, setText] = useState(rupeesText(chargedMinor));
+  const commit = (value: string) => {
+    setText(value);
+    const minor = parsePaymentAmountMinor(value);
+    if (value.trim() === '' || minor === null) return;
+    onChange(minor === listMinor ? undefined : minor);
+  };
+  return (
+    <label className="counter-line-price">
+      <span>₹ each</span>
+      <input aria-label={label} inputMode="decimal" value={text} onChange={event => commit(event.target.value)} onBlur={() => setText(rupeesText(chargedMinor))} />
+      {chargedMinor !== listMinor && <small>Rate card ₹{rupeesText(listMinor)}</small>}
+    </label>
+  );
+};
+
 /** Summary of the order being taken. The customer may pay any advance now, including nothing; the rest is due at pickup. */
-export const OrderSummary = ({ catalogue, lines, quote, quoteFailed, customer, advance, onAdvance, paymentMethod, onPaymentMethod, onRemove, onQuantity, onSave, busy }: OrderSummaryProps) => {
+export const OrderSummary = ({ catalogue, lines, quote, quoteFailed, customer, advance, onAdvance, paymentMethod, onPaymentMethod, onRemove, onQuantity, onPrice, onSave, busy }: OrderSummaryProps) => {
   const items = Object.entries(lines).filter(([, quantity]) => quantity > 0);
   const hasDiscount = (quote?.discountMinor ?? 0) > 0;
   const nothingToPay = quote !== null && quote.totalMinor === 0;
@@ -81,6 +105,7 @@ export const OrderSummary = ({ catalogue, lines, quote, quoteFailed, customer, a
                 <input aria-label={`${garment?.nameEn} summary quantity`} value={quantity} type="number" min="0" onChange={event => onQuantity(garmentId, Math.max(0, Math.floor(Number(event.target.value) || 0)), serviceId)} />
                 <button aria-label={`Increase ${garment?.nameEn}`} onClick={() => onQuantity(garmentId, quantity + 1, serviceId)}><Plus /></button>
               </div>
+              {line && <PriceField key={`${key}|${line.listPriceMinor}`} label={`${garment?.nameEn} price for this bill`} chargedMinor={line.unitPriceMinor} listMinor={line.listPriceMinor} onChange={price => onPrice(garmentId, serviceId, price)} />}
             </div>
           );
         })}</div>}

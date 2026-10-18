@@ -1,4 +1,4 @@
-import { copyFile, mkdir } from 'node:fs/promises';
+import { copyFile, mkdir, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import react from '@vitejs/plugin-react-swc';
@@ -6,27 +6,8 @@ import { defineConfig } from 'vite';
 
 const projectRoot = path.dirname(fileURLToPath(import.meta.url));
 const desktopOutput = path.resolve(projectRoot, 'dist-desktop');
-const garmentAssetNames = [
-  'blouse-transparent.png',
-  'dhoti-transparent.png',
-  'dress-transparent.png',
-  'dupatta-transparent.png',
-  'jacket-transparent.png',
-  'jeans-transparent.png',
-  'kurta-transparent.png',
-  'leggings-transparent.png',
-  'lungi-transparent.png',
-  'petticoat-transparent.png',
-  'pyjama-transparent.png',
-  'salwar-transparent.png',
-  'saree-transparent.png',
-  'shirt-transparent.png',
-  'shoes-transparent.png',
-  'shorts-transparent.png',
-  'sweater-transparent.png',
-  'trousers-transparent.png',
-  'tshirt-transparent.png',
-];
+/** Every garment picture in public/garments is bundled, so a new picture needs no edit here. */
+const isGarmentPicture = (fileName: string) => fileName.endsWith('-transparent.png');
 
 export default defineConfig({
   root: path.resolve(projectRoot, 'desktop'),
@@ -40,10 +21,12 @@ export default defineConfig({
       async closeBundle() {
         const garmentOutput = path.join(desktopOutput, 'garments');
         await mkdir(garmentOutput, { recursive: true });
+        const garmentSource = path.join(projectRoot, 'public', 'garments');
+        const assetNames = (await readdir(garmentSource)).filter(isGarmentPicture);
         await Promise.all(
-          garmentAssetNames.map((assetName) =>
+          assetNames.map((assetName) =>
             copyFile(
-              path.join(projectRoot, 'public', 'garments', assetName),
+              path.join(garmentSource, assetName),
               path.join(garmentOutput, assetName),
             ),
           ),

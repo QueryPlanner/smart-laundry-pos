@@ -10,7 +10,7 @@ import type { CounterAccount, CounterCatalogue, CounterSavedOrder } from '@/lib/
 const api = vi.hoisted(() => ({
   getCounterBootstrap: vi.fn(), getCounterCatalogue: vi.fn(), getCounterOrder: vi.fn(), getCounterOrderQueueCounts: vi.fn(), getOrderPieces: vi.fn(),
   listPrintJobs: vi.fn(), lockCounter: vi.fn(), quoteCounterOrder: vi.fn(), searchCounterCustomers: vi.fn(), searchCounterOrders: vi.fn(),
-  listCounterStaff: vi.fn(), enumeratePrinters: vi.fn(), getPrinterProfiles: vi.fn(),
+  listCounterStaff: vi.fn(), listCounterTrashRequests: vi.fn(), enumeratePrinters: vi.fn(), getPrinterProfiles: vi.fn(),
 }));
 vi.mock('@/lib/localFirst/counter', () => api);
 
@@ -72,6 +72,7 @@ beforeEach(() => {
   api.searchCounterOrders.mockResolvedValue([]);
   api.getCounterOrderQueueCounts.mockResolvedValue({ ready: 0, balanceDue: 0, overdue: 0, inProcess: 0, today: 0, all: 0, balanceDueMinor: 0 });
   api.listCounterStaff.mockResolvedValue([]);
+  api.listCounterTrashRequests.mockResolvedValue([]);
   api.enumeratePrinters.mockResolvedValue([]);
   api.getPrinterProfiles.mockResolvedValue(null);
 });

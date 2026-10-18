@@ -21,6 +21,7 @@ import { useOrderList } from '@/lib/localFirst/orders/useOrderList';
 import { CounterAdmin } from './CounterAdmin';
 import { RestorePendingBanner } from './RestorePendingBanner';
 import { OrdersPage } from './orders/OrdersPage';
+import { TrashRequestsPanel } from './orders/TrashRequestsPanel';
 import { OrderWorkspace } from './orders/OrderWorkspace';
 import { PrintProgress, PrintQueue } from './PrintJobs';
 import { JOB_STATE_LABEL } from './printJobState';
@@ -79,6 +80,8 @@ export const CounterApp = () => {
   const [busy, setBusy] = useState(false);
   const [serviceId, setServiceId] = useState('');
   const [lines, setLines] = useState<Record<string, number>>({});
+  /** Prices typed for this bill only, in paise per piece, keyed like `lines`. Any signed-in user may set one. */
+  const [priceOverrides, setPriceOverrides] = useState<Record<string, number>>({});
   const [customer, setCustomer] = useState<{ name: string; phone: string; customerId?: string }>({ name: '', phone: '' });
   const [quote, setQuote] = useState<CounterQuote | null>(null);
   const [quoteRefresh, setQuoteRefresh] = useState(0);
@@ -121,8 +124,9 @@ export const CounterApp = () => {
     setServiceId(current => current || defaultServiceId(catalogue));
   }, [catalogue]);
   const orderItems = useMemo(() => Object.entries(lines).filter(([, q]) => q > 0).map(([key, quantity]) => {
-    const [garmentId, treatmentId] = key.split('|'); return { garmentId, serviceId: treatmentId, quantity };
-  }), [lines]);
+    const [garmentId, treatmentId] = key.split('|');
+    return { garmentId, serviceId: treatmentId, quantity, ...(key in priceOverrides ? { unitPriceOverrideMinor: priceOverrides[key] } : {}) };
+  }), [lines, priceOverrides]);
   const draftInProgress = orderItems.length > 0 || customer.name.trim() !== '' || customer.phone.trim() !== '';
   useEffect(() => {
     if (!account) return;
@@ -149,7 +153,16 @@ export const CounterApp = () => {
     return { ...current, [key]: (current[key] || 0) + 1 };
   });
   const setQuantity = (garmentId: string, quantity: number, treatment = serviceId) => setLines(current => {
-    const key = `${garmentId}|${treatment}`; const next = { ...current }; if (quantity > 0 && Number.isInteger(quantity)) next[key] = quantity; else delete next[key]; return next;
+    const key = `${garmentId}|${treatment}`; const next = { ...current };
+    if (quantity > 0 && Number.isInteger(quantity)) next[key] = quantity;
+    else { delete next[key]; setPriceOverrides(prices => { const rest = { ...prices }; delete rest[key]; return rest; }); }
+    return next;
+  });
+  /** `undefined` goes back to the rate-card price. */
+  const setLinePrice = (garmentId: string, treatment: string, priceMinor: number | undefined) => setPriceOverrides(current => {
+    const key = `${garmentId}|${treatment}`; const next = { ...current };
+    if (priceMinor === undefined) delete next[key]; else next[key] = priceMinor;
+    return next;
   });
   const signIn = async (id: string, pin: string) => {
     setBusy(true); setError('');
@@ -165,7 +178,7 @@ export const CounterApp = () => {
     setSelectedReprintPieces([]); reprintRequestKeys.current = {};
   };
   const clearDraft = () => {
-    setCustomer({ name: '', phone: '' }); setLines({}); setPaymentMethod('cash'); setAdvance(''); setServiceId(defaultServiceId(catalogue));
+    setCustomer({ name: '', phone: '' }); setLines({}); setPriceOverrides({}); setPaymentMethod('cash'); setAdvance(''); setServiceId(defaultServiceId(catalogue));
     setQuote(null); setQuoteError(''); reviewedQuote.current = null;
     setReprintBusy(false); resetOrderScopedState();
     idempotencyKey.current = crypto.randomUUID(); saveAttempted.current = false;
@@ -332,7 +345,8 @@ export const CounterApp = () => {
     {quoteError && <p className="counter-error" role="alert">{quoteError}</p>}
     {restoreWaiting && <RestorePendingBanner />}
     {startupWarning && <p className="counter-error" role="status">{startupWarning}</p>}
-    {page === 'order' && <fieldset className="counter-fieldset" disabled={busy}><div className="counter-layout"><main className="counter-main"><CustomerEntry customer={customer} onChange={setCustomer} search={searchCounterCustomers} /><section className="counter-panel"><div className="counter-services" role="tablist" aria-label="Service"><span className="counter-section-label">Choose service</span>{catalogue?.services.filter(x => x.active).map(s => <button key={s.id} role="tab" aria-selected={s.id === serviceId} className={s.id === serviceId ? 'selected' : ''} onClick={() => setServiceId(s.id)}>{s.name}</button>)}</div><GarmentGrid catalogue={catalogue} serviceId={serviceId} lines={lines} onAdd={id => addGarment(id)} onQuantity={setQuantity} /></section></main><aside className="counter-aside"><OrderSummary catalogue={catalogue} lines={lines} quote={quote} quoteFailed={quoteError !== ''} customer={customer} advance={advance} onAdvance={changeAdvance} paymentMethod={paymentMethod} onPaymentMethod={changePaymentMethod} onRemove={(id, sid) => setQuantity(id, 0, sid)} onQuantity={setQuantity} onSave={() => void save()} busy={busy} /></aside></div></fieldset>}
+    {page === 'order' && <fieldset className="counter-fieldset" disabled={busy}><div className="counter-layout"><main className="counter-main"><CustomerEntry customer={customer} onChange={setCustomer} search={searchCounterCustomers} /><section className="counter-panel"><div className="counter-services" role="tablist" aria-label="Service"><span className="counter-section-label">Choose service</span>{catalogue?.services.filter(x => x.active).map(s => <button key={s.id} role="tab" aria-selected={s.id === serviceId} className={s.id === serviceId ? 'selected' : ''} onClick={() => setServiceId(s.id)}>{s.name}</button>)}</div><GarmentGrid catalogue={catalogue} serviceId={serviceId} lines={lines} onAdd={id => addGarment(id)} onQuantity={setQuantity} /></section></main><aside className="counter-aside"><OrderSummary catalogue={catalogue} lines={lines} quote={quote} quoteFailed={quoteError !== ''} customer={customer} advance={advance} onAdvance={changeAdvance} paymentMethod={paymentMethod} onPaymentMethod={changePaymentMethod} onRemove={(id, sid) => setQuantity(id, 0, sid)} onQuantity={setQuantity} onPrice={setLinePrice} onSave={() => void save()} busy={busy} /></aside></div></fieldset>}
+    {page === 'orders' && admin && <TrashRequestsPanel onError={reportError} onNotice={setNotice} onChanged={orderList.reload} />}
     {page === 'orders' && <OrdersPage query={orderList.query} onQuery={orderList.setQuery} segment={orderList.segment} onSegment={orderList.setSegment} counts={orderList.counts} results={orderList.results} loading={orderList.loading} hasMore={orderList.hasMore} onLoadMore={orderList.loadMore} onOpen={id => void openOrder(id)} onHandover={id => void openOrder(id, 'handover')} busy={busy} />}
     {(page === 'detail' || page === 'handover') && saved && <OrderWorkspace order={saved} view={page} isAdmin={admin} backLabel={origin.label} onBack={() => arrive(origin.page)} onView={setPage} onOrder={replaceOrder} onError={reportError} onNotice={setNotice} onReprintBill={() => void reprint(saved, 'bill')} onReprintTags={() => void reprint(saved, 'tags', saved.pieces.filter(piece => piece.tagged).map(piece => piece.shortId))} onOpenPrints={() => { void refreshJobs(saved.orderId); setPage('prints'); }} onFinished={finishHandover} />}
     {showing('admin') && <CounterAdmin catalogue={catalogue} onCatalogue={setCatalogue} printers={printers} onReloadPrinters={openPrinterSettings} onError={reportError} onNotice={setNotice} onRestoreStaged={() => setRestoreStaged(true)} />}

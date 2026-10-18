@@ -1,3 +1,4 @@
+import { BILL_TERMS_MR } from '@/lib/localFirst/billTerms';
 import { useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -91,15 +92,15 @@ export const ShopSettingsPage = ({ onError, onNotice }: SectionProps) => {
           {form.printCustomerPhone && <span>Phone: 98765 43210</span>}
           {form.printReceivedAt && <span>Received: 16 Oct 2026</span>}
           <span>Particulars · Service · Qty · Rate · Amount</span>
-          <span>Shirt · Wash + Iron · 2 · ₹25 · ₹50</span>
+          <span>Shirt · Wash · 2 · ₹30 · ₹60</span>
           <span className="counter-settings-sample">Subtotal · Total · Paid</span>
           {form.printReadyBy && <span>Ready by: 18 Oct 2026, 5:00 PM</span>}
           <em>{form.receiptFooter.trim() || 'Thank you'}</em>
-          <span>* terms and conditions apply</span>
+          <span lang="mr" className="counter-settings-terms">{BILL_TERMS_MR.join('\n')}</span>
           <span className="counter-section-label counter-tag-preview-label">TSC tag preview · 50 mm wide × {Number.isFinite(form.tagLengthMm) ? form.tagLengthMm.toFixed(1) : '—'} mm</span>
           <div className="counter-settings-tag-preview">
             {form.printShopNameOnTags && <strong>{form.shopName.trim() || 'SMART LAUNDRY'}</strong>}
-            <span>Bill 202610170001</span><span>Rita Joshi</span><span>98765 43210</span><span>Shirt · Wash + Iron</span><span>Piece 3/4</span><span>ID 2610170001-3</span>
+            <span>Bill 202610170001</span><span>Rita Joshi</span><span>98765 43210</span><span>Shirt · Wash</span><span>Piece 3/4</span><span>ID 2610170001-3</span>
             {form.tagLine.trim() && <em>{form.tagLine.trim()}</em>}
             <small>One 10 mm trailing feed follows the last tag out of the printer.</small>
           </div>

@@ -2,6 +2,7 @@
 import React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { BILL_TERMS_MR } from '@/lib/localFirst/billTerms';
 import { ShopSettingsPage } from './ShopSettingsPage';
 import type { CounterAccount } from '@/lib/localFirst/counter';
 import type { ShopSettings } from '@/lib/localFirst/shopSettings';
@@ -176,7 +177,7 @@ describe('ShopSettingsPage', () => {
     setup();
     await screen.findByLabelText(/^Shop name/);
     const lines = Array.from(tagPreview().querySelectorAll('span')).map(line => line.textContent);
-    expect(lines).toEqual(['Bill 202610170001', 'Rita Joshi', '98765 43210', 'Shirt · Wash + Iron', 'Piece 3/4', 'ID 2610170001-3']);
+    expect(lines).toEqual(['Bill 202610170001', 'Rita Joshi', '98765 43210', 'Shirt · Wash', 'Piece 3/4', 'ID 2610170001-3']);
   });
 
   it.each([
@@ -197,25 +198,25 @@ describe('ShopSettingsPage', () => {
     expect(screen.getByLabelText('Bill header preview').textContent).toContain(line);
   });
 
-  it('keeps the fixed terms line as the last bill line after the footer', async () => {
+  it('keeps the fixed Marathi terms as the last bill block after the footer', async () => {
     setup();
     await screen.findByLabelText(/^Shop name/);
     const footer = previewFooter();
-    expect(footer.nextElementSibling?.textContent).toBe('* terms and conditions apply');
+    expect(footer.nextElementSibling?.textContent).toBe(BILL_TERMS_MR.join('\n'));
     expect(footer.nextElementSibling?.nextElementSibling?.textContent).toMatch(/TSC tag preview/);
   });
 
-  it('keeps the fixed terms line last when the footer is changed or left empty', async () => {
+  it('keeps the fixed terms last when the footer is changed or left empty', async () => {
     setup();
     await screen.findByLabelText(/^Shop name/);
     type('Bill footer / terms', 'Pay on pickup');
     const changed = previewFooter();
     expect(changed.textContent).toBe('Pay on pickup');
-    expect(changed.nextElementSibling?.textContent).toBe('* terms and conditions apply');
+    expect(changed.nextElementSibling?.textContent).toBe(BILL_TERMS_MR.join('\n'));
     type('Bill footer / terms', '');
     const empty = previewFooter();
     expect(empty.textContent).toBe('Thank you');
-    expect(empty.nextElementSibling?.textContent).toBe('* terms and conditions apply');
+    expect(empty.nextElementSibling?.textContent).toBe(BILL_TERMS_MR.join('\n'));
     expect(empty.nextElementSibling?.nextElementSibling?.textContent).toMatch(/TSC tag preview/);
   });
 

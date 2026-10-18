@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { cancelCounterOrder, trashCounterOrder, updateCounterOrderStatus } from '@/lib/localFirst/counter';
+import { cancelCounterOrder, requestCounterOrderTrash, trashCounterOrder, updateCounterOrderStatus } from '@/lib/localFirst/counter';
 import type { CounterProcessingStatus, CounterSavedOrder } from '@/lib/localFirst/counter';
 import { rupees, stageLabel } from '@/lib/localFirst/orders/orderMoney';
 import { useOrderHandover } from '@/lib/localFirst/orders/useOrderHandover';
@@ -90,6 +90,13 @@ export const OrderWorkspace = ({
     } catch (error) { onError(error); }
   });
 
+  const requestTrash = (reason: string) => run(async () => {
+    try {
+      await requestCounterOrderTrash(order.orderId, reason);
+      onNotice(`Order ${order.orderNumber} was sent to the owner to be trashed. It still counts in sales until they approve.`);
+    } catch (error) { onError(error); }
+  });
+
   const customer = { name: order.customerName, phone: order.customerPhone };
 
   if (view === 'handover') {
@@ -124,6 +131,7 @@ export const OrderWorkspace = ({
       money={money.form} packingSlot={packingSlot}
       onCancel={reason => void cancel(reason)}
       onTrash={() => void trash()}
+      onRequestTrash={reason => void requestTrash(reason)}
       onReprintBill={onReprintBill} onReprintTags={onReprintTags} onOpenPrints={onOpenPrints}
     />
   );

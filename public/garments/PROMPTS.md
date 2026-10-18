@@ -21,3 +21,7 @@ The images contain no labels or prices. The application renders English and Mara
 ## Added later: coat and kurta pyjama
 
 `coat-transparent.png` and `kurta-pyjama-transparent.png` were generated with Codex CLI (`codex exec`, its image generation tool with the transparent-background option) using the same shared prompt as above, with `jacket-transparent.png` and `kurta-transparent.png` attached as style references. Subjects: a tailored dark navy formal blazer / suit coat; a men's plain cotton kurta shown with its matching pyjama pants as one set. Both are 1254 x 1254 RGBA, like the originals.
+
+## Added later: home items and lehenga (rate card v6)
+
+`bedsheet-single`, `bedsheet-double`, `blanket-single`, `blanket-double`, `footmat`, `curtain` and `lehenga` (all `-transparent.png`) were generated with Codex CLI (`codex exec -s workspace-write`, image generation with the transparent-background option) with `shirt-transparent.png` and `coat-transparent.png` attached as style references and the same shared style as above. Subjects: a folded light blue single bedsheet; a larger folded cream floral double bedsheet; a folded grey wool single blanket; a larger folded maroon quilted double blanket; a woven door footmat with a white pillow cover beside it; a pair of gathered beige curtains; a red and gold three-piece lehenga set (skirt, choli, dupatta). All are 1254 x 1254 RGBA. Some items reuse existing pictures: Heavy Saree uses `saree`, Work uses `blouse`, Footmat (small and large) share `footmat`, and the three lehenga weights share `lehenga`.

@@ -549,14 +549,14 @@ fn upgrading_a_v2_database_keeps_a_verified_v2_copy_and_adds_the_default_rate_ca
         assert_eq!(copy_marker, "kept");
         copy.close().await;
 
-        assert_eq!(garment_count(pool).await, 21);
+        assert_eq!(garment_count(pool).await, 33);
         assert_eq!(
             rate_cell(pool, "g-shirt", "svc-wash").await,
-            (Some(5000), 1, 2)
+            (Some(3000), 1, 3)
         );
         assert_eq!(
             rate_cell(pool, "g-coat", "svc-iron").await,
-            (Some(2500), 1, 2)
+            (Some(5000), 1, 3)
         );
         assert_eq!(
             marker_value(&upgraded, "v2-shop-marker").await.as_deref(),
@@ -579,22 +579,40 @@ fn a_brand_new_database_has_the_default_rate_card_and_no_upgrade_copy() {
         assert_eq!(fresh.info().error, None);
         let pool = &fresh.pools().unwrap().writer;
 
-        assert_eq!(garment_count(pool).await, 21);
+        assert_eq!(garment_count(pool).await, 33);
+        // Starch reuses the wash_iron service row.
         assert_eq!(
             rate_cell(pool, "g-shirt", "svc-wash-iron").await.0,
-            Some(6000)
+            Some(5000)
         );
         assert_eq!(
             rate_cell(pool, "g-saree", "svc-dry-clean").await.0,
-            Some(15000)
+            Some(17000)
         );
-        assert_eq!(rate_cell(pool, "g-sweater", "svc-wash").await.0, Some(9900));
-        assert_eq!(rate_cell(pool, "g-dhoti", "svc-iron").await.0, Some(2000));
-        // Shoes are not on the shop's price list and keep their v2 estimates.
+        assert_eq!(
+            rate_cell(pool, "g-sweater", "svc-wash").await.0,
+            Some(10000)
+        );
+        assert_eq!(rate_cell(pool, "g-dhoti", "svc-iron").await.0, Some(4000));
+        // Shoes are washed only.
         assert_eq!(rate_cell(pool, "g-shoes", "svc-wash").await.0, Some(15000));
         assert_eq!(
-            rate_cell(pool, "g-shoes", "svc-dry-clean").await.0,
-            Some(35000)
+            rate_cell(pool, "g-shoes", "svc-dry-clean").await,
+            (None, 0, 2)
+        );
+        let starch: String =
+            sqlx::query_scalar("SELECT name FROM service_methods WHERE id = 'svc-wash-iron'")
+                .fetch_one(pool)
+                .await
+                .unwrap();
+        assert_eq!(starch, "Starch");
+        let retired: i64 = sqlx::query_scalar("SELECT active FROM garments WHERE id = 'g-jeans'")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            retired, 0,
+            "garments not on the new card are retired, not deleted"
         );
 
         for version in 1..=SCHEMA_VERSION as u32 {
@@ -607,7 +625,7 @@ fn a_brand_new_database_has_the_default_rate_card_and_no_upgrade_copy() {
 }
 
 #[test]
-fn owner_edited_rates_survive_the_default_rate_card_upgrade() {
+fn owner_edited_rates_are_replaced_by_the_new_rate_card() {
     tauri::async_runtime::block_on(async {
         let temporary = TempDatabase::new();
         create_schema_file(&temporary.path, 2).await;
@@ -635,17 +653,14 @@ fn owner_edited_rates_survive_the_default_rate_card_upgrade() {
 
         assert_eq!(
             rate_cell(pool, "g-shirt", "svc-wash").await,
-            (Some(2222), 1, 2),
-            "the owner's price and version are kept"
+            (Some(3000), 1, 3),
+            "the shop's new price list replaces a price the owner had edited, and the version moves"
         );
-        // g-shirt svc-dry-clean is untouched by the owner and held the v2 estimate 8000, so the
-        // default 5000 replaces it and its version is bumped.
         assert_eq!(
             rate_cell(pool, "g-shirt", "svc-dry-clean").await,
-            (Some(5000), 1, 2)
+            (Some(4000), 1, 3)
         );
-        // g-shirt svc-iron already held the default 1000 and is configured, so the migration does
-        // not touch it and its version stays at 1.
+        // Iron stays 10 rupees, so its price is unchanged and the version moves only once (v3).
         assert_eq!(
             rate_cell(pool, "g-shirt", "svc-iron").await,
             (Some(1000), 1, 1)
@@ -654,7 +669,7 @@ fn owner_edited_rates_survive_the_default_rate_card_upgrade() {
 }
 
 #[test]
-fn the_default_rate_card_migration_is_safe_to_run_twice() {
+fn the_simplified_rate_card_migration_is_safe_to_run_twice() {
     tauri::async_runtime::block_on(async {
         let temporary = TempDatabase::new();
         let fresh = open(&temporary.path).await;
@@ -666,10 +681,10 @@ fn the_default_rate_card_migration_is_safe_to_run_twice() {
             before.iter().any(|row| row.0 == "g-coat"),
             "the snapshot covers the rate card rows the migration writes"
         );
-        sqlx::raw_sql(MIGRATION_V3_SQL)
+        sqlx::raw_sql(MIGRATION_V6_SQL)
             .execute(pool)
             .await
-            .expect("running the v3 migration again should succeed");
+            .expect("running the v6 migration again should succeed");
         assert_eq!(rate_card_snapshot(pool).await, before);
     });
 }
@@ -717,7 +732,7 @@ fn a_database_with_counter_tables_but_no_recorded_version_is_upgraded_and_copied
         assert_eq!(upgraded.info().error, None);
         let pool = &upgraded.pools().unwrap().writer;
         assert_eq!(user_version(pool).await, SCHEMA_VERSION);
-        assert_eq!(garment_count(pool).await, 21);
+        assert_eq!(garment_count(pool).await, 33);
 
         // The counter tables identify this as v2 even though no version was recorded, so the copy
         // is named for v2 and keeps the recorded version it had (0).

@@ -7,7 +7,7 @@ import { OrderWorkspace } from './OrderWorkspace';
 import { order, owingOrder } from './handoverFixtures';
 
 const api = vi.hoisted(() => ({
-  updateCounterOrderStatus: vi.fn(), cancelCounterOrder: vi.fn(), trashCounterOrder: vi.fn(), recordCounterPayment: vi.fn(),
+  updateCounterOrderStatus: vi.fn(), cancelCounterOrder: vi.fn(), trashCounterOrder: vi.fn(), requestCounterOrderTrash: vi.fn(), recordCounterPayment: vi.fn(),
   collectCounterOrder: vi.fn(), getCounterOrder: vi.fn(), matchOrderPieces: vi.fn(),
 }));
 vi.mock('@/lib/localFirst/counter', () => api);
@@ -150,6 +150,34 @@ describe('the detail view', () => {
       openTrash();
       await waitFor(() => expect(p.onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'only admins' })));
       expect(p.onBack).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('marking for the trash (staff)', () => {
+    const send = () => {
+      fireEvent.click(button('More actions'));
+      fireEvent.click(button('Mark for trash'));
+      fireEvent.change(screen.getByLabelText('Why should this bill be trashed?'), { target: { value: 'Added by mistake' } });
+      fireEvent.click(button('Send to the owner'));
+    };
+
+    it('sends the request, says the bill still counts, and stays on the order', async () => {
+      api.requestCounterOrderTrash.mockResolvedValue(undefined);
+      const p = props({ isAdmin: false });
+      render(<OrderWorkspace {...p} />);
+      send();
+      await waitFor(() => expect(p.onNotice).toHaveBeenCalled());
+      expect(api.requestCounterOrderTrash).toHaveBeenCalledWith('o-1', 'Added by mistake');
+      expect(vi.mocked(p.onNotice).mock.calls[0][0]).toMatch(/still counts in sales/);
+      expect(p.onBack).not.toHaveBeenCalled();
+    });
+
+    it('reports a failure', async () => {
+      api.requestCounterOrderTrash.mockRejectedValue(new Error('already marked'));
+      const p = props({ isAdmin: false });
+      render(<OrderWorkspace {...p} />);
+      send();
+      await waitFor(() => expect(p.onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'already marked' })));
     });
   });
 

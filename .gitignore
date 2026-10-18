@@ -46,3 +46,4 @@ src-tauri/gen/
 # Standalone desktop frontend and test coverage output
 /dist-desktop/
 /coverage/
+site

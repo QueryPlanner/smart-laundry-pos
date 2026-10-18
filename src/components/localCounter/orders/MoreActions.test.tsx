@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { MoreActions, type MoreActionsProps } from './MoreActions';
 
-const handlers = () => ({ onReprintBill: vi.fn(), onReprintTags: vi.fn(), onOpenPrints: vi.fn(), onCancel: vi.fn(), onTrash: vi.fn() });
+const handlers = () => ({ onReprintBill: vi.fn(), onReprintTags: vi.fn(), onOpenPrints: vi.fn(), onCancel: vi.fn(), onTrash: vi.fn(), onRequestTrash: vi.fn() });
 const renderActions = (over: Partial<MoreActionsProps> = {}) => {
   const callbacks = handlers();
   const props: MoreActionsProps = { status: 'ready', taggedCount: 2, paidMinor: 0, isAdmin: true, busy: false, ...callbacks, ...over };
@@ -48,6 +48,57 @@ describe('MoreActions trash', () => {
     renderActions({ isAdmin: false });
     openDisclosure();
     expect(button('Move to trash')).toBeNull();
+  });
+});
+
+describe('MoreActions mark for trash (staff)', () => {
+  const openForm = () => { openDisclosure(); fireEvent.click(button('Mark for trash') as HTMLButtonElement); };
+  const reasonField = () => screen.getByLabelText('Why should this bill be trashed?') as HTMLTextAreaElement;
+
+  it('is offered to staff only', () => {
+    renderActions({ isAdmin: false });
+    openDisclosure();
+    expect(button('Mark for trash')).not.toBeNull();
+    cleanup();
+    renderActions({ isAdmin: true });
+    openDisclosure();
+    expect(button('Mark for trash')).toBeNull();
+  });
+
+  it('needs a reason, then sends the trimmed reason to the owner', () => {
+    const { onRequestTrash } = renderActions({ isAdmin: false });
+    openForm();
+    expect(screen.getByText(/still counts in sales/)).not.toBeNull();
+    fireEvent.click(button('Send to the owner') as HTMLButtonElement);
+    expect(screen.getByRole('alert').textContent).toMatch(/3 to 200 characters/);
+    expect(onRequestTrash).not.toHaveBeenCalled();
+    fireEvent.change(reasonField(), { target: { value: '  Added twice by mistake  ' } });
+    expect(screen.queryByRole('alert')).toBeNull();
+    fireEvent.click(button('Send to the owner') as HTMLButtonElement);
+    expect(onRequestTrash).toHaveBeenCalledExactlyOnceWith('Added twice by mistake');
+  });
+
+  it('keeps the bill and drops a half-written reason when staff back out or close the panel', () => {
+    const { onRequestTrash } = renderActions({ isAdmin: false });
+    openForm();
+    fireEvent.change(reasonField(), { target: { value: 'typo' } });
+    fireEvent.click(button('Keep bill') as HTMLButtonElement);
+    expect(button('Mark for trash')).not.toBeNull();
+    fireEvent.click(button('Mark for trash') as HTMLButtonElement);
+    expect(reasonField().value).toBe('');
+    openDisclosure();
+    openDisclosure();
+    expect(button('Send to the owner')).toBeNull();
+    expect(onRequestTrash).not.toHaveBeenCalled();
+  });
+
+  it('refuses a reason that is too long', () => {
+    const { onRequestTrash } = renderActions({ isAdmin: false });
+    openForm();
+    fireEvent.change(reasonField(), { target: { value: 'x'.repeat(201) } });
+    fireEvent.click(button('Send to the owner') as HTMLButtonElement);
+    expect(screen.getByRole('alert')).not.toBeNull();
+    expect(onRequestTrash).not.toHaveBeenCalled();
   });
 });
 

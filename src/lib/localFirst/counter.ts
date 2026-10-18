@@ -7,6 +7,7 @@ const call = <T>(command: string, args?: Record<string, unknown>): Promise<T> =>
 };
 
 export type CounterRole = 'admin' | 'staff';
+/** `wash_iron` is the "Starch" service since schema v6 (its key could not be changed). */
 export type CounterServiceKey = 'wash' | 'iron' | 'wash_iron' | 'dry_clean';
 export type CounterJobKind = 'bill' | 'tags';
 export type CounterJobState = 'pending' | 'submitting' | 'submitted' | 'failed' | 'uncertain';
@@ -27,11 +28,15 @@ export interface CounterRate {
 }
 export interface CounterCatalogue { garments: CounterGarment[]; services: CounterService[]; rates: CounterRate[] }
 export interface CounterCustomer { name: string; phone: string; customerId?: string }
-export interface CounterOrderLineInput { garmentId: string; serviceId: string; quantity: number }
+export interface CounterOrderLineInput {
+  garmentId: string; serviceId: string; quantity: number;
+  /** A price for this bill only, in paise per piece. Omit to charge the rate card. */
+  unitPriceOverrideMinor?: number;
+}
 export interface CounterOrderInput { customer: CounterCustomer; items: CounterOrderLineInput[] }
 export interface CounterQuoteLine {
   garmentId: string; serviceId: string; garment: string; service: string;
-  quantity: number; unitPriceMinor: number; lineTotalMinor: number; rateVersion: number; serviceKey: CounterServiceKey;
+  quantity: number; unitPriceMinor: number; listPriceMinor: number; lineTotalMinor: number; rateVersion: number; serviceKey: CounterServiceKey;
 }
 export interface CounterQuote {
   lines: CounterQuoteLine[]; subtotalMinor: number; discountPercentBp: number; discountMinor: number; totalMinor: number;
@@ -112,6 +117,17 @@ export const setCounterRate = (garmentId: string, serviceId: string, priceMinor:
 export const addCounterGarment = (name: string): Promise<void> => call('counter_add_garment', { name });
 /** Admin only. Hides the order from lists, sales and the dashboard. Nothing is deleted. */
 export const trashCounterOrder = (orderId: string): Promise<void> => call('counter_trash_order', { orderId });
+/** A bill staff marked for the trash, waiting for an administrator. */
+export interface CounterTrashRequest {
+  orderId: string; orderNumber: string; customerName: string; totalMinor: number;
+  reason: string; requestedAt: string; requestedBy: string;
+}
+/** Any signed-in user. Marks a bill (for example one added by mistake) for the trash; it still counts in sales until an administrator approves. */
+export const requestCounterOrderTrash = (orderId: string, reason: string): Promise<void> => call('counter_request_order_trash', { orderId, reason });
+/** Admin only. Bills staff marked for the trash, oldest first. */
+export const listCounterTrashRequests = (): Promise<CounterTrashRequest[]> => call('counter_list_trash_requests');
+/** Admin only. Keeps the bill and clears the request. */
+export const dismissCounterTrashRequest = (orderId: string): Promise<void> => call('counter_dismiss_trash_request', { orderId });
 export const listCounterDiscounts = (): Promise<CounterDiscountRule[]> => call('counter_list_discounts');
 /** `customerId` null sets the shop-wide rule; otherwise that customer's own rule. Admin only. */
 export const setCounterDiscount = (customerId: string | null, percentBp: number, active: boolean, label: string): Promise<void> =>

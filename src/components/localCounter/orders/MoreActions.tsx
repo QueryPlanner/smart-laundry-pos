@@ -19,16 +19,20 @@ export interface MoreActionsProps {
   onOpenPrints(): void;
   onCancel(reason: string): void;
   onTrash(): void;
+  /** Staff only: ask an administrator to trash this bill (for example one added by mistake). */
+  onRequestTrash(reason: string): void;
 }
 
 /**
  * Less-used actions behind a disclosure: reprints, the print status screen, and admin-only cancel.
  * Cancel is hidden once an order is collected or cancelled; staff see a hint to ask an admin instead.
  */
-export const MoreActions = ({ status, taggedCount, paidMinor, isAdmin, busy, onReprintBill, onReprintTags, onOpenPrints, onCancel, onTrash }: MoreActionsProps) => {
+export const MoreActions = ({ status, taggedCount, paidMinor, isAdmin, busy, onReprintBill, onReprintTags, onOpenPrints, onCancel, onTrash, onRequestTrash }: MoreActionsProps) => {
   const [open, setOpen] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [trashing, setTrashing] = useState(false);
+  const [asking, setAsking] = useState(false);
+  const [trashReason, setTrashReason] = useState('');
   const [reason, setReason] = useState('');
   const [problem, setProblem] = useState('');
   const regionId = useId();
@@ -39,6 +43,8 @@ export const MoreActions = ({ status, taggedCount, paidMinor, isAdmin, busy, onR
     setOpen(!open);
     setCancelling(false);
     setTrashing(false);
+    setAsking(false);
+    setTrashReason('');
     setReason('');
     setProblem('');
   };
@@ -55,6 +61,15 @@ export const MoreActions = ({ status, taggedCount, paidMinor, isAdmin, busy, onR
     }
     setProblem('');
     onCancel(trimmed);
+  };
+  const sendTrashRequest = () => {
+    const trimmed = trashReason.trim();
+    if (trimmed.length < REASON_MIN || trimmed.length > REASON_MAX) {
+      setProblem(`Enter a reason of ${REASON_MIN} to ${REASON_MAX} characters.`);
+      return;
+    }
+    setProblem('');
+    onRequestTrash(trimmed);
   };
   const confirmLabel = paidMinor > 0 ? `Refund ${money(paidMinor)} to the customer` : 'Confirm cancel order';
 
@@ -87,6 +102,16 @@ export const MoreActions = ({ status, taggedCount, paidMinor, isAdmin, busy, onR
               <Button variant="outline" disabled={busy} onClick={() => setTrashing(false)}>Keep order</Button>
             </div>
             : <Button variant="outline" disabled={busy} onClick={() => setTrashing(true)}>Move to trash</Button>)}
+          {!isAdmin && (asking
+            ? <div role="group" aria-label="Mark this bill for the trash">
+              <p>Use this for a bill added by mistake. The owner reviews it; until then the bill still counts in sales.</p>
+              <Label htmlFor="trash-reason">Why should this bill be trashed?</Label>
+              <Textarea id="trash-reason" value={trashReason} onChange={event => { setTrashReason(event.target.value); setProblem(''); }} />
+              {problem && <p role="alert">{problem}</p>}
+              <Button variant="destructive" disabled={busy} onClick={sendTrashRequest}>Send to the owner</Button>
+              <Button variant="outline" disabled={busy} onClick={() => { setAsking(false); setTrashReason(''); setProblem(''); }}>Keep bill</Button>
+            </div>
+            : <Button variant="outline" disabled={busy} onClick={() => setAsking(true)}>Mark for trash</Button>)}
         </div>
       )}
     </div>

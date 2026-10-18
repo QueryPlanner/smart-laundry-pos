@@ -22,6 +22,13 @@
     {"key":"sweater","file":"sweater-transparent.png","labelEn":"Sweater"},
     {"key":"shoes","file":"shoes-transparent.png","labelEn":"Shoes, billed by pair"},
     {"key":"coat","file":"coat-transparent.png","labelEn":"Coat / Blazer"},
-    {"key":"kurta-pyjama","file":"kurta-pyjama-transparent.png","labelEn":"Gents Kurta Pyjama"}
+    {"key":"kurta-pyjama","file":"kurta-pyjama-transparent.png","labelEn":"Gents Kurta Pyjama"},
+    {"key":"bedsheet-single","file":"bedsheet-single-transparent.png","labelEn":"Single Bedsheet / Curtain"},
+    {"key":"bedsheet-double","file":"bedsheet-double-transparent.png","labelEn":"Double Bedsheet"},
+    {"key":"blanket-single","file":"blanket-single-transparent.png","labelEn":"Blanket single"},
+    {"key":"blanket-double","file":"blanket-double-transparent.png","labelEn":"Blanket double"},
+    {"key":"footmat","file":"footmat-transparent.png","labelEn":"Footmat (small and large)"},
+    {"key":"curtain","file":"curtain-transparent.png","labelEn":"Curtain per kg"},
+    {"key":"lehenga","file":"lehenga-transparent.png","labelEn":"Lehenga 3 pc (normal, medium, heavy)"}
   ]
 }
