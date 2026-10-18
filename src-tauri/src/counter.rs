@@ -1289,11 +1289,11 @@ pub const ADMIN_PIN_RESET_FILE: &str = "reset-admin-pin.txt";
 /// UTF-16 that PowerShell's `>` and Notepad's "Unicode" produce.
 fn decode_text_file(bytes: &[u8]) -> Result<String, String> {
     let utf16 = |rest: &[u8], big_endian: bool| -> Result<String, String> {
-        if rest.len() % 2 != 0 {
+        if rest.len() & 1 != 0 {
             return Err("the text file is cut off".into());
         }
         let units: Vec<u16> = rest
-            .chunks_exact(2)
+            .chunks(2)
             .map(|pair| {
                 if big_endian {
                     u16::from_be_bytes([pair[0], pair[1]])
