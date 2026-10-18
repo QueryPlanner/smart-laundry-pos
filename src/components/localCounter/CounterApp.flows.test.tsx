@@ -52,7 +52,7 @@ const signIn = async (account: CounterAccount = staff) => {
   fireEvent.change(screen.getByLabelText('Name'), { target: { value: account.id } });
   fireEvent.change(screen.getByLabelText('PIN'), { target: { value: '1234' } });
   fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
-  await screen.findByText('Choose service');
+  await screen.findByLabelText('Garments');
 };
 const nav = (name: string) => fireEvent.click(screen.getByRole('button', { name }));
 /** Opens the Orders / Pickup list and the detail page of its first order (an order still being washed, so it opens as detail). */
@@ -74,7 +74,7 @@ const advanceInput = () => screen.getByLabelText('Advance received now') as HTML
 const saveNow = () => fireEvent.click(screen.getByRole('button', { name: 'Save & Print' }));
 const startOrder = async () => {
   fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Rita Joshi' } });
-  fireEvent.click(screen.getByRole('button', { name: 'Add Shirt' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Add Shirt Wash' }));
   await waitFor(() => expect((screen.getByRole('button', { name: 'Save & Print' }) as HTMLButtonElement).disabled).toBe(false));
 };
 
@@ -122,7 +122,7 @@ describe('first run and sign-in', () => {
     api.getCounterBootstrap.mockResolvedValue({ setupRequired: false, authenticated: true, account: admin, accounts: [admin], warning: 'Automatic startup backup failed: disk full' });
     fillSetup('Mira Shah', '2468', '2468');
     await waitFor(() => expect(api.setupCounterAdmin).toHaveBeenCalledWith({ fullName: 'Mira Shah', pin: '2468' }));
-    await screen.findByText('Choose service');
+    await screen.findByLabelText('Garments');
     expect(screen.getByText('Automatic startup backup failed: disk full')).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Admin' })).toBeTruthy();
   });
@@ -140,7 +140,7 @@ describe('first run and sign-in', () => {
   it('opens straight into the counter when an administrator is already signed in, and without a warning', async () => {
     api.getCounterBootstrap.mockResolvedValue({ setupRequired: false, authenticated: true, account: staff, accounts: [staff], warning: null });
     mount();
-    await screen.findByText('Choose service');
+    await screen.findByLabelText('Garments');
     expect(screen.queryByRole('button', { name: 'Admin' })).toBeNull();
   });
 
@@ -186,7 +186,7 @@ describe('first run and sign-in', () => {
   it('locks back to the sign-in screen and forgets the draft order', async () => {
     await signIn();
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Rita Joshi' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Add Shirt' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add Shirt Wash' }));
     api.getCounterBootstrap.mockResolvedValue(unauthenticated());
     fireEvent.click(screen.getByRole('button', { name: /Lock/ }));
     fireEvent.click(await screen.findByRole('button', { name: 'Discard order' }));
@@ -196,9 +196,9 @@ describe('first run and sign-in', () => {
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'staff-1' } });
     fireEvent.change(screen.getByLabelText('PIN'), { target: { value: '1234' } });
     fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
-    await screen.findByText('Choose service');
+    await screen.findByLabelText('Garments');
     expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('');
-    expect(screen.getByText('Tap garment pictures to add items.')).toBeTruthy();
+    expect(screen.getByText('Tap a service on a garment to add it.')).toBeTruthy();
   });
 });
 
@@ -206,11 +206,12 @@ describe('taking and saving an order', () => {
   it('removes the whole line with the bin button, however many were added', async () => {
     await signIn();
     await startOrder();
-    fireEvent.change(screen.getByLabelText('Shirt quantity'), { target: { value: '3' } });
+    for (let tap = 0; tap < 2; tap += 1) fireEvent.click(screen.getByRole('button', { name: 'Add Shirt Wash' }));
     await waitFor(() => expect((screen.getByLabelText('Shirt summary quantity') as HTMLInputElement).value).toBe('3'));
+    expect(screen.getByLabelText('3 added').textContent).toBe('×3');
     fireEvent.click(screen.getByRole('button', { name: 'Remove Shirt' }));
-    await screen.findByText('Tap garment pictures to add items.');
-    expect((screen.getByLabelText('Shirt quantity') as HTMLInputElement).value).toBe('0');
+    await screen.findByText('Tap a service on a garment to add it.');
+    expect(screen.queryByLabelText(/added/)).toBeNull();
   });
 
   it('keeps the same request key after a failed save so a retry cannot create a second order', async () => {
@@ -300,7 +301,7 @@ describe('taking and saving an order', () => {
     await signIn();
     api.quoteCounterOrder.mockImplementation(async (input: CounterOrderInput) => quoteFor(input, 0));
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Rita Joshi' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Add Shirt' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add Shirt Wash' }));
     fireEvent.change(advanceInput(), { target: { value: '5' } });
     await screen.findByText('No payment due');
     await waitFor(() => expect(saveButton().disabled).toBe(false));
@@ -313,10 +314,10 @@ describe('taking and saving an order', () => {
     await signIn();
     api.quoteCounterOrder.mockRejectedValueOnce(new Error('A rate has not been configured for this garment and service.'));
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Rita Joshi' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Add Shirt' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add Shirt Wash' }));
     expect((await screen.findByRole('alert')).textContent).toContain('rate has not been configured');
     expect((screen.getByRole('button', { name: 'Save & Print' }) as HTMLButtonElement).disabled).toBe(true);
-    fireEvent.click(screen.getByRole('button', { name: 'Add Shirt' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add Shirt Wash' }));
     await waitFor(() => expect((screen.getByRole('button', { name: 'Save & Print' }) as HTMLButtonElement).disabled).toBe(false));
     expect(screen.queryByRole('alert')).toBeNull();
   });
@@ -326,7 +327,7 @@ describe('small order-screen behaviours', () => {
   it('lets staff change a price for this bill only, and forgets it when the line is removed', async () => {
     await signIn();
     await startOrder();
-    fireEvent.change(screen.getByLabelText('Shirt quantity'), { target: { value: '2' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add Shirt Wash' }));
     const price = await screen.findByLabelText('Shirt price for this bill');
     fireEvent.change(price, { target: { value: '15' } });
     await waitFor(() => expect(api.quoteCounterOrder).toHaveBeenLastCalledWith(expect.objectContaining({ items: [expect.objectContaining({ quantity: 2, unitPriceOverrideMinor: 1500 })] })));
@@ -338,24 +339,18 @@ describe('small order-screen behaviours', () => {
     fireEvent.change(await screen.findByLabelText('Shirt price for this bill'), { target: { value: '5' } });
     await waitFor(() => expect(api.quoteCounterOrder).toHaveBeenLastCalledWith(expect.objectContaining({ items: [expect.objectContaining({ unitPriceOverrideMinor: 500 })] })));
     fireEvent.click(screen.getByRole('button', { name: 'Remove Shirt' }));
-    await screen.findByText('Tap garment pictures to add items.');
-    fireEvent.click(screen.getByRole('button', { name: 'Add Shirt' }));
+    await screen.findByText('Tap a service on a garment to add it.');
+    fireEvent.click(screen.getByRole('button', { name: 'Add Shirt Wash' }));
     await waitFor(() => expect(api.quoteCounterOrder).toHaveBeenLastCalledWith(expect.objectContaining({ items: [expect.not.objectContaining({ unitPriceOverrideMinor: expect.anything() })] })));
   });
 
-  it('removes a line when its quantity is typed as zero', async () => {
+  it('removes a line when its summary quantity is typed as zero', async () => {
     await signIn();
     await startOrder();
-    fireEvent.change(screen.getByLabelText('Shirt quantity'), { target: { value: '3' } });
+    for (let tap = 0; tap < 2; tap += 1) fireEvent.click(screen.getByRole('button', { name: 'Add Shirt Wash' }));
     await waitFor(() => expect(api.quoteCounterOrder).toHaveBeenLastCalledWith(expect.objectContaining({ items: [expect.objectContaining({ quantity: 3 })] })));
-    fireEvent.change(screen.getByLabelText('Shirt quantity'), { target: { value: '0' } });
-    await screen.findByText('Tap garment pictures to add items.');
-  });
-
-  it('starts on the first service when Wash is not offered', async () => {
-    api.getCounterCatalogue.mockResolvedValue({ ...catalogue, services: [catalogue.services[0]] });
-    await signIn();
-    expect(screen.getByRole('tab', { name: 'Wash' }).getAttribute('aria-selected')).toBe('true');
+    fireEvent.change(screen.getByLabelText('Shirt summary quantity'), { target: { value: '0' } });
+    await screen.findByText('Tap a service on a garment to add it.');
   });
 
   it('shows an empty name list rather than failing if the account list is missing', async () => {
@@ -375,7 +370,7 @@ describe('small order-screen behaviours', () => {
     fireEvent.change(screen.getByLabelText('PIN'), { target: { value: '2468' } });
     fireEvent.change(screen.getByLabelText('Confirm PIN'), { target: { value: '2468' } });
     fireEvent.click(screen.getByRole('button', { name: 'Create admin account' }));
-    await screen.findByText('Choose service');
+    await screen.findByLabelText('Garments');
   });
 
 });
@@ -492,7 +487,7 @@ describe('failures in small actions are always shown, never swallowed', () => {
     api.lockCounter.mockRejectedValue(new Error('session store unavailable'));
     fireEvent.click(screen.getByRole('button', { name: /Lock/ }));
     expect((await screen.findByRole('alert')).textContent).toBe('The counter could not be locked: session store unavailable');
-    expect(screen.getByText('Choose service')).toBeTruthy();
+    expect(screen.getByLabelText('Garments')).toBeTruthy();
   });
 
   it('shows a message if the account list cannot be refreshed', async () => {
@@ -557,7 +552,7 @@ describe('protecting an order that is being taken', () => {
     nav('New order');
     expect(dialog()).toBeNull();
     expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('Rita Joshi');
-    expect((screen.getByLabelText('Shirt quantity') as HTMLInputElement).value).toBe('1');
+    expect(screen.getByLabelText('1 added').textContent).toBe('×1');
   });
 
   it('asks before leaving the order page throws the draft away, and can keep or discard it', async () => {
@@ -574,7 +569,7 @@ describe('protecting an order that is being taken', () => {
     expect(screen.queryByLabelText('Mobile number')).toBeNull();
     nav('New order');
     expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('');
-    expect(screen.getByText('Tap garment pictures to add items.')).toBeTruthy();
+    expect(screen.getByText('Tap a service on a garment to add it.')).toBeTruthy();
   });
 
   it('counts a typed mobile number or a lone garment as an order in progress', async () => {
@@ -584,7 +579,7 @@ describe('protecting an order that is being taken', () => {
     expect(dialog()).not.toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Discard order' }));
     nav('New order');
-    fireEvent.click(screen.getByRole('button', { name: 'Add Shirt' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add Shirt Wash' }));
     nav('Print queue');
     expect(dialog()).not.toBeNull();
   });
@@ -594,7 +589,7 @@ describe('protecting an order that is being taken', () => {
     nav('Orders / Pickup');
     nav('New order');
     expect(dialog()).toBeNull();
-    await screen.findByText('Choose service');
+    await screen.findByLabelText('Garments');
   });
 
   it('asks before Lock discards the draft, and locks at once when there is none', async () => {
@@ -635,7 +630,7 @@ describe('protecting an order that is being taken', () => {
     api.saveCounterOrder.mockReturnValue(new Promise<CounterSavedOrder>(resolve => { finish = resolve; }));
     fireEvent.click(screen.getByRole('button', { name: 'Save & Print' }));
     await waitFor(() => expect(screen.getByLabelText('Name').closest('fieldset')!.disabled).toBe(true));
-    for (const control of [screen.getByLabelText('Name'), screen.getByLabelText('Mobile number'), screen.getByRole('tab', { name: 'Wash' }), screen.getByRole('button', { name: 'Add Shirt' }), screen.getByLabelText('Shirt summary quantity'), screen.getByRole('button', { name: 'Remove Shirt' })]) {
+    for (const control of [screen.getByLabelText('Name'), screen.getByLabelText('Mobile number'), screen.getByRole('button', { name: 'Add Shirt Wash' }), screen.getByLabelText('Shirt summary quantity'), screen.getByRole('button', { name: 'Remove Shirt' })]) {
       expect(control.matches(':disabled'), control.outerHTML).toBe(true);
     }
     finish(savedOrder({ status: 'received', paidMinor: 2000, balanceMinor: 0, totalMinor: 2000 }));
@@ -680,7 +675,7 @@ describe('saving failures that need a clear next step', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save & Print' }));
     await screen.findByText(/Order save did not complete: database is busy/);
     api.quoteCounterOrder.mockRejectedValueOnce(new Error('A rate has not been configured for this garment and service.'));
-    fireEvent.click(screen.getByRole('button', { name: 'Add Shirt' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add Shirt Wash' }));
     await waitFor(() => expect(screen.getAllByRole('alert').length).toBe(2));
     expect(screen.getByText('The price could not be worked out. See the message above.')).toBeTruthy();
   });
@@ -766,10 +761,10 @@ describe('the advance and the request key of a new order', () => {
     saveNow();
     await screen.findByText(/Order SL-1 saved/);
     nav('New order');
-    await screen.findByText('Choose service');
+    await screen.findByLabelText('Garments');
     expect(advanceInput().value).toBe('');
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Asha Rao' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Add Shirt' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add Shirt Wash' }));
     await waitFor(() => expect(saveButton().disabled).toBe(false));
     expect(advanceInput().value).toBe('');
     expect(screen.queryByRole('group', { name: 'Payment method' })).toBeNull();
@@ -786,9 +781,9 @@ describe('quotes that arrive late', () => {
     let late: (quote: ReturnType<typeof quoteFor>) => void = () => undefined;
     api.quoteCounterOrder.mockReturnValueOnce(new Promise(resolve => { late = resolve; }));
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Rita Joshi' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Add Shirt' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add Shirt Wash' }));
     await waitFor(() => expect(api.quoteCounterOrder).toHaveBeenCalledTimes(1));
-    fireEvent.click(screen.getByRole('button', { name: 'Add Shirt' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add Shirt Wash' }));
     await waitFor(() => expect(screen.getByText('Amount to collect').nextSibling?.textContent).toBe('₹40.00'));
     late(quoteFor({ customer: { name: 'Rita Joshi', phone: '' }, items: [{ garmentId: 'shirt', serviceId: 'wash-iron', quantity: 1 }] }));
     await new Promise(resolve => setTimeout(resolve, 20));
@@ -1196,7 +1191,7 @@ describe('Orders / Pickup', () => {
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'admin-1' } });
     fireEvent.change(screen.getByLabelText('PIN'), { target: { value: '1234' } });
     fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
-    await screen.findByText('Choose service');
+    await screen.findByLabelText('Garments');
     nav('Orders / Pickup');
     await screen.findByText('SL-1');
     expect(searchBox().value).toBe('');

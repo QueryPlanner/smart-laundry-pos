@@ -1,44 +1,76 @@
-import { Minus, Plus } from 'lucide-react';
+import { useState } from 'react';
+import { Minus } from 'lucide-react';
 import type { CounterCatalogue, CounterGarment, CounterRate, CounterService } from '@/lib/localFirst/counter';
 
-/** Shoes are billed per pair and cannot be ironed. */
-const isForbidden = (garment: CounterGarment, service: CounterService | undefined) =>
-  garment.billingUnit === 'pair' && (service?.key === 'iron' || service?.key === 'wash_iron');
+/** Shoes are billed per pair and cannot be ironed or starched. */
+const isForbidden = (garment: CounterGarment, service: CounterService) =>
+  garment.billingUnit === 'pair' && (service.key === 'iron' || service.key === 'wash_iron');
 
-const isSellable = (garment: CounterGarment, service: CounterService | undefined, rate: CounterRate | undefined) =>
+const isSellable = (garment: CounterGarment, service: CounterService, rate: CounterRate | undefined) =>
   !!rate?.available && !!rate.configured && !isForbidden(garment, service);
 
 /** True when no active garment can be sold under any active service, for example before the owner has set any rate. */
-const nothingIsSellable = (catalogue: CounterCatalogue) =>
-  !catalogue.garments.some(garment => garment.active && catalogue.services.some(service =>
-    service.active && isSellable(garment, service, catalogue.rates.find(r => r.garmentId === garment.id && r.serviceId === service.id))));
+const nothingIsSellable = (catalogue: CounterCatalogue, services: CounterService[]) =>
+  !catalogue.garments.some(garment => garment.active && services.some(service =>
+    isSellable(garment, service, catalogue.rates.find(r => r.garmentId === garment.id && r.serviceId === service.id))));
 
-export const GarmentGrid = ({catalogue,serviceId,lines,onAdd,onQuantity}:{catalogue:CounterCatalogue|null;serviceId:string;lines:Record<string,number>;onAdd:(id:string)=>void;onQuantity:(id:string,n:number)=>void}) => {
-  const service = catalogue?.services.find(s=>s.id===serviceId);
+/** Whole rupees without decimals (₹30), otherwise with paise (₹12.50). */
+const price = (minor: number, unit: CounterGarment['billingUnit']) =>
+  `₹${minor % 100 === 0 ? minor / 100 : (minor / 100).toFixed(2)}${unit === 'pair' ? '/pair' : ''}`;
+
+const GarmentPicture = ({ src, label }: { src: string; label: string }) => {
+  const [failed, setFailed] = useState(false);
+  return failed
+    ? <span className="counter-garment-fallback visible" aria-hidden="true">{label.slice(0, 1)}</span>
+    : <img src={src} alt="" onError={() => setFailed(true)} />;
+};
+
+interface GarmentGridProps {
+  catalogue: CounterCatalogue | null;
+  /** Quantity per `garmentId|serviceId`. */
+  lines: Record<string, number>;
+  onAdd: (garmentId: string, serviceId: string) => void;
+  onQuantity: (garmentId: string, quantity: number, serviceId: string) => void;
+}
+
+/**
+ * Every active garment at once. The services (Iron, Wash, Dry Clean, Starch) are buttons along the
+ * bottom of each card, each with its price: one tap adds one piece, and a count with a minus button
+ * appears once a service has been added.
+ */
+export const GarmentGrid = ({ catalogue, lines, onAdd, onQuantity }: GarmentGridProps) => {
+  const services = (catalogue?.services ?? []).filter(service => service.active);
   return <>
-  {catalogue && nothingIsSellable(catalogue) && <p className="counter-no-rates" role="status">No prices are set yet. Ask the owner to set the rate card.</p>}
-  <div className="counter-garment-grid" aria-label="Garments">
-    {(catalogue?.garments||[]).filter(g=>g.active).map(g=>{
-      const rate=catalogue?.rates.find(r=>r.garmentId===g.id&&r.serviceId===serviceId);
-      const key=`${g.id}|${serviceId}`; const quantity=lines[key]||0;
-      const forbidden=isForbidden(g,service);
-      const available=isSellable(g,service,rate);
-      return <article className={`counter-garment ${available?'':'unavailable'}`} key={g.id}>
-        <button type="button" className="counter-garment-picture" disabled={!available} aria-label={`Add ${g.nameEn}`} onClick={()=>onAdd(g.id)}>
-          <GarmentPicture src={`/garments/${g.imageKey||g.key}-transparent.png`} label={g.nameEn} />
-        </button>
-        <div className="counter-garment-name"><strong>{g.nameEn}</strong><span lang="mr">{g.nameMr}</span></div>
-        <p className="counter-garment-price">{available?`₹${(rate!.priceMinor!/100).toFixed(2)} / ${g.billingUnit==='pair'?'pair':'piece'}`:forbidden?'Ironing shoes unavailable':'Unavailable for this service'}</p>
-        <div className="counter-quantity" aria-label={`${g.nameEn} quantity for ${service?.name}`}>
-          <button type="button" disabled={!available||quantity===0} aria-label={`Remove one ${g.nameEn}`} onClick={()=>onQuantity(g.id,quantity-1)}><Minus/></button>
-          <input aria-label={`${g.nameEn} quantity`} type="number" min="0" step="1" inputMode="numeric" disabled={!available} value={quantity} onChange={e=>onQuantity(g.id,Math.max(0,Math.floor(Number(e.target.value)||0)))}/>
-          <button type="button" disabled={!available} aria-label={`Add one ${g.nameEn}`} onClick={()=>onAdd(g.id)}><Plus/></button>
-        </div>
-      </article>;
-    })}
-  </div>
+    {catalogue && nothingIsSellable(catalogue, services) && <p className="counter-no-rates" role="status">No prices are set yet. Ask the owner to set the rate card.</p>}
+    <div className="counter-garment-grid" aria-label="Garments">
+      {(catalogue?.garments ?? []).filter(garment => garment.active).map(garment => {
+        const sellable = services.map(service => {
+          const rate = catalogue?.rates.find(r => r.garmentId === garment.id && r.serviceId === service.id);
+          return { service, rate, ok: isSellable(garment, service, rate), quantity: lines[`${garment.id}|${service.id}`] || 0 };
+        });
+        return (
+          <article className={`counter-garment ${sellable.some(s => s.ok) ? '' : 'unavailable'}`} key={garment.id}>
+            <div className="counter-garment-picture">
+              <GarmentPicture src={`/garments/${garment.imageKey || garment.key}-transparent.png`} label={garment.nameEn} />
+            </div>
+            <div className="counter-garment-name"><strong>{garment.nameEn}</strong><span lang="mr">{garment.nameMr}</span></div>
+            <div className="counter-service-buttons" role="group" aria-label={`${garment.nameEn} services`}>
+              {sellable.map(({ service, rate, ok, quantity }) => (
+                <div className={`counter-service-chip ${quantity > 0 ? 'selected' : ''} ${ok ? '' : 'off'}`} key={service.id}>
+                  {quantity > 0 && (
+                    <button type="button" className="counter-chip-minus" aria-label={`Remove one ${garment.nameEn} ${service.name}`} onClick={() => onQuantity(garment.id, quantity - 1, service.id)}><Minus /></button>
+                  )}
+                  <button type="button" className="counter-chip-add" disabled={!ok} aria-label={`Add ${garment.nameEn} ${service.name}`} onClick={() => onAdd(garment.id, service.id)}>
+                    <span>{service.name}</span>
+                    <strong>{ok ? price(rate!.priceMinor!, garment.billingUnit) : '—'}</strong>
+                    {quantity > 0 && <em aria-label={`${quantity} added`}>×{quantity}</em>}
+                  </button>
+                </div>
+              ))}
+            </div>
+          </article>
+        );
+      })}
+    </div>
   </>;
 };
-import { useState } from 'react';
-
-const GarmentPicture=({src,label}:{src:string;label:string})=>{const[failed,setFailed]=useState(false);return failed?<span className="counter-garment-fallback visible" aria-hidden="true">{label.slice(0,1)}</span>:<img src={src} alt="" onError={()=>setFailed(true)}/>};

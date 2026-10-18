@@ -1,61 +1,73 @@
 // @vitest-environment jsdom
 import React from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { GarmentGrid } from './GarmentGrid';
 import type { CounterCatalogue } from '@/lib/localFirst/counter';
 
 const garment = (id: string, nameEn: string, extra: Partial<CounterCatalogue['garments'][number]> = {}) => ({ id, key: id, nameEn, nameMr: nameEn, category: 'c', imageKey: id, billingUnit: 'piece' as const, active: true, ...extra });
+const rate = (garmentId: string, serviceId: string, priceMinor: number | null, over: Partial<CounterCatalogue['rates'][number]> = {}) => ({ garmentId, serviceId, priceMinor, configured: priceMinor !== null, available: priceMinor !== null, version: 1, ...over });
 const catalogue: CounterCatalogue = {
   garments: [garment('shirt', 'Shirt'), garment('shoe', 'Shoes', { billingUnit: 'pair' }), garment('old', 'Old', { active: false }), garment('blank', 'Blank', { imageKey: '' })],
-  services: [{ id: 'wash', key: 'wash', name: 'Wash', active: true }, { id: 'iron', key: 'iron', name: 'Iron', active: true }],
+  services: [
+    { id: 'iron', key: 'iron', name: 'Iron', active: true }, { id: 'wash', key: 'wash', name: 'Wash', active: true },
+    { id: 'starch', key: 'wash_iron', name: 'Starch', active: true }, { id: 'gone', key: 'dry_clean', name: 'Dry Clean', active: false },
+  ],
   rates: [
-    { garmentId: 'shirt', serviceId: 'wash', priceMinor: 1250, configured: true, available: true, version: 1 },
-    { garmentId: 'shoe', serviceId: 'wash', priceMinor: 15000, configured: true, available: true, version: 1 },
-    { garmentId: 'shoe', serviceId: 'iron', priceMinor: 100, configured: true, available: true, version: 1 },
-    { garmentId: 'blank', serviceId: 'wash', priceMinor: 500, configured: true, available: true, version: 1 },
+    rate('shirt', 'iron', 1000), rate('shirt', 'wash', 1250), rate('shirt', 'starch', 5000),
+    rate('shoe', 'wash', 15000), rate('shoe', 'iron', 100), rate('shoe', 'starch', 100),
+    rate('blank', 'wash', 500),
   ],
 };
-const setup = (lines: Record<string, number> = {}, serviceId = 'wash') => {
+const setup = (lines: Record<string, number> = {}, over: Partial<CounterCatalogue> = {}) => {
   const onAdd = vi.fn(); const onQuantity = vi.fn();
-  render(<GarmentGrid catalogue={catalogue} serviceId={serviceId} lines={lines} onAdd={onAdd} onQuantity={onQuantity} />);
+  render(<GarmentGrid catalogue={{ ...catalogue, ...over }} lines={lines} onAdd={onAdd} onQuantity={onQuantity} />);
   return { onAdd, onQuantity };
 };
+const card = (name: string) => within(screen.getByRole('group', { name: `${name} services` }));
 afterEach(cleanup);
 
 describe('GarmentGrid', () => {
-  it('shows active garments with their fixed price and billing unit', () => {
+  it('shows every active garment at once, with a button and price for each active service on its card', () => {
     setup();
-    expect(screen.getByText('₹12.50 / piece')).toBeTruthy();
-    expect(screen.getByText('₹150.00 / pair')).toBeTruthy();
     expect(screen.queryByText('Old')).toBeNull();
+    expect(screen.getAllByRole('group', { name: /services$/ })).toHaveLength(3);
+    expect(card('Shirt').getAllByRole('button').map(button => button.textContent)).toEqual(['Iron₹10', 'Wash₹12.50', 'Starch₹50']);
+    expect(card('Shirt').queryByText('Dry Clean')).toBeNull();
   });
 
-  it('adds with the picture and plus button and removes with minus', () => {
-    const { onAdd, onQuantity } = setup({ 'shirt|wash': 2 });
-    fireEvent.click(screen.getByRole('button', { name: 'Add Shirt' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Add one Shirt' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Remove one Shirt' }));
-    expect(onAdd).toHaveBeenCalledTimes(2);
-    expect(onQuantity).toHaveBeenCalledWith('shirt', 1);
+  it('shows a pair price for shoes and cannot sell shoes ironed or starched, whatever the rate says', () => {
+    setup();
+    expect(card('Shoes').getByRole('button', { name: 'Add Shoes Wash' }).textContent).toBe('Wash₹150/pair');
+    for (const service of ['Iron', 'Starch']) {
+      const button = card('Shoes').getByRole('button', { name: `Add Shoes ${service}` }) as HTMLButtonElement;
+      expect(button.disabled).toBe(true);
+      expect(button.textContent).toBe(`${service}—`);
+    }
   });
 
-  it('turns typed quantities into whole non-negative numbers', () => {
-    const { onQuantity } = setup();
-    const input = screen.getByLabelText('Shirt quantity');
-    fireEvent.change(input, { target: { value: '3.9' } });
-    fireEvent.change(input, { target: { value: '-4' } });
-    fireEvent.change(input, { target: { value: 'abc' } });
-    expect(onQuantity.mock.calls).toEqual([['shirt', 3], ['shirt', 0], ['shirt', 0]]);
-    expect((screen.getByRole('button', { name: 'Remove one Shirt' }) as HTMLButtonElement).disabled).toBe(true);
+  it('marks a service that has no price as unavailable', () => {
+    setup();
+    const blankIron = card('Blank').getByRole('button', { name: 'Add Blank Iron' }) as HTMLButtonElement;
+    expect(blankIron.disabled).toBe(true);
+    expect(blankIron.textContent).toBe('Iron—');
   });
 
-  it('blocks unavailable combinations, including ironing shoes', () => {
-    setup({}, 'iron');
-    expect(screen.getByText('Ironing shoes unavailable')).toBeTruthy();
-    expect(screen.getAllByText('Unavailable for this service').length).toBeGreaterThan(0);
-    expect((screen.getByRole('button', { name: 'Add Shoes' }) as HTMLButtonElement).disabled).toBe(true);
-    expect((screen.getByLabelText('Shoes quantity') as HTMLInputElement).disabled).toBe(true);
+  it('adds one piece of that garment under the tapped service', () => {
+    const { onAdd } = setup();
+    fireEvent.click(card('Shirt').getByRole('button', { name: 'Add Shirt Starch' }));
+    fireEvent.click(card('Shirt').getByRole('button', { name: 'Add Shirt Iron' }));
+    expect(onAdd.mock.calls).toEqual([['shirt', 'starch'], ['shirt', 'iron']]);
+  });
+
+  it('shows the count of each service already added, with a minus button only for those', () => {
+    const { onQuantity } = setup({ 'shirt|wash': 2, 'shirt|iron': 1 });
+    expect(card('Shirt').getByLabelText('2 added').textContent).toBe('×2');
+    expect(card('Shirt').getByLabelText('1 added').textContent).toBe('×1');
+    expect(card('Shirt').queryByRole('button', { name: 'Remove one Shirt Starch' })).toBeNull();
+    fireEvent.click(card('Shirt').getByRole('button', { name: 'Remove one Shirt Wash' }));
+    fireEvent.click(card('Shirt').getByRole('button', { name: 'Remove one Shirt Iron' }));
+    expect(onQuantity.mock.calls).toEqual([['shirt', 1, 'wash'], ['shirt', 0, 'iron']]);
   });
 
   it('falls back to the first letter when a picture is missing, and to the key when no image key is set', () => {
@@ -66,25 +78,26 @@ describe('GarmentGrid', () => {
     expect(document.querySelector('.counter-garment-fallback')?.textContent).toBe('S');
   });
 
-  it('says so when no garment can be sold under any service, and not when something can', () => {
-    const unpriced: CounterCatalogue = { ...catalogue, rates: catalogue.rates.map(r => ({ ...r, available: false })) };
-    const view = render(<GarmentGrid catalogue={unpriced} serviceId="wash" lines={{}} onAdd={vi.fn()} onQuantity={vi.fn()} />);
-    expect(screen.getByText('No prices are set yet. Ask the owner to set the rate card.')).toBeTruthy();
-    view.rerender(<GarmentGrid catalogue={{ ...unpriced, rates: [] }} serviceId="wash" lines={{}} onAdd={vi.fn()} onQuantity={vi.fn()} />);
-    expect(screen.getByText('No prices are set yet. Ask the owner to set the rate card.')).toBeTruthy();
-    view.rerender(<GarmentGrid catalogue={catalogue} serviceId="wash" lines={{}} onAdd={vi.fn()} onQuantity={vi.fn()} />);
-    expect(screen.queryByText(/No prices are set yet/)).toBeNull();
+  it('dims a garment that cannot be sold under any service', () => {
+    setup({}, { rates: catalogue.rates.filter(r => r.garmentId !== 'blank') });
+    expect(screen.getByRole('group', { name: 'Blank services' }).closest('article')?.className).toContain('unavailable');
+    expect(screen.getByRole('group', { name: 'Shirt services' }).closest('article')?.className).not.toContain('unavailable');
   });
 
-  it('still offers a garment priced under only one of the services', () => {
-    const onlyIron: CounterCatalogue = { ...catalogue, rates: catalogue.rates.filter(r => r.garmentId === 'shirt').map(r => ({ ...r, serviceId: 'iron' })) };
-    render(<GarmentGrid catalogue={onlyIron} serviceId="wash" lines={{}} onAdd={vi.fn()} onQuantity={vi.fn()} />);
+  it('says so when no garment can be sold under any service, and not when something can', () => {
+    const unpriced: CatalogueLike = { ...catalogue, rates: catalogue.rates.map(r => ({ ...r, available: false })) };
+    const view = render(<GarmentGrid catalogue={unpriced} lines={{}} onAdd={vi.fn()} onQuantity={vi.fn()} />);
+    expect(screen.getByText('No prices are set yet. Ask the owner to set the rate card.')).toBeTruthy();
+    view.rerender(<GarmentGrid catalogue={{ ...unpriced, rates: [] }} lines={{}} onAdd={vi.fn()} onQuantity={vi.fn()} />);
+    expect(screen.getByText('No prices are set yet. Ask the owner to set the rate card.')).toBeTruthy();
+    view.rerender(<GarmentGrid catalogue={catalogue} lines={{}} onAdd={vi.fn()} onQuantity={vi.fn()} />);
     expect(screen.queryByText(/No prices are set yet/)).toBeNull();
   });
 
   it('renders an empty grid before the catalogue loads', () => {
-    render(<GarmentGrid catalogue={null} serviceId="" lines={{}} onAdd={vi.fn()} onQuantity={vi.fn()} />);
+    render(<GarmentGrid catalogue={null} lines={{}} onAdd={vi.fn()} onQuantity={vi.fn()} />);
     expect(screen.getByLabelText('Garments').children.length).toBe(0);
     expect(screen.queryByText(/No prices are set yet/)).toBeNull();
   });
 });
+type CatalogueLike = CounterCatalogue;

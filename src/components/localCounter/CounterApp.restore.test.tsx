@@ -49,7 +49,7 @@ describe('restore-pending banner', () => {
   it('is not shown when nothing is staged', async () => {
     api.getCounterBootstrap.mockResolvedValue(bootstrapFor(admin, false));
     render(<CounterApp />);
-    await screen.findByText('Choose service');
+    await screen.findByLabelText('Garments');
     expect(banner()).toBeNull();
   });
 
@@ -66,21 +66,21 @@ describe('restore-pending banner', () => {
   it('shows in the workspace for a signed-in user while a staged restore waits for a restart', async () => {
     api.getCounterBootstrap.mockResolvedValue(bootstrapFor(staff, true));
     render(<CounterApp />);
-    await screen.findByText('Choose service');
+    await screen.findByLabelText('Garments');
     expect(banner()).toBeTruthy();
   });
 
   it('appears as soon as an administrator stages a restore and stays on every screen', async () => {
     api.getCounterBootstrap.mockResolvedValue(bootstrapFor(admin, false));
     render(<CounterApp />);
-    await screen.findByText('Choose service');
+    await screen.findByLabelText('Garments');
     const nav = within(screen.getByRole('navigation', { name: 'Workspace sections' }));
     fireEvent.click(nav.getByRole('button', { name: 'Admin' }));
     expect(banner()).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Stage a restore' }));
     expect(banner()).toBeTruthy();
     fireEvent.click(nav.getByRole('button', { name: 'New order' }));
-    expect(await screen.findByText('Choose service')).toBeTruthy();
+    expect(await screen.findByLabelText('Garments')).toBeTruthy();
     expect(banner()).toBeTruthy();
   });
 });

@@ -90,7 +90,7 @@ export const OrderSummary = ({ catalogue, lines, quote, quoteFailed, customer, a
         <div className="counter-piece-count">{quote?.pieceCount || 0}<small>pieces</small></div>
       </div>
       {items.length === 0
-        ? <p className="counter-empty">Tap garment pictures to add items.</p>
+        ? <p className="counter-empty">Tap a service on a garment to add it.</p>
         : <div className="counter-summary-lines">{items.map(([key, quantity]) => {
           const [garmentId, serviceId] = key.split('|');
           const garment = catalogue?.garments.find(x => x.id === garmentId);

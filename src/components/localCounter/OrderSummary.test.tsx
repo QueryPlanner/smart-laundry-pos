@@ -201,7 +201,7 @@ describe('OrderSummary', () => {
 
   it('handles an empty order, a pending quote, a missing name and a busy save', () => {
     const view = render(<OrderSummary {...props({ lines: {}, quote: null })} />);
-    expect(screen.getByText('Tap garment pictures to add items.')).toBeTruthy();
+    expect(screen.getByText('Tap a service on a garment to add it.')).toBeTruthy();
     expect(screen.getByText('Saved date + 2 days, 5:00 PM IST')).toBeTruthy();
     expect(saveButton().disabled).toBe(true);
     view.rerender(<OrderSummary {...props({ quote: null })} />);

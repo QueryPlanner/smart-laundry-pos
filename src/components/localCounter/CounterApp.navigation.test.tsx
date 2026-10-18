@@ -52,7 +52,7 @@ const order = (): CounterSavedOrder => ({
 const signedInAs = async (account: CounterAccount) => {
   api.getCounterBootstrap.mockResolvedValue({ setupRequired: false, authenticated: true, account, accounts: [account], warning: null });
   render(<CounterApp />);
-  await screen.findByText('Choose service');
+  await screen.findByLabelText('Garments');
 };
 const navigation = () => within(screen.getByRole('navigation', { name: 'Workspace sections' }));
 const go = (name: string) => fireEvent.click(navigation().getByRole('button', { name }));
@@ -144,7 +144,7 @@ describe('section pages', () => {
     go(name);
     expect(await screen.findByRole('heading', { name: heading })).toBeTruthy();
     expect(navigation().getByRole('button', { name }).getAttribute('aria-current')).toBe('page');
-    expect(screen.queryByText('Choose service')).toBeNull();
+    expect(screen.queryByLabelText('Garments')).toBeNull();
   });
 
   it('opens Shop settings and Admin for administrators', async () => {
@@ -277,7 +277,7 @@ describe('the unsaved-order guard on every section', () => {
     expect(draftDialog()).toBeNull();
     expect(await screen.findByRole('heading', { name: 'Sales page' })).toBeTruthy();
     go('New order');
-    expect(await screen.findByText('Choose service')).toBeTruthy();
+    expect(await screen.findByLabelText('Garments')).toBeTruthy();
   });
 
   it('still guards Lock, and a failed lock keeps the draft', async () => {
