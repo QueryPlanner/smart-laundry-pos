@@ -1,33 +1,7 @@
 {
   "version": 2,
-  "buildCommand": "npm run build",
-  "outputDirectory": "dist",
-  "framework": "vite",
-  "installCommand": "npm install",
-  "devCommand": "npm run dev",
-  "rewrites": [
-    {
-      "source": "/login",
-      "destination": "/login/index.html"
-    },
-    {
-      "source": "/install",
-      "destination": "/install/index.html"
-    },
-    {
-      "source": "/(.*)",
-      "destination": "/index.html"
-    }
-  ],
-  "headers": [
-    {
-      "source": "/assets/(.*)",
-      "headers": [
-        {
-          "key": "Cache-Control",
-          "value": "public, max-age=31536000, immutable"
-        }
-      ]
-    }
-  ]
+  "framework": null,
+  "installCommand": "echo 'no install: the download page is static'",
+  "buildCommand": "rm -rf site && mkdir site && cp -R landing/. site/",
+  "outputDirectory": "site"
 }
