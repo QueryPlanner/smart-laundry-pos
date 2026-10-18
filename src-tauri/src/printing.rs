@@ -1902,8 +1902,7 @@ mod tests {
         assert_eq!(lines[0], "Example Cleaners");
         assert_eq!(lines[1], "12 Example Road");
         assert_eq!(lines[2], "Tel: PHONE TEST VALUE");
-        assert_eq!(lines[lines.len() - 2], "Visit again");
-        assert_eq!(lines.last().unwrap(), "* terms and conditions apply");
+        assert_ends_with_footer_then_terms(&lines, "Visit again");
         assert!(!lines.iter().any(|l| l == "Thank you"));
     }
     #[test]
@@ -1911,12 +1910,22 @@ mod tests {
         let lines = render_lines(&bill()).concat();
         assert_eq!(lines[0], "SMART LAUNDRY");
         assert!(lines[1].starts_with("Bill: "));
-        assert_eq!(lines[lines.len() - 2], "Thank you");
-        assert_eq!(lines.last().unwrap(), "* terms and conditions apply");
+        assert_ends_with_footer_then_terms(&lines, "Thank you");
+    }
+
+    /// The bill text ends with the footer and then the fixed Marathi terms, in that order.
+    fn assert_ends_with_footer_then_terms(lines: &[String], footer: &str) {
+        let terms_start = lines.len() - crate::print_layout::BILL_TERMS.len();
+        assert_eq!(
+            &lines[terms_start..],
+            &crate::print_layout::BILL_TERMS[..],
+            "{lines:?}"
+        );
+        assert_eq!(lines[terms_start - 1], footer, "{lines:?}");
     }
 
     #[test]
-    fn every_bill_text_ends_with_the_terms_line_below_the_footer() {
+    fn every_bill_text_ends_with_the_terms_below_the_footer() {
         // Custom footer, the default thank-you, and a bill saved before shop settings existed.
         let custom = PrintDocument::Bill(bill_with_header(BillHeader {
             footer: "Visit again".into(),
@@ -1932,8 +1941,7 @@ mod tests {
             (legacy, "Thank you"),
         ] {
             let lines = render_lines(&document).concat();
-            assert_eq!(lines.last().unwrap(), "* terms and conditions apply");
-            assert_eq!(lines[lines.len() - 2], footer, "{lines:?}");
+            assert_ends_with_footer_then_terms(&lines, footer);
         }
     }
     #[test]

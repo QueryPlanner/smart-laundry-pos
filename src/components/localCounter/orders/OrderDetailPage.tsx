@@ -31,6 +31,7 @@ export interface OrderDetailPageProps {
   packingSlot: ReactNode;                                  // a packing-check card supplied by the parent
   onCancel(reason: string): void;                          // admin only
   onTrash(): void;                                         // admin only
+  onRequestTrash(reason: string): void;                    // staff: ask an admin to trash it
   onReprintBill(): void; onReprintTags(): void; onOpenPrints(): void;
 }
 
@@ -46,7 +47,7 @@ const piecesText = (pieces: CounterPiece[]): string => {
  * One order in full: where it is in processing, what is still owed, the hand-over step, and the rarer actions.
  * Pure view: the parent loads the order and handles every callback.
  */
-export const OrderDetailPage = ({ order, customer, isAdmin, busy, backLabel, onBack, onMoveStage, onHandover, money, packingSlot, onCancel, onTrash, onReprintBill, onReprintTags, onOpenPrints }: OrderDetailPageProps) => {
+export const OrderDetailPage = ({ order, customer, isAdmin, busy, backLabel, onBack, onMoveStage, onHandover, money, packingSlot, onCancel, onTrash, onRequestTrash, onReprintBill, onReprintTags, onOpenPrints }: OrderDetailPageProps) => {
   const cancelled = order.status === 'cancelled';
   const collected = order.status === 'collected';
   const ready = order.status === 'ready';
@@ -88,6 +89,7 @@ export const OrderDetailPage = ({ order, customer, isAdmin, busy, backLabel, onB
         onOpenPrints={onOpenPrints}
         onCancel={onCancel}
         onTrash={onTrash}
+        onRequestTrash={onRequestTrash}
       />
     </section>
   );

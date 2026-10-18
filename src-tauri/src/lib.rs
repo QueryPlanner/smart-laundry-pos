@@ -116,6 +116,9 @@ where
             counter_set_rate,
             counter_add_garment,
             counter_trash_order,
+            counter_request_order_trash,
+            counter_list_trash_requests,
+            counter_dismiss_trash_request,
             counter_backup_settings,
             counter_set_backup_mirror,
             counter_backup_now,
@@ -338,6 +341,30 @@ async fn counter_trash_order(
     order_id: String,
 ) -> Result<(), String> {
     counter::trash_order(&state, &session, &order_id).await
+}
+#[tauri::command]
+async fn counter_request_order_trash(
+    state: State<'_, DatabaseState>,
+    session: State<'_, CounterSession>,
+    order_id: String,
+    reason: String,
+) -> Result<(), String> {
+    counter::request_order_trash(&state, &session, &order_id, &reason).await
+}
+#[tauri::command]
+async fn counter_list_trash_requests(
+    state: State<'_, DatabaseState>,
+    session: State<'_, CounterSession>,
+) -> Result<Vec<counter::TrashRequest>, String> {
+    counter::list_trash_requests(&state, &session).await
+}
+#[tauri::command]
+async fn counter_dismiss_trash_request(
+    state: State<'_, DatabaseState>,
+    session: State<'_, CounterSession>,
+    order_id: String,
+) -> Result<(), String> {
+    counter::dismiss_trash_request(&state, &session, &order_id).await
 }
 #[tauri::command]
 async fn counter_backup_settings(

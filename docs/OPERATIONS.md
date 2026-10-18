@@ -5,7 +5,7 @@ This guide is for the person who runs the shop. It covers setting the program up
 ## Read this first
 
 - **The program has not yet been tested on a Windows laptop or with your printers.** It has been tested by automated checks on a development computer. Before you use it for real customers, someone must go through the checklist at the end of [DESKTOP_ACCEPTANCE.md](DESKTOP_ACCEPTANCE.md) on your laptop and printers. Until then, treat it as a trial and keep your old way of working alongside it.
-- **The program ships with a default rate card taken from a handwritten price list.** Press means Iron. One price covers both Wash and Dry Clean, and Wash + Iron is the two added together. Garments missing from that list (T-shirt, jeans, shorts, leggings, petticoat, dhoti, lungi, dress, sweater ironing) carry estimates based on the nearest listed garment, and shoes are estimates. Review Admin > Rate card before you take a real order. A price you have changed is never overwritten by an update.
+- **The program ships with the shop's rate card (version 0.5.0).** 19 items (Mens/Women, Saree, Heavy Saree, Blazer, bedsheets, blankets, footmats, shoe washing, curtain per kg, blouse, work, hoodie/sweater, dhotar and three lehenga weights) and four services: Iron, Wash, Dry Clean and Starch. Wash includes ironing; there is no separate Wash + Iron. Curtain per kg is sold in whole kilograms through the quantity box. The first start after updating replaces earlier prices with this card (a price an owner changed before is replaced too); garments that are not on the card are hidden, not deleted, so old bills still open. Review Admin > Rate card before you take a real order.
 - **Everything is stored on this one laptop.** There is no cloud copy. If the laptop is lost or broken and you have no USB backup, the records are gone. Set up the USB backup folder (see Backups).
 - **The PIN only keeps people out of the program.** It does not lock the data files. Anyone who can use the laptop's Windows account can copy or read them.
 
@@ -35,6 +35,9 @@ There is one screen layout for everyone. The menu under the title bar has four g
 | See Dashboard and Sales (the same figures for both) | Yes | Yes |
 | Add or edit customers, record expenses, add inventory items and adjust stock, add machines and record services | Yes | Yes |
 | Set prices (Rate card) and discounts | No | Yes |
+| Change one price on one bill (Current order > ₹ each) | Yes | Yes |
+| Mark a bill for the trash (More actions > Mark for trash, with a reason) | Yes | Yes |
+| Move a bill to the trash, or keep it, from the Orders / Pickup list (Trash requests) | No | Yes |
 | Create staff accounts, deactivate them, reset PINs | No | Yes |
 | Choose printers | No | Yes |
 | Back up now, set the USB folder, restore a backup | No | Yes |
@@ -50,7 +53,7 @@ Admin > Staff. Type a name and a first PIN, press **Create staff**. Each person 
 
 ## Prices (Rate card)
 
-Admin > Rate card lists every garment with each of the four services: Wash, Iron, Wash + Iron and Dry Clean. A note at the top reminds you the starting prices are estimates. Type the price in rupees in the Rate box and press **Save** on that row. When you type a first price for a combination that has none, **Available** is ticked for you; untick it if you do not want to sell it yet. Untick Available to stop selling a combination. A garment and service with no price cannot be sold. A rate cannot be more than Rs 10,000. A new price applies to orders taken after you save it; saved orders keep their old price. Shoes are priced per pair and cannot be ironed, so Iron and Wash + Iron stay switched off for shoes. Each price change is recorded with the old and new price.
+Admin > Rate card lists every garment with each of the four services: Iron, Wash, Dry Clean and Starch. Type the price in rupees in the Rate box and press **Save** on that row. When you type a first price for a combination that has none, **Available** is ticked for you; untick it if you do not want to sell it yet. Untick Available to stop selling a combination. A garment and service with no price cannot be sold. A rate cannot be more than Rs 10,000. A new price applies to orders taken after you save it; saved orders keep their old price. Shoes are priced per pair and can only be washed, so the other services stay switched off for shoes. Each price change is recorded with the old and new price.
 
 ## Discounts
 
@@ -98,12 +101,12 @@ Shop > **Machines** is a list of your washers, dryers and irons with when each w
 
 ## Shop settings
 
-Admin group > **Shop settings** (admin only). Set the laundry name, address, phone, centered message line, and multiline bill footer/terms, then choose which optional fields appear on bills. The order number, customer name, garment lines, piece count and payment totals always print. You can also choose whether tags show the laundry name, add an optional short tag line, and set the per-tag pitch for the 50 mm-wide continuous TSC roll (30–200 mm; new installations start at 30 mm). The batch adds one 10 mm trailing feed after the tag that physically exits last. The previews show content and pitch before saving. Each new order keeps its print choices so reprints match the original; changes apply to new orders. If the footer is blank the bill ends with "Thank you". Every bill then prints "* terms and conditions apply" as its last line; that line is fixed and cannot be changed. An existing installation starts with shop name "Smart Laundry" and footer "Thank you for choosing us.", so change them to your own. Bill numbers no longer use a prefix, so there is nothing to set for them. Bills print on A4 landscape. The old settings for GST number, receipt width and default completion days were not carried over; ready time remains two days at 5:00 PM.
+Admin group > **Shop settings** (admin only). Set the laundry name, address, phone, centered message line, and multiline bill footer/terms, then choose which optional fields appear on bills. The order number, customer name, garment lines, piece count and payment totals always print. You can also choose whether tags show the laundry name, add an optional short tag line, and set the per-tag pitch for the 50 mm-wide continuous TSC roll (30–200 mm; new installations start at 30 mm). The batch adds one 10 mm trailing feed after the tag that physically exits last. The previews show content and pitch before saving. Each new order keeps its print choices so reprints match the original; changes apply to new orders. If the footer is blank the bill ends with "Thank you". Every bill then prints the fixed Marathi terms and conditions (अटी व शर्ती, four points) as its last lines; they cannot be changed. An existing installation starts with shop name "Smart Laundry" and footer "Thank you for choosing us.", so change them to your own. Bill numbers no longer use a prefix, so there is nothing to set for them. Bills print on A4 landscape. The old settings for GST number, receipt width and default completion days were not carried over; ready time remains two days at 5:00 PM.
 
 ## Taking an order
 
 1. Open **New order**. Type the customer's **mobile number** and **name**. The mobile number is required; the program accepts it with spaces, dashes or +91 and stores 10 digits. If the customer has been before, tap their name in the list that appears.
-2. Choose the service at the top: Wash, Iron, Wash + Iron (the usual) or Dry Clean. Each service has its own set of prices.
+2. Choose the service at the top: Iron, Wash (the usual, and it includes ironing), Dry Clean or Starch. Each service has its own set of prices. Under **Current order**, every line has a **₹ each** box: anyone, staff or admin, can type a different price for that bill only (for example a discount or a heavy item). The rate card does not change, the bill shows the new price, and the change is recorded with the old and new price. Type the rate-card price, or remove the line, to go back to the normal price.
 3. Tap the garment pictures to add them, or type a number in the box. A line can hold 1 to 200, an order can have 100 lines and 500 pieces, and an order total must stay under Rs 10,00,000. The bin icon removes a whole line. To add the same garment with a different service, change the service and tap it again.
 4. Check the summary on the right: the lines, the number of pieces, **Ready by** (received date plus two days, 5:00 PM, always), and the **Amount to collect**. Until a price is worked out the amounts show a dash, not 0. Under the Save button, a short note says what is still missing.
 5. Take the **advance**, if any. Type the amount under **Advance received now**, or tap **Nothing now**, **Half** or **Full**. Choose how it was paid (cash, UPI, card, bank transfer or other) when an amount is entered. The screen shows what is left to pay at pickup. Press **Save & Print**. The advance can be anything from nothing to the whole amount; the rest is taken when the clothes are collected. The screen is locked while it saves.
@@ -235,3 +238,8 @@ There is no barcode or QR code, no scanner, no link a customer can open, no clou
 ## Getting help
 
 Before asking for help, write down the exact message, what you pressed, the bill number if there is one, and the time. Do not delete anything from the data folder. If you can, copy the whole data folder to the USB drive first.
+
+
+## Bills added by mistake (trash)
+
+A bill saved by mistake can be removed from sales. Staff open the order, press **More actions > Mark for trash** and give a reason. Until the owner decides, the bill still counts in sales. The owner sees a **Trash requests** box at the top of Orders / Pickup with the bill, who asked and why, and presses **Move to trash** or **Keep bill**. An administrator can also open any order and choose **Move to trash** directly. A trashed bill disappears from the order lists, Sales, the Dashboard and the customer's totals, so no sale is counted for it. Nothing is deleted: the bill and every request stay in the audit trail.

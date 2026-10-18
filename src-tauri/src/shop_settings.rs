@@ -853,6 +853,7 @@ mod tests {
                 garment_id: "g-shirt".into(),
                 service_id: "svc-wash".into(),
                 quantity: 1,
+                unit_price_override_minor: None,
             }],
         }
     }

@@ -414,6 +414,10 @@ pub struct LineInput {
     pub garment_id: String,
     pub service_id: String,
     pub quantity: u32,
+    /// A price for this bill only, in paise per piece. Any signed-in user may set it; the rate card
+    /// is not changed. `None` charges the rate-card price.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unit_price_override_minor: Option<i64>,
 }
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -444,10 +448,14 @@ pub struct QuoteLine {
     pub service_id: String,
     pub garment: String,
     pub service: String,
-    /// The service's stable key (`wash`, `iron`, `wash_iron`, `dry_clean`). `iron` pieces are untagged.
+    /// The service's stable key (`wash`, `iron`, `dry_clean`, and `wash_iron`, which is the "Starch" service since v6). `iron` pieces are untagged.
     pub service_key: String,
     pub quantity: u32,
+    /// The price charged per piece: the rate-card price, or the one typed for this bill.
     pub unit_price_minor: i64,
+    /// The rate-card price when the line was quoted. It differs from `unit_price_minor` on a line
+    /// whose price was changed for this bill.
+    pub list_price_minor: i64,
     pub line_total_minor: i64,
     pub rate_version: i64,
 }
@@ -596,7 +604,7 @@ pub async fn catalogue(db: &DatabaseState, session: &CounterSession) -> Result<C
     let _ = actor(session)?;
     let p = db.writer_pool()?;
     let g=sqlx::query("SELECT id,garment_key AS key,name_en AS nameEn,name_mr AS nameMr,category,image_key AS imageKey,billing_unit AS billingUnit,active FROM garments ORDER BY sort_order").fetch_all(p).await.map_err(db_err)?;
-    let sv=sqlx::query("SELECT id,service_key AS key,name,active FROM service_methods ORDER BY CASE service_key WHEN 'wash' THEN 1 WHEN 'iron' THEN 2 WHEN 'wash_iron' THEN 3 ELSE 4 END").fetch_all(p).await.map_err(db_err)?;
+    let sv=sqlx::query("SELECT id,service_key AS key,name,active FROM service_methods ORDER BY CASE service_key WHEN 'iron' THEN 1 WHEN 'wash' THEN 2 WHEN 'dry_clean' THEN 3 ELSE 4 END").fetch_all(p).await.map_err(db_err)?;
     let r=sqlx::query("SELECT garment_id AS garmentId,service_id AS serviceId,price_minor AS priceMinor,configured,available,version FROM garment_service_rates ORDER BY garment_id,service_id").fetch_all(p).await.map_err(db_err)?;
     Ok(Catalogue {
         garments: g.iter().map(row_value).collect(),
@@ -802,6 +810,12 @@ async fn quote_at(
             .try_get::<Option<i64>, _>("price_minor")
             .map_err(db_err)?
             .ok_or("A rate has not been configured for this garment and service.")?;
+        let list_price = rate;
+        let rate = match item.unit_price_override_minor {
+            None => rate,
+            Some(price) if (0..=MAX_RATE_MINOR).contains(&price) => price,
+            Some(_) => return Err("Enter a price between 0 and 10,000 rupees.".into()),
+        };
         let line = rate
             .checked_mul(item.quantity as i64)
             .ok_or("Order amount is too large.")?;
@@ -826,6 +840,7 @@ async fn quote_at(
             service_key: row.try_get("service_key").map_err(db_err)?,
             quantity: item.quantity,
             unit_price_minor: rate,
+            list_price_minor: list_price,
             line_total_minor: line,
             rate_version: row.try_get("version").map_err(db_err)?,
         });
@@ -990,6 +1005,147 @@ pub async fn trash_order(
         order_id,
         &now,
         &serde_json::json!({ "status": status }),
+    )
+    .await?;
+    tx.commit().await.map_err(db_err)
+}
+
+/// An order that staff marked for the trash and an administrator has not yet decided on.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrashRequest {
+    pub order_id: String,
+    pub order_number: String,
+    pub customer_name: String,
+    pub total_minor: i64,
+    pub reason: String,
+    pub requested_at: String,
+    pub requested_by: String,
+}
+
+const MAX_TRASH_REASON_CHARS: usize = 200;
+
+/// Any signed-in user can mark an order for the trash, for example a bill added by mistake. This
+/// changes no money: the order keeps counting in sales until an administrator moves it to the trash.
+pub async fn request_order_trash(
+    db: &DatabaseState,
+    session: &CounterSession,
+    order_id: &str,
+    reason: &str,
+) -> Result<(), String> {
+    let actor = actor(session)?;
+    let reason = reason.trim();
+    if reason.is_empty() {
+        return Err("Say why this bill should be trashed.".into());
+    }
+    if reason.chars().count() > MAX_TRASH_REASON_CHARS {
+        return Err(format!(
+            "Keep the reason within {MAX_TRASH_REASON_CHARS} characters."
+        ));
+    }
+    let mut tx = db.begin_counter_write().await?;
+    let active: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM counter_accounts WHERE id=? AND active=1")
+            .bind(&actor.id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(db_err)?;
+    if active != 1 {
+        return Err("Your session is no longer valid. Sign in again.".into());
+    }
+    let state: Option<(Option<String>, Option<String>)> =
+        sqlx::query_as("SELECT trashed_at,trash_requested_at FROM orders WHERE id=?")
+            .bind(order_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(db_err)?;
+    let (trashed_at, requested_at) = state.ok_or("Order not found.".to_string())?;
+    if trashed_at.is_some() {
+        return Err("This order is already in the trash.".into());
+    }
+    if requested_at.is_some() {
+        return Err("This order is already marked for the trash. The owner will review it.".into());
+    }
+    let now = Utc::now().to_rfc3339();
+    sqlx::query("UPDATE orders SET trash_requested_at=?,trash_requested_by=?,trash_request_reason=?,updated_at=? WHERE id=?")
+        .bind(&now)
+        .bind(&actor.id)
+        .bind(reason)
+        .bind(&now)
+        .bind(order_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(db_err)?;
+    audit_details(
+        &mut tx,
+        &actor.id,
+        "order_trash_requested",
+        "order",
+        order_id,
+        &now,
+        &serde_json::json!({ "reason": reason }),
+    )
+    .await?;
+    tx.commit().await.map_err(db_err)
+}
+
+/// Pending trash requests, oldest first. Administrators only: they are the ones who decide.
+pub async fn list_trash_requests(
+    db: &DatabaseState,
+    session: &CounterSession,
+) -> Result<Vec<TrashRequest>, String> {
+    require_admin(session, "review trash requests")?;
+    let rows = sqlx::query(
+        "SELECT o.id,o.order_number,o.customer_name,CAST(ROUND(o.total_amount*100) AS INTEGER) AS total_minor,\
+o.trash_request_reason AS reason,o.trash_requested_at AS requested_at,COALESCE(a.full_name,'') AS requested_by \
+FROM orders o LEFT JOIN counter_accounts a ON a.id=o.trash_requested_by \
+WHERE o.trashed_at IS NULL AND o.trash_requested_at IS NOT NULL ORDER BY o.trash_requested_at,o.id",
+    )
+    .fetch_all(db.writer_pool()?)
+    .await
+    .map_err(db_err)?;
+    rows.iter()
+        .map(|row| {
+            Ok(TrashRequest {
+                order_id: row.try_get("id").map_err(db_err)?,
+                order_number: row.try_get("order_number").map_err(db_err)?,
+                customer_name: row.try_get("customer_name").map_err(db_err)?,
+                total_minor: row.try_get("total_minor").map_err(db_err)?,
+                reason: row.try_get("reason").map_err(db_err)?,
+                requested_at: row.try_get("requested_at").map_err(db_err)?,
+                requested_by: row.try_get("requested_by").map_err(db_err)?,
+            })
+        })
+        .collect()
+}
+
+/// An administrator keeps the order: the request is cleared and the order carries on as before.
+pub async fn dismiss_trash_request(
+    db: &DatabaseState,
+    session: &CounterSession,
+    order_id: &str,
+) -> Result<(), String> {
+    require_admin(session, "dismiss a trash request")?;
+    let mut tx = db.begin_counter_write().await?;
+    let actor = require_admin_in_tx(&mut tx, session, "dismiss a trash request").await?;
+    let now = Utc::now().to_rfc3339();
+    let changed = sqlx::query("UPDATE orders SET trash_requested_at=NULL,trash_requested_by=NULL,trash_request_reason=NULL,updated_at=? WHERE id=? AND trash_requested_at IS NOT NULL")
+        .bind(&now)
+        .bind(order_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(db_err)?
+        .rows_affected();
+    if changed != 1 {
+        return Err("This order has no pending trash request.".into());
+    }
+    audit(
+        &mut tx,
+        &actor.id,
+        "order_trash_request_dismissed",
+        "order",
+        order_id,
+        &now,
     )
     .await?;
     tx.commit().await.map_err(db_err)
@@ -1547,7 +1703,7 @@ async fn save_order_at(
         if !configured
             || !available
             || !active
-            || price != Some(line.unit_price_minor)
+            || price != Some(line.list_price_minor)
             || version != line.rate_version
         {
             return Err(
@@ -1720,6 +1876,29 @@ async fn save_order_at(
       .bind(Uuid::new_v4().to_string()).bind(&oid).bind(kind).bind(serde_json::to_string(&doc).map_err(|e|e.to_string())?).bind(&received).bind(&received).execute(&mut *tx).await.map_err(db_err)?;
     }
     audit(&mut tx, &actor.id, "order_saved", "order", &oid, &received).await?;
+    // A price typed at the counter for this bill leaves a trail: who changed what, from and to.
+    for line in quote
+        .lines
+        .iter()
+        .filter(|line| line.unit_price_minor != line.list_price_minor)
+    {
+        audit_details(
+            &mut tx,
+            &actor.id,
+            "order_price_changed",
+            "order",
+            &oid,
+            &received,
+            &serde_json::json!({
+                "garment": line.garment,
+                "service": line.service,
+                "listPriceMinor": line.list_price_minor,
+                "chargedPriceMinor": line.unit_price_minor,
+                "quantity": line.quantity,
+            }),
+        )
+        .await?;
+    }
     tx.commit().await.map_err(db_err)?;
     get_saved(db, &oid)
         .await?
@@ -3256,6 +3435,7 @@ mod counter_tests {
                 garment_id: "g-shirt".into(),
                 service_id: "svc-wash".into(),
                 quantity,
+                unit_price_override_minor: None,
             }],
         }
     }
@@ -3388,31 +3568,33 @@ mod counter_tests {
     }
 
     #[test]
-    fn default_rate_card_is_preloaded_and_shoes_cannot_be_ironed() {
+    fn default_rate_card_is_the_shops_list_and_shoes_are_washed_only() {
         tauri::async_runtime::block_on(async {
             let path = fixture_path();
             let db = DatabaseState::open(path.clone()).await;
             let admin = admin_fixture(&db).await;
-            let configured: i64 =
-                sqlx::query_scalar("SELECT COUNT(*) FROM garment_service_rates WHERE configured=1")
-                    .fetch_one(db.writer_pool().unwrap())
-                    .await
-                    .unwrap();
-            // 20 garments x 4 services plus shoes (wash and dry clean only).
-            assert_eq!(configured, 20 * 4 + 2);
+            let active: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM garments WHERE active=1")
+                .fetch_one(db.writer_pool().unwrap())
+                .await
+                .unwrap();
+            assert_eq!(active, 19, "the card lists 19 items");
+            let offered: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM garment_service_rates r JOIN garments g ON g.id=r.garment_id WHERE g.active=1 AND r.available=1 AND r.configured=1",
+            )
+            .fetch_one(db.writer_pool().unwrap())
+            .await
+            .unwrap();
+            assert_eq!(offered, 37, "cells with a price on the sheet");
             let quoted = quote(&db, &admin, &order_input(2)).await.unwrap();
-            assert_eq!((quoted.subtotal_minor, quoted.discount_minor), (10000, 0));
-            for garment in ["g-coat", "g-kurta-pyjama"] {
-                let active: i64 = sqlx::query_scalar("SELECT active FROM garments WHERE id=?")
-                    .bind(garment)
-                    .fetch_one(db.writer_pool().unwrap())
-                    .await
-                    .unwrap();
-                assert_eq!(active, 1, "{garment} is active");
-            }
+            assert_eq!((quoted.subtotal_minor, quoted.discount_minor), (6000, 0));
             for (garment, service, price) in [
-                ("g-coat", "svc-iron", 2500),
-                ("g-kurta-pyjama", "svc-dry-clean", 15000),
+                ("g-shirt", "svc-wash-iron", 5000),
+                ("g-saree", "svc-wash-iron", 25000),
+                ("g-heavy-saree", "svc-dry-clean", 28000),
+                ("g-coat", "svc-iron", 5000),
+                ("g-lehenga-heavy", "svc-dry-clean", 70000),
+                ("g-footmat-large", "svc-wash", 10000),
+                ("g-dhoti", "svc-dry-clean", 12000),
             ] {
                 let mut item = order_input(1);
                 item.items[0].garment_id = garment.into();
@@ -3423,7 +3605,17 @@ mod counter_tests {
                     "{garment} {service}"
                 );
             }
-            for service in ["svc-iron", "svc-wash-iron"] {
+            // Not on the sheet: a blazer cannot be washed, a retired garment cannot be sold.
+            for (garment, service) in [("g-coat", "svc-wash"), ("g-jeans", "svc-wash")] {
+                let mut item = order_input(1);
+                item.items[0].garment_id = garment.into();
+                item.items[0].service_id = service.into();
+                assert!(quote(&db, &admin, &item)
+                    .await
+                    .unwrap_err()
+                    .contains("unavailable"));
+            }
+            for service in ["svc-iron", "svc-wash-iron", "svc-dry-clean"] {
                 let mut shoes = order_input(1);
                 shoes.items[0].garment_id = "g-shoes".into();
                 shoes.items[0].service_id = service.into();
@@ -3434,8 +3626,83 @@ mod counter_tests {
             }
             let mut shoes = order_input(1);
             shoes.items[0].garment_id = "g-shoes".into();
-            shoes.items[0].service_id = "svc-dry-clean".into();
-            assert_eq!(quote(&db, &admin, &shoes).await.unwrap().total_minor, 35000);
+            shoes.items[0].service_id = "svc-wash".into();
+            assert_eq!(quote(&db, &admin, &shoes).await.unwrap().total_minor, 15000);
+            let cat = catalogue(&db, &admin).await.unwrap();
+            let names: Vec<_> = cat
+                .services
+                .iter()
+                .map(|s| s["name"].as_str().unwrap().to_string())
+                .collect();
+            assert_eq!(names, ["Iron", "Wash", "Dry Clean", "Starch"]);
+            cleanup(db, path).await;
+        });
+    }
+
+    #[test]
+    fn any_user_can_change_a_price_for_one_bill_and_it_is_audited() {
+        tauri::async_runtime::block_on(async {
+            let path = fixture_path();
+            let db = DatabaseState::open(path.clone()).await;
+            let _admin = admin_fixture(&db).await;
+            let staff = staff_fixture(&db).await;
+            let mut input = order_input(2);
+            input.items[0].unit_price_override_minor = Some(2000);
+            let quoted = quote(&db, &staff, &input).await.unwrap();
+            let line = &quoted.lines[0];
+            assert_eq!((line.unit_price_minor, line.list_price_minor), (2000, 3000));
+            assert_eq!(quoted.subtotal_minor, 4000);
+            // A zero price is allowed (a free re-wash); a negative or absurd one is not.
+            input.items[0].unit_price_override_minor = Some(0);
+            assert_eq!(quote(&db, &staff, &input).await.unwrap().total_minor, 0);
+            for bad in [-1, MAX_RATE_MINOR + 1] {
+                input.items[0].unit_price_override_minor = Some(bad);
+                assert!(quote(&db, &staff, &input)
+                    .await
+                    .unwrap_err()
+                    .contains("price between"));
+            }
+            input.items[0].unit_price_override_minor = Some(2000);
+            let saved = save_with(&db, &staff, input.clone(), "override-1")
+                .await
+                .unwrap();
+            assert_eq!(saved.total_minor, 4000);
+            let (unit, rate_version): (i64, i64) = sqlx::query_as(
+                "SELECT unit_price_minor,rate_version FROM order_items WHERE order_id=?",
+            )
+            .bind(&saved.order_id)
+            .fetch_one(db.writer_pool().unwrap())
+            .await
+            .unwrap();
+            assert_eq!(unit, 2000);
+            assert!(rate_version >= 1);
+            let audit: String = sqlx::query_scalar(
+                "SELECT details_json FROM counter_audit WHERE action='order_price_changed'",
+            )
+            .fetch_one(db.writer_pool().unwrap())
+            .await
+            .unwrap();
+            let details: serde_json::Value = serde_json::from_str(&audit).unwrap();
+            assert_eq!(details["listPriceMinor"], 3000);
+            assert_eq!(details["chargedPriceMinor"], 2000);
+            // The rate card itself is untouched.
+            assert_eq!(
+                quote(&db, &staff, &order_input(1))
+                    .await
+                    .unwrap()
+                    .subtotal_minor,
+                3000
+            );
+            // A line charged the list price writes no price audit.
+            let plain = save_with(&db, &staff, order_input(1), "plain-1")
+                .await
+                .unwrap();
+            let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM counter_audit WHERE action='order_price_changed' AND entity_id=?")
+                .bind(&plain.order_id)
+                .fetch_one(db.writer_pool().unwrap())
+                .await
+                .unwrap();
+            assert_eq!(rows, 0);
             cleanup(db, path).await;
         });
     }
@@ -3652,6 +3919,7 @@ mod counter_tests {
                     garment_id: id.clone(),
                     service_id: service.into(),
                     quantity: 1,
+                    unit_price_override_minor: None,
                 }],
             };
             assert!(quote(&db, &staff, &order("svc-wash")).await.is_err());
@@ -3661,6 +3929,121 @@ mod counter_tests {
             let quoted = quote(&db, &staff, &order("svc-wash")).await.unwrap();
             assert_eq!(quoted.total_minor, 30000);
             assert!(quote(&db, &staff, &order("svc-iron")).await.is_err());
+            cleanup(db, path).await;
+        });
+    }
+
+    #[test]
+    fn staff_mark_a_bill_for_the_trash_and_only_an_admin_decides() {
+        tauri::async_runtime::block_on(async {
+            let path = fixture_path();
+            let db = DatabaseState::open(path.clone()).await;
+            let admin = admin_fixture(&db).await;
+            let staff = staff_fixture(&db).await;
+            let mistake = save_with(&db, &staff, order_input(2), "mistake")
+                .await
+                .unwrap();
+            let kept = save_with(&db, &staff, order_input(1), "kept")
+                .await
+                .unwrap();
+            let filter = crate::insights::SalesFilter {
+                from: "2020-01-01T00:00".into(),
+                to: "2030-01-01T00:00".into(),
+                payment_methods: vec![],
+                statuses: vec![],
+                staff_id: None,
+                search: None,
+                discounted_only: false,
+                include_cancelled: true,
+            };
+
+            // A reason is required and bounded; an unknown order is refused.
+            assert!(request_order_trash(&db, &staff, &mistake.order_id, "  ")
+                .await
+                .unwrap_err()
+                .contains("why"));
+            assert!(
+                request_order_trash(&db, &staff, &mistake.order_id, &"x".repeat(201))
+                    .await
+                    .unwrap_err()
+                    .contains("200")
+            );
+            assert!(request_order_trash(&db, &staff, "missing", "typo")
+                .await
+                .unwrap_err()
+                .contains("not found"));
+
+            request_order_trash(&db, &staff, &mistake.order_id, "Added twice by mistake")
+                .await
+                .unwrap();
+            assert!(request_order_trash(&db, &staff, &mistake.order_id, "again")
+                .await
+                .unwrap_err()
+                .contains("already marked"));
+
+            // Only an admin sees or decides on requests.
+            assert!(list_trash_requests(&db, &staff)
+                .await
+                .unwrap_err()
+                .contains("Administrator access"));
+            assert!(dismiss_trash_request(&db, &staff, &mistake.order_id)
+                .await
+                .unwrap_err()
+                .contains("Administrator access"));
+            let pending = list_trash_requests(&db, &admin).await.unwrap();
+            assert_eq!(pending.len(), 1);
+            assert_eq!(pending[0].order_id, mistake.order_id);
+            assert_eq!(pending[0].reason, "Added twice by mistake");
+            assert_eq!(pending[0].requested_by, "fixture-staff");
+            assert_eq!(pending[0].total_minor, mistake.total_minor);
+
+            // A request alone changes no sales.
+            let sales = crate::insights::sales_summary(&db, &admin, &filter)
+                .await
+                .unwrap();
+            assert_eq!(sales.orders, 2);
+
+            // Dismissing keeps the order and clears the request; it can be requested again.
+            dismiss_trash_request(&db, &admin, &mistake.order_id)
+                .await
+                .unwrap();
+            assert!(list_trash_requests(&db, &admin).await.unwrap().is_empty());
+            assert!(dismiss_trash_request(&db, &admin, &mistake.order_id)
+                .await
+                .unwrap_err()
+                .contains("no pending"));
+            request_order_trash(&db, &staff, &mistake.order_id, "Still wrong")
+                .await
+                .unwrap();
+
+            // Approving moves it to the trash: no sale is counted for it and the request leaves the list.
+            trash_order(&db, &admin, &mistake.order_id).await.unwrap();
+            assert!(list_trash_requests(&db, &admin).await.unwrap().is_empty());
+            let sales = crate::insights::sales_summary(&db, &admin, &filter)
+                .await
+                .unwrap();
+            assert_eq!(sales.orders, 1);
+            assert_eq!(sales.collected_minor, kept.total_minor);
+            assert!(request_order_trash(&db, &staff, &mistake.order_id, "late")
+                .await
+                .unwrap_err()
+                .contains("already in the trash"));
+
+            for action in [
+                "order_trash_requested",
+                "order_trash_request_dismissed",
+                "order_trashed",
+            ] {
+                let rows: i64 = sqlx::query_scalar(
+                    "SELECT COUNT(*) FROM counter_audit WHERE action=? AND entity_id=?",
+                )
+                .bind(action)
+                .bind(&mistake.order_id)
+                .fetch_one(db.writer_pool().unwrap())
+                .await
+                .unwrap();
+                assert!(rows >= 1, "{action} is audited");
+            }
             cleanup(db, path).await;
         });
     }
@@ -4038,6 +4421,7 @@ mod counter_tests {
                     garment_id: "g-shirt".into(),
                     service_id: service.into(),
                     quantity: 1,
+                    unit_price_override_minor: None,
                 })
                 .collect();
             let quoted = quote(&db, &staff, &order).await.unwrap();
@@ -4121,6 +4505,7 @@ mod counter_tests {
                         garment_id: "g-shirt".into(),
                         service_id: service.into(),
                         quantity,
+                        unit_price_override_minor: None,
                     })
                     .collect(),
             };
@@ -4274,6 +4659,7 @@ mod counter_tests {
                 garment_id: "g-shoes".into(),
                 service_id: "svc-wash".into(),
                 quantity: 3,
+                unit_price_override_minor: None,
             });
             let saved = save_with(&db, &staff, order, "mixed").await.unwrap();
             assert_eq!(
@@ -4854,8 +5240,8 @@ mod counter_tests {
                 "no duplicate customer for the same person"
             );
             assert_eq!(
-                again_order.total_minor, 4000,
-                "20% off the 50.00 wash price"
+                again_order.total_minor, 2400,
+                "20% off the 30.00 wash price"
             );
 
             // Orders keep the canonical phone, and every spelling finds them.
@@ -4947,6 +5333,7 @@ mod counter_tests {
                 garment_id: "g-shirt".into(),
                 service_id: service.into(),
                 quantity,
+                unit_price_override_minor: None,
             }],
         }
     }
@@ -5033,7 +5420,7 @@ mod counter_tests {
                 customer_order("Chetan", "9000000003", "svc-wash", 1),
                 "paid-ready",
                 now,
-                pay(5000),
+                pay(3000),
             )
             .await
             .unwrap();
@@ -5047,7 +5434,7 @@ mod counter_tests {
                 customer_order("Dev", "9000000004", "svc-wash", 1),
                 "late",
                 four_days_ago,
-                pay(5000),
+                pay(3000),
             )
             .await
             .unwrap();
@@ -5075,7 +5462,7 @@ mod counter_tests {
                 customer_order("Farid", "9000000006", "svc-wash", 1),
                 "collected",
                 now,
-                pay(5000),
+                pay(3000),
             )
             .await
             .unwrap();
@@ -5165,7 +5552,7 @@ mod counter_tests {
                     in_process: 4,
                     today: 6,
                     all: 8,
-                    balance_due_minor: 5000 + 3000 + 5000 + 1000,
+                    balance_due_minor: 3000 + 1000 + 3000 + 1000,
                 }
             );
             cleanup(db, path).await;
@@ -5365,7 +5752,7 @@ mod counter_tests {
                 customer_order("Part", "9000000035", "svc-wash", 1),
                 "part",
                 now,
-                pay(2000),
+                pay(1000),
             )
             .await
             .unwrap();
@@ -5379,7 +5766,7 @@ mod counter_tests {
             )
             .await
             .unwrap();
-            // Balances: Full 5000, Part 3000, Iron 1000 (plus the three unpaid orders above).
+            // Balances: Full 3000, Part 2000, Iron 1000 (plus the three unpaid orders above).
             let balance = listed_in_order(&db, &staff, "", Some("balance_due"), now).await;
             let position =
                 |order: &SavedOrder| balance.iter().position(|id| *id == order.order_id).unwrap();
@@ -5775,7 +6162,7 @@ mod counter_tests {
                 customer_order("Late", "9000000073", "svc-wash", 1),
                 "late",
                 now - Duration::days(4),
-                pay(5000),
+                pay(3000),
             )
             .await
             .unwrap();
@@ -5813,7 +6200,7 @@ mod counter_tests {
 
             assert_eq!(row(&part).untagged_count, 0, "a wash is tagged");
             assert_eq!(row(&part).payment_status, "partially_paid");
-            assert_eq!(row(&part).balance_minor, 3000);
+            assert_eq!(row(&part).balance_minor, 1000);
 
             assert_eq!(row(&late).payment_status, "paid");
             assert!(row(&late).overdue, "washing past the promised time");
@@ -5863,7 +6250,7 @@ mod counter_tests {
             assert_eq!(last["newAvailable"], false);
             let first: serde_json::Value = serde_json::from_str(&details[0]).unwrap();
             assert_eq!(
-                first["oldPriceMinor"], 5000,
+                first["oldPriceMinor"], 3000,
                 "the starter price is recorded as the old value"
             );
 
@@ -5906,6 +6293,7 @@ mod counter_tests {
                     garment_id: "g-shirt".into(),
                     service_id: "svc-wash".into(),
                     quantity: 1,
+                    unit_price_override_minor: None,
                 })
                 .collect();
             assert!(quote(&db, &staff, &many_lines)
@@ -5917,11 +6305,13 @@ mod counter_tests {
                 garment_id: "g-shirt".into(),
                 service_id: "svc-iron".into(),
                 quantity: 200,
+                unit_price_override_minor: None,
             });
             many_pieces.items.push(LineInput {
                 garment_id: "g-shirt".into(),
                 service_id: "svc-dry-clean".into(),
                 quantity: 101,
+                unit_price_override_minor: None,
             });
             assert!(quote(&db, &staff, &many_pieces)
                 .await
@@ -5932,17 +6322,19 @@ mod counter_tests {
                 garment_id: "g-shirt".into(),
                 service_id: "svc-iron".into(),
                 quantity: 200,
+                unit_price_override_minor: None,
             });
             exactly.items.push(LineInput {
                 garment_id: "g-shirt".into(),
                 service_id: "svc-dry-clean".into(),
                 quantity: 100,
+                unit_price_override_minor: None,
             });
             assert_eq!(quote(&db, &staff, &exactly).await.unwrap().piece_count, 500);
             set_rate(
                 &db,
                 &admin,
-                "g-jacket",
+                "g-shirt",
                 "svc-dry-clean",
                 Some(1_000_000),
                 true,
@@ -5952,9 +6344,10 @@ mod counter_tests {
             let mut huge = order_input(1);
             huge.items = (0..4)
                 .map(|_| LineInput {
-                    garment_id: "g-jacket".into(),
+                    garment_id: "g-shirt".into(),
                     service_id: "svc-dry-clean".into(),
                     quantity: 100,
+                    unit_price_override_minor: None,
                 })
                 .collect();
             assert!(quote(&db, &staff, &huge)
@@ -6222,7 +6615,7 @@ mod counter_tests {
             .await
             .unwrap();
             let details: serde_json::Value = serde_json::from_str(&audit_row).unwrap();
-            assert_eq!(details["refundMinor"], 10000);
+            assert_eq!(details["refundMinor"], 6000);
             assert_eq!(details["reason"], "entered twice");
             assert!(cancel_order(&db, &admin, &order.order_id, "again")
                 .await

@@ -132,6 +132,7 @@ fn lines_for(rng: &mut Rng) -> Vec<LineInput> {
                 garment_id: garment.into(),
                 service_id: service.into(),
                 quantity,
+                unit_price_override_minor: None,
             });
         }
     };
@@ -413,16 +414,19 @@ fn seed_demo_month() {
                             garment_id: "g-shirt".into(),
                             service_id: "svc-wash-iron".into(),
                             quantity: 60,
+                            unit_price_override_minor: None,
                         },
                         LineInput {
                             garment_id: "g-trousers".into(),
                             service_id: "svc-wash-iron".into(),
                             quantity: 40,
+                            unit_price_override_minor: None,
                         },
                         LineInput {
                             garment_id: "g-jacket".into(),
                             service_id: "svc-dry-clean".into(),
                             quantity: 20,
+                            unit_price_override_minor: None,
                         },
                     ]
                 } else {

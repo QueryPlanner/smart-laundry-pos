@@ -249,14 +249,21 @@ pub fn bill_footer(header: &BillHeader) -> String {
     }
 }
 
-/// Fixed line printed as the last line of every bill, below the footer. The shop cannot turn it
-/// off, and it is added at print time, so bills saved before it existed also get it.
-const BILL_TERMS_LINE: &str = "* terms and conditions apply";
+/// Terms and conditions printed at the bottom of every bill, in Marathi, below the footer. The
+/// shop cannot turn them off, and they are added at print time, so bills saved before they existed
+/// also get them.
+pub const BILL_TERMS: [&str; 5] = [
+    "अटी व शर्ती :",
+    "1. रंग जाणे, अकुंचन होणे किंवा नाजूक कपड्यांचे नुकसान यासाठी आम्ही जबाबदार नाही.",
+    "2. कोणतीही तक्रार कपडे घेतल्यानंतर लगेचच करावी.",
+    "3. 30 दिवसानंतर न घेतलेल्या कपड्यांची जबाबदारी आमची राहणार नाही.",
+    "4. नियम व अटी लागू.",
+];
 
-/// Everything that closes a bill: the footer lines, then the fixed terms line last.
+/// Everything that closes a bill: the footer lines, then the fixed terms last.
 pub fn bill_closing_lines(header: &BillHeader) -> Vec<String> {
     let mut lines = bill_footer_lines(header);
-    lines.push(BILL_TERMS_LINE.into());
+    lines.extend(BILL_TERMS.iter().map(|line| (*line).to_string()));
     lines
 }
 
@@ -578,7 +585,7 @@ fn layout_bill(
     if bill.balance_minor > 0 {
         totals.push(("Balance due".into(), format_money(bill.balance_minor), true));
     }
-    // The closing lines (footer, then the terms line) are part of `needed`, so the rows shrink
+    // The closing lines (footer, then the terms) are part of `needed`, so the rows shrink
     // or paginate to leave room for them.
     let footer: Vec<String> = bill_closing_lines(&bill.header)
         .into_iter()
@@ -1016,15 +1023,12 @@ mod tests {
         page.lines.iter().map(|l| l.text.as_str()).collect()
     }
 
-    /// A bill page ends with its footer line and then the fixed terms line, in that order.
+    /// A bill page ends with its footer line and then the fixed Marathi terms, in that order.
     fn assert_ends_with_footer_then_terms(page: &LaidOutPage, footer: &str) {
         let lines = texts(page);
-        assert_eq!(
-            lines.last(),
-            Some(&"* terms and conditions apply"),
-            "{lines:?}"
-        );
-        assert_eq!(lines[lines.len() - 2], footer, "{lines:?}");
+        let terms_start = lines.len() - BILL_TERMS.len();
+        assert_eq!(&lines[terms_start..], &BILL_TERMS[..], "{lines:?}");
+        assert_eq!(lines[terms_start - 1], footer, "{lines:?}");
     }
 
     fn assert_within(page: &LaidOutPage, spec: PageSpec) {
@@ -1784,8 +1788,8 @@ mod tests {
     }
 
     #[test]
-    fn a_bill_with_a_few_items_stays_on_one_a5_page_at_the_normal_size() {
-        for items in 1..=4 {
+    fn a_short_bill_stays_on_one_a5_page_at_the_normal_size() {
+        for items in 1..=1 {
             let pages = layout_bill(&a5_bill(items), A5_LANDSCAPE, &FakeMeter).unwrap();
             assert_eq!(pages.len(), 1, "{items} items");
             assert_eq!(item_row_size(&pages), Some(10.0), "{items} items");
@@ -1795,23 +1799,23 @@ mod tests {
 
     #[test]
     fn a_bill_that_does_not_fit_at_the_normal_size_shrinks_its_rows_to_stay_on_one_page() {
-        // Six items are the most that fit one A5 page at the smallest row size once the terms
-        // line takes its room; seven items continue onto a second page.
-        let pages = layout_bill(&a5_bill(6), A5_LANDSCAPE, &FakeMeter).unwrap();
+        // Two items are the most that fit one A5 page once the five terms lines take their room
+        // (A4, the real bill size, fits eleven at the normal size); three continue onto a second page.
+        let pages = layout_bill(&a5_bill(2), A5_LANDSCAPE, &FakeMeter).unwrap();
         assert_eq!(pages.len(), 1);
         let size = item_row_size(&pages).unwrap();
         assert!((7.0..10.0).contains(&size), "row size {size}");
         assert_within(&pages[0], A5_LANDSCAPE);
-        assert_eq!(garment_count(&pages), 6);
+        assert_eq!(garment_count(&pages), 2);
         let lines = texts(&pages[0]);
         assert!(lines.contains(&"Example Cleaners"), "header is on the page");
         assert!(lines.contains(&"Visit again soon"), "footer is on the page");
         assert!(
-            lines.contains(&"Total: \u{20b9}300.00"),
+            lines.iter().any(|l| l.starts_with("Total: ")),
             "totals are on the page"
         );
         assert_eq!(
-            layout_bill(&a5_bill(7), A5_LANDSCAPE, &FakeMeter)
+            layout_bill(&a5_bill(3), A5_LANDSCAPE, &FakeMeter)
                 .unwrap()
                 .len(),
             2
@@ -1858,7 +1862,7 @@ mod tests {
     }
 
     #[test]
-    fn every_bill_ends_with_the_terms_line_below_the_footer() {
+    fn every_bill_ends_with_the_terms_below_the_footer() {
         // Custom footer on one page, the default thank-you, and a bill that runs to a second A5 page.
         let pages = layout_bill(&a5_bill(1), A5_LANDSCAPE, &FakeMeter).unwrap();
         assert_ends_with_footer_then_terms(pages.last().unwrap(), "Visit again soon");
@@ -1869,11 +1873,11 @@ mod tests {
         let pages = layout_bill(&a5_bill(8), A5_LANDSCAPE, &FakeMeter).unwrap();
         assert_eq!(pages.len(), 2);
         assert_ends_with_footer_then_terms(&pages[1], "Visit again soon");
-        assert!(!texts(&pages[0]).contains(&"* terms and conditions apply"));
+        assert!(!texts(&pages[0]).contains(&BILL_TERMS[0]));
     }
 
     #[test]
-    fn the_terms_line_stays_inside_the_margin_for_every_bill_length() {
+    fn the_terms_stay_inside_the_margin_for_every_bill_length() {
         for items in 1..=30 {
             let pages = layout_bill(&a5_bill(items), A5_LANDSCAPE, &FakeMeter).unwrap();
             for page in &pages {

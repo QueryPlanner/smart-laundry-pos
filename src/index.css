@@ -762,3 +762,17 @@ All colors MUST be HSL.
 /* The destructive button's default colour is too light for white text; this darker red passes AA. */
 .counter-more-panel [role=group] button[class*="bg-destructive"]{background:#9a3e2f;color:#fff}
 /* --- end Orders / Pickup --- */
+
+/* Per-bill price field under each order line. */
+.counter-line-price{display:flex;align-items:center;gap:8px;flex-basis:100%;font-size:12px;color:#5f6f68}
+.counter-line-price input{width:92px;height:36px;border:1px solid #cddbd4;border-radius:8px;padding:0 9px;text-align:right;background:#fff;color:#202d29;font-weight:650}
+.counter-line-price small{color:#9a5c47}
+.counter-settings-terms{white-space:pre-line;font-size:11px;line-height:1.5;text-align:left}
+
+/* Admin panel of bills staff marked for the trash. */
+.counter-trash-requests{margin:14px clamp(16px,3vw,40px) 0;padding:14px 16px;border:1px solid #e8c9bf;border-radius:12px;background:#fff7f4}
+.counter-trash-requests h2{margin:0 0 8px;font-size:15px;color:#9a3e2f}
+.counter-trash-requests ul{margin:0;padding:0;list-style:none;display:grid;gap:10px}
+.counter-trash-requests li{display:flex;flex-wrap:wrap;align-items:center;gap:8px 10px}
+.counter-trash-requests li>div{flex:1 1 280px;display:grid;gap:3px}
+.counter-trash-requests li span{font-size:13px;color:#5f6f68}

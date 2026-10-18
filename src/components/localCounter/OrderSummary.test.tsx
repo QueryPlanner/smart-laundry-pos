@@ -7,10 +7,10 @@ import type { CounterCatalogue, CounterQuote } from '@/lib/localFirst/counter';
 import { ADVANCE_ABOVE_TOTAL, ADVANCE_NOT_AMOUNT } from '@/lib/localFirst/payment';
 
 const catalogue: CounterCatalogue = { garments: [{ id: 'g1', key: 'shirt', nameEn: 'Shirt', nameMr: 'शर्ट', category: 'tops', imageKey: 'shirt', billingUnit: 'piece', active: true }], services: [{ id: 's1', key: 'wash_iron', name: 'Wash + Iron', active: true }], rates: [] };
-const quote: CounterQuote = { lines: [{ garmentId: 'g1', serviceId: 's1', garment: 'Shirt', service: 'Wash + Iron', quantity: 1, unitPriceMinor: 1200, lineTotalMinor: 1200, rateVersion: 2 }], subtotalMinor: 1200, discountPercentBp: 0, discountMinor: 0, totalMinor: 1200, pieceCount: 1, promisedAt: '2026-10-17T11:30:00Z', catalogueVersion: '2' };
+const quote: CounterQuote = { lines: [{ garmentId: 'g1', serviceId: 's1', garment: 'Shirt', service: 'Wash + Iron', quantity: 1, unitPriceMinor: 1200, listPriceMinor: 1200, lineTotalMinor: 1200, rateVersion: 2, serviceKey: 'wash_iron' }], subtotalMinor: 1200, discountPercentBp: 0, discountMinor: 0, totalMinor: 1200, pieceCount: 1, promisedAt: '2026-10-17T11:30:00Z', catalogueVersion: '2' };
 const props = (overrides: Partial<React.ComponentProps<typeof OrderSummary>> = {}) => ({
   catalogue, lines: { 'g1|s1': 1 }, quote, customer: { name: 'Rita', phone: '9876543210' }, advance: '', onAdvance: vi.fn(), paymentMethod: 'cash' as const,
-  onPaymentMethod: vi.fn(), onRemove: vi.fn(), onQuantity: vi.fn(), onSave: vi.fn(), busy: false, quoteFailed: false, ...overrides,
+  onPaymentMethod: vi.fn(), onRemove: vi.fn(), onQuantity: vi.fn(), onPrice: vi.fn(), onSave: vi.fn(), busy: false, quoteFailed: false, ...overrides,
 });
 const saveButton = () => screen.getByRole('button', { name: /Save & Print|Saving and dispatching/ }) as HTMLButtonElement;
 const advanceInput = () => screen.getByLabelText('Advance received now') as HTMLInputElement;
@@ -43,6 +43,46 @@ describe('OrderSummary', () => {
     expect(p.onQuantity.mock.calls).toEqual([['g1', 0, 's1'], ['g1', 2, 's1'], ['g1', 4, 's1'], ['g1', 0, 's1'], ['g1', 0, 's1']]);
     expect(p.onRemove).toHaveBeenCalledWith('g1', 's1');
     expect(p.onSave).toHaveBeenCalledOnce();
+  });
+
+  describe('price for this bill', () => {
+    const priceInput = () => screen.getByLabelText('Shirt price for this bill') as HTMLInputElement;
+
+    it('starts at the rate-card price with no "rate card" note', () => {
+      render(<OrderSummary {...props()} />);
+      expect(priceInput().value).toBe('12.00');
+      expect(screen.queryByText(/Rate card/)).toBeNull();
+    });
+
+    it('reports a different price in paise, and the rate-card price as "no override"', () => {
+      const p = props();
+      render(<OrderSummary {...p} />);
+      fireEvent.change(priceInput(), { target: { value: '9.5' } });
+      fireEvent.change(priceInput(), { target: { value: '12' } });
+      expect(p.onPrice.mock.calls).toEqual([['g1', 's1', 950], ['g1', 's1', undefined]]);
+    });
+
+    it('ignores an empty or non-numeric price and shows the charged price again on leaving the box', () => {
+      const p = props();
+      render(<OrderSummary {...p} />);
+      fireEvent.change(priceInput(), { target: { value: '' } });
+      fireEvent.change(priceInput(), { target: { value: 'abc' } });
+      expect(p.onPrice).not.toHaveBeenCalled();
+      fireEvent.blur(priceInput());
+      expect(priceInput().value).toBe('12.00');
+    });
+
+    it('shows the rate-card price beside a changed price, including a free line', () => {
+      const changed = { ...quote, lines: [{ ...quote.lines[0], unitPriceMinor: 0, lineTotalMinor: 0 }] };
+      render(<OrderSummary {...props({ quote: changed })} />);
+      expect(priceInput().value).toBe('0.00');
+      expect(screen.getByText('Rate card ₹12.00')).toBeTruthy();
+    });
+
+    it('shows no price box while the quote is still being worked out', () => {
+      render(<OrderSummary {...props({ quote: null })} />);
+      expect(screen.queryByLabelText('Shirt price for this bill')).toBeNull();
+    });
   });
 
   it('shows the automatic discount and the discounted amount to collect', () => {

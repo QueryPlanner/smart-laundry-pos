@@ -7,7 +7,7 @@ import { ADVANCE_ABOVE_TOTAL, ADVANCE_NOT_AMOUNT } from '@/lib/localFirst/paymen
 import type { CounterAccount, CounterCatalogue, CounterOrderInput, CounterOrderSummary, CounterPiece, CounterPrintJob, CounterSavedOrder } from '@/lib/localFirst/counter';
 
 const api = vi.hoisted(() => ({
-  cancelCounterOrder: vi.fn(), collectCounterOrder: vi.fn(), createCounterStaff: vi.fn(), dispatchPrintJob: vi.fn(), dispatchPrintJobs: vi.fn(), enumeratePrinters: vi.fn(),
+  listCounterTrashRequests: vi.fn(), cancelCounterOrder: vi.fn(), collectCounterOrder: vi.fn(), createCounterStaff: vi.fn(), dispatchPrintJob: vi.fn(), dispatchPrintJobs: vi.fn(), enumeratePrinters: vi.fn(),
   getCounterBootstrap: vi.fn(), getCounterCatalogue: vi.fn(), getCounterOrder: vi.fn(), getCounterOrderQueueCounts: vi.fn(), getOrderPieces: vi.fn(), getPrinterProfiles: vi.fn(),
   listCounterStaff: vi.fn(), listPrintJobs: vi.fn(), lockCounter: vi.fn(), loginCounter: vi.fn(), matchOrderPieces: vi.fn(), quoteCounterOrder: vi.fn(),
   recordCounterPayment: vi.fn(), reprintCounterOutput: vi.fn(), resetCounterStaffPin: vi.fn(), retryPrintJob: vi.fn(), saveCounterOrder: vi.fn(),
@@ -36,8 +36,9 @@ const savedOrder = (over: Partial<CounterSavedOrder> = {}): CounterSavedOrder =>
 const summary = (n: number, over: Partial<CounterOrderSummary> = {}): CounterOrderSummary => ({ id: `o-${n}`, orderNumber: `SL-${n}`, customerName: `Customer ${n}`, customerPhone: '9876543210', status: 'ready', receivedAt: '2026-10-15T06:00:00Z', promisedAt: '2026-10-17T11:30:00Z', totalMinor: 4000, paidMinor: 0, balanceMinor: 4000, pieceCount: 2, paymentStatus: 'unpaid', overdue: false, untaggedCount: 0, matchReason: null, ...over });
 const quoteFor = (input: CounterOrderInput, total?: number) => {
   const pieceCount = input.items.reduce((n, x) => n + x.quantity, 0);
-  const subtotal = 2000 * pieceCount;
-  return { lines: input.items.map(x => ({ garmentId: x.garmentId, serviceId: x.serviceId, garment: 'Shirt', service: 'Wash + Iron', quantity: x.quantity, unitPriceMinor: 2000, lineTotalMinor: 2000 * x.quantity, rateVersion: 1 })), subtotalMinor: subtotal, discountPercentBp: 0, discountMinor: 0, totalMinor: total ?? subtotal, pieceCount, promisedAt: '2026-10-17T11:30:00.000Z', catalogueVersion: '2' };
+  const unit = (x: CounterOrderInput['items'][number]) => x.unitPriceOverrideMinor ?? 2000;
+  const subtotal = input.items.reduce((n, x) => n + unit(x) * x.quantity, 0);
+  return { lines: input.items.map(x => ({ garmentId: x.garmentId, serviceId: x.serviceId, garment: 'Shirt', service: 'Wash + Iron', quantity: x.quantity, unitPriceMinor: unit(x), listPriceMinor: 2000, lineTotalMinor: unit(x) * x.quantity, rateVersion: 1 })), subtotalMinor: subtotal, discountPercentBp: 0, discountMinor: 0, totalMinor: total ?? subtotal, pieceCount, promisedAt: '2026-10-17T11:30:00.000Z', catalogueVersion: '2' };
 };
 const unauthenticated = (extra: Record<string, unknown> = {}) => ({ setupRequired: false, authenticated: false, account: null, accounts: [staff, admin, retired], warning: null, ...extra });
 
@@ -79,6 +80,7 @@ const startOrder = async () => {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  api.listCounterTrashRequests.mockResolvedValue([]);
   api.getCounterCatalogue.mockResolvedValue(catalogue);
   api.quoteCounterOrder.mockImplementation(async (input: CounterOrderInput) => quoteFor(input));
   api.searchCounterCustomers.mockResolvedValue([]);
@@ -321,6 +323,26 @@ describe('taking and saving an order', () => {
 });
 
 describe('small order-screen behaviours', () => {
+  it('lets staff change a price for this bill only, and forgets it when the line is removed', async () => {
+    await signIn();
+    await startOrder();
+    fireEvent.change(screen.getByLabelText('Shirt quantity'), { target: { value: '2' } });
+    const price = await screen.findByLabelText('Shirt price for this bill');
+    fireEvent.change(price, { target: { value: '15' } });
+    await waitFor(() => expect(api.quoteCounterOrder).toHaveBeenLastCalledWith(expect.objectContaining({ items: [expect.objectContaining({ quantity: 2, unitPriceOverrideMinor: 1500 })] })));
+    await screen.findByText('Rate card ₹20.00');
+    // Back to the rate-card price: no override is sent.
+    fireEvent.change(screen.getByLabelText('Shirt price for this bill'), { target: { value: '20' } });
+    await waitFor(() => expect(api.quoteCounterOrder).toHaveBeenLastCalledWith(expect.objectContaining({ items: [expect.not.objectContaining({ unitPriceOverrideMinor: expect.anything() })] })));
+    // A price typed, the line removed and added again: the old price is gone.
+    fireEvent.change(await screen.findByLabelText('Shirt price for this bill'), { target: { value: '5' } });
+    await waitFor(() => expect(api.quoteCounterOrder).toHaveBeenLastCalledWith(expect.objectContaining({ items: [expect.objectContaining({ unitPriceOverrideMinor: 500 })] })));
+    fireEvent.click(screen.getByRole('button', { name: 'Remove Shirt' }));
+    await screen.findByText('Tap garment pictures to add items.');
+    fireEvent.click(screen.getByRole('button', { name: 'Add Shirt' }));
+    await waitFor(() => expect(api.quoteCounterOrder).toHaveBeenLastCalledWith(expect.objectContaining({ items: [expect.not.objectContaining({ unitPriceOverrideMinor: expect.anything() })] })));
+  });
+
   it('removes a line when its quantity is typed as zero', async () => {
     await signIn();
     await startOrder();
@@ -330,7 +352,7 @@ describe('small order-screen behaviours', () => {
     await screen.findByText('Tap garment pictures to add items.');
   });
 
-  it('starts on the first service when Wash + Iron is not offered', async () => {
+  it('starts on the first service when Wash is not offered', async () => {
     api.getCounterCatalogue.mockResolvedValue({ ...catalogue, services: [catalogue.services[0]] });
     await signIn();
     expect(screen.getByRole('tab', { name: 'Wash' }).getAttribute('aria-selected')).toBe('true');
