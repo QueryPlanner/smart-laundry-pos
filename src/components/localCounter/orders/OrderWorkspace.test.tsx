@@ -7,7 +7,7 @@ import { OrderWorkspace } from './OrderWorkspace';
 import { order, owingOrder } from './handoverFixtures';
 
 const api = vi.hoisted(() => ({
-  updateCounterOrderStatus: vi.fn(), cancelCounterOrder: vi.fn(), recordCounterPayment: vi.fn(),
+  updateCounterOrderStatus: vi.fn(), cancelCounterOrder: vi.fn(), trashCounterOrder: vi.fn(), recordCounterPayment: vi.fn(),
   collectCounterOrder: vi.fn(), getCounterOrder: vi.fn(), matchOrderPieces: vi.fn(),
 }));
 vi.mock('@/lib/localFirst/counter', () => api);
@@ -124,6 +124,33 @@ describe('the detail view', () => {
     fireEvent.click(button('Reprint tags'));
     fireEvent.click(button('Print status'));
     expect([p.onReprintBill, p.onReprintTags, p.onOpenPrints].map(fn => (fn as ReturnType<typeof vi.fn>).mock.calls.length)).toEqual([1, 1, 1]);
+  });
+
+  describe('moving to the trash', () => {
+    const openTrash = () => {
+      fireEvent.click(button('More actions'));
+      fireEvent.click(button('Move to trash'));
+      fireEvent.click(button('Confirm move to trash'));
+    };
+
+    it('trashes the order, says so and returns to where the admin came from', async () => {
+      api.trashCounterOrder.mockResolvedValue(undefined);
+      const p = props();
+      render(<OrderWorkspace {...p} />);
+      openTrash();
+      await waitFor(() => expect(p.onBack).toHaveBeenCalled());
+      expect(api.trashCounterOrder).toHaveBeenCalledWith('o-1');
+      expect(p.onNotice).toHaveBeenCalledWith(`Order ${p.order.orderNumber} moved to the trash.`);
+    });
+
+    it('stays on the order and reports a failure', async () => {
+      api.trashCounterOrder.mockRejectedValue(new Error('only admins'));
+      const p = props();
+      render(<OrderWorkspace {...p} />);
+      openTrash();
+      await waitFor(() => expect(p.onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'only admins' })));
+      expect(p.onBack).not.toHaveBeenCalled();
+    });
   });
 
   describe('cancelling', () => {

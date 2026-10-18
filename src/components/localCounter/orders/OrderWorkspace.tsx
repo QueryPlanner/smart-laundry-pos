@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { cancelCounterOrder, updateCounterOrderStatus } from '@/lib/localFirst/counter';
+import { cancelCounterOrder, trashCounterOrder, updateCounterOrderStatus } from '@/lib/localFirst/counter';
 import type { CounterProcessingStatus, CounterSavedOrder } from '@/lib/localFirst/counter';
 import { rupees, stageLabel } from '@/lib/localFirst/orders/orderMoney';
 import { useOrderHandover } from '@/lib/localFirst/orders/useOrderHandover';
@@ -82,6 +82,14 @@ export const OrderWorkspace = ({
     } catch (error) { onError(error); }
   });
 
+  const trash = () => run(async () => {
+    try {
+      await trashCounterOrder(order.orderId);
+      onNotice(`Order ${order.orderNumber} moved to the trash.`);
+      onBack();
+    } catch (error) { onError(error); }
+  });
+
   const customer = { name: order.customerName, phone: order.customerPhone };
 
   if (view === 'handover') {
@@ -115,6 +123,7 @@ export const OrderWorkspace = ({
       onMoveStage={status => void moveStage(status)} onHandover={() => onView('handover')}
       money={money.form} packingSlot={packingSlot}
       onCancel={reason => void cancel(reason)}
+      onTrash={() => void trash()}
       onReprintBill={onReprintBill} onReprintTags={onReprintTags} onOpenPrints={onOpenPrints}
     />
   );

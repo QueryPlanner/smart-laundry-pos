@@ -838,7 +838,7 @@ fn a_v3_database_is_upgraded_to_v4_and_its_orders_and_payments_are_kept() {
         let upgraded = open(&temporary.path).await;
         assert_eq!(upgraded.info().error, None);
         let pool = &upgraded.pools().unwrap().writer;
-        assert_eq!(user_version(pool).await, 4);
+        assert_eq!(user_version(pool).await, SCHEMA_VERSION);
         assert!(table_exists_in(pool, "order_day_sequences").await);
 
         let pieces: Vec<(String, i64)> =
@@ -953,7 +953,11 @@ fn older_backups_can_be_restored_and_upgrade_to_v4_on_the_next_start() {
             assert_eq!(restored.info().error, None, "v{version} backup");
             assert!(!restored.info().restore_pending);
             let pool = &restored.pools().unwrap().writer;
-            assert_eq!(user_version(pool).await, 4, "v{version} backup");
+            assert_eq!(
+                user_version(pool).await,
+                SCHEMA_VERSION,
+                "v{version} backup"
+            );
             assert!(table_exists_in(pool, "order_day_sequences").await);
             let advance_kind: String =
                 sqlx::query_scalar("SELECT kind FROM payments WHERE id = 'pay-advance'")
@@ -1006,7 +1010,7 @@ fn a_v4_backup_can_be_taken_and_restored_with_its_advance_and_tag_data() {
         let restored = open(&live.path).await;
         assert_eq!(restored.info().error, None);
         let pool = &restored.pools().unwrap().writer;
-        assert_eq!(user_version(pool).await, 4);
+        assert_eq!(user_version(pool).await, SCHEMA_VERSION);
         let kinds: Vec<(String, String)> =
             sqlx::query_as("SELECT id, kind FROM payments ORDER BY id")
                 .fetch_all(pool)

@@ -327,6 +327,7 @@ impl Scope {
     /// Search, discount and payment-method conditions on the order alias `o`.
     fn order_traits(&self, with_method: bool) -> Vec<String> {
         let mut conditions = vec![
+            "o.trashed_at IS NULL".to_string(),
             "(?2 IS NULL OR o.order_number LIKE ?2 ESCAPE '\\' OR o.customer_name LIKE ?2 ESCAPE '\\' OR o.customer_phone LIKE ?3 ESCAPE '\\')".to_string(),
         ];
         if self.discounted_only {
@@ -790,11 +791,12 @@ async fn cancelled_in_window(
     let Some((from, to)) = scope.window else {
         return Ok((0, 0));
     };
-    let any: i64 =
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM orders WHERE status = 'cancelled')")
-            .fetch_one(&mut *conn)
-            .await
-            .map_err(db_err)?;
+    let any: i64 = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM orders WHERE status = 'cancelled' AND trashed_at IS NULL)",
+    )
+    .fetch_one(&mut *conn)
+    .await
+    .map_err(db_err)?;
     if any == 0 {
         return Ok((0, 0));
     }
@@ -1310,7 +1312,7 @@ async fn attention(
     };
     let from = format!(
         "FROM orders o {join} \
-         WHERE o.status IN ({statuses}) AND EXISTS (SELECT 1 FROM order_pieces op WHERE op.order_id = o.id) {condition}"
+         WHERE o.trashed_at IS NULL AND o.status IN ({statuses}) AND EXISTS (SELECT 1 FROM order_pieces op WHERE op.order_id = o.id) {condition}"
     );
     let total: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) {from}"))
         .fetch_one(&mut *conn)
@@ -1384,7 +1386,7 @@ async fn overview_inner(
     )
     .await?;
 
-    let counts = sqlx::query("SELECT status, COUNT(*) AS n FROM orders o WHERE status IN ('received','washing','drying','ironing','quality_check','packing','ready') AND EXISTS (SELECT 1 FROM order_pieces op WHERE op.order_id = o.id) GROUP BY status")
+    let counts = sqlx::query("SELECT status, COUNT(*) AS n FROM orders o WHERE trashed_at IS NULL AND status IN ('received','washing','drying','ironing','quality_check','packing','ready') AND EXISTS (SELECT 1 FROM order_pieces op WHERE op.order_id = o.id) GROUP BY status")
         .fetch_all(&mut *conn)
         .await
         .map_err(db_err)?;
@@ -1406,7 +1408,7 @@ async fn overview_inner(
     let owed = sqlx::query(&format!(
         "SELECT COUNT(*) AS n, COALESCE(SUM(bal), 0) AS minor \
          FROM (SELECT {NET} - {PAID} AS bal FROM orders o \
-               WHERE o.status NOT IN ('cancelled', 'collected') \
+               WHERE o.trashed_at IS NULL AND o.status NOT IN ('cancelled', 'collected') \
                  AND EXISTS (SELECT 1 FROM order_pieces op WHERE op.order_id = o.id)) \
          WHERE bal > 0"
     ))

@@ -114,6 +114,8 @@ where
             counter_collect_order,
             counter_cancel_order,
             counter_set_rate,
+            counter_add_garment,
+            counter_trash_order,
             counter_backup_settings,
             counter_set_backup_mirror,
             counter_backup_now,
@@ -320,6 +322,22 @@ async fn counter_set_rate(
         available,
     )
     .await
+}
+#[tauri::command]
+async fn counter_add_garment(
+    state: State<'_, DatabaseState>,
+    session: State<'_, CounterSession>,
+    name: String,
+) -> Result<(), String> {
+    counter::add_garment(&state, &session, &name).await
+}
+#[tauri::command]
+async fn counter_trash_order(
+    state: State<'_, DatabaseState>,
+    session: State<'_, CounterSession>,
+    order_id: String,
+) -> Result<(), String> {
+    counter::trash_order(&state, &session, &order_id).await
 }
 #[tauri::command]
 async fn counter_backup_settings(

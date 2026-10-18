@@ -6,7 +6,7 @@ import { CounterAdmin } from './CounterAdmin';
 import type { CounterAccount, CounterCatalogue, NativePrinter } from '@/lib/localFirst/counter';
 
 const api = vi.hoisted(() => ({
-  createCounterStaff: vi.fn(), enumeratePrinters: vi.fn(), getPrinterProfiles: vi.fn(), listCounterStaff: vi.fn(),
+  addCounterGarment: vi.fn(), createCounterStaff: vi.fn(), enumeratePrinters: vi.fn(), getPrinterProfiles: vi.fn(), listCounterStaff: vi.fn(),
   resetCounterStaffPin: vi.fn(), setCounterRate: vi.fn(), setCounterStaffActive: vi.fn(), setPrinterProfiles: vi.fn(), getCounterCatalogue: vi.fn(),
 }));
 vi.mock('@/lib/localFirst/counter', () => api);
@@ -48,6 +48,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   api.getCounterCatalogue.mockResolvedValue(catalogue);
   api.setCounterRate.mockResolvedValue(undefined);
+  api.addCounterGarment.mockResolvedValue(undefined);
   api.listCounterStaff.mockResolvedValue([staffRow({}), staffRow({ id: 's2', fullName: 'Ravi', active: false }), staffRow({ id: 'a1', fullName: 'Owner', role: 'admin' })]);
   api.enumeratePrinters.mockResolvedValue(printers);
   api.getPrinterProfiles.mockResolvedValue({ billPrinterId: 'Canon LBP', tagPrinterId: 'TSC TE244' });
@@ -57,6 +58,30 @@ beforeEach(() => {
   api.setPrinterProfiles.mockResolvedValue(undefined);
 });
 afterEach(cleanup);
+
+describe('CounterAdmin new garment', () => {
+  it('adds a garment, clears the box and reloads the rate card', async () => {
+    const props = setup();
+    const add = screen.getByRole('button', { name: 'Add garment' }) as HTMLButtonElement;
+    expect(add.disabled).toBe(true);
+    fireEvent.change(screen.getByLabelText('New garment'), { target: { value: 'Leather jacket' } });
+    fireEvent.click(add);
+    await waitFor(() => expect(api.addCounterGarment).toHaveBeenCalledWith('Leather jacket'));
+    await waitFor(() => expect(props.onCatalogue).toHaveBeenCalledWith(catalogue));
+    expect(props.onNotice).toHaveBeenCalledWith('Garment added. Set a rate for each service it should be sold with.');
+    expect((screen.getByLabelText('New garment') as HTMLInputElement).value).toBe('');
+  });
+
+  it('keeps the name and reports the error when adding fails', async () => {
+    api.addCounterGarment.mockRejectedValue(new Error('already exists'));
+    const props = setup();
+    fireEvent.change(screen.getByLabelText('New garment'), { target: { value: 'Shirt' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add garment' }));
+    await waitFor(() => expect(props.onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'already exists' })));
+    expect((screen.getByLabelText('New garment') as HTMLInputElement).value).toBe('Shirt');
+    expect(props.onCatalogue).not.toHaveBeenCalled();
+  });
+});
 
 describe('CounterAdmin rate card', () => {
   it('lists active garments and services, locks ironing for shoes, and shows unset rates blank', () => {
