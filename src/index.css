@@ -819,3 +819,10 @@ All colors MUST be HSL.
 .counter-trash-list li{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px}
 .counter-trash-list li>div{flex:1 1 320px;display:grid;gap:4px}
 .counter-trash-list li span{font-size:14px;color:#5f6f68}
+
+/* Orders list: the day picker and the day headings. */
+.counter-day-picker{display:flex;flex-wrap:wrap;align-items:center;gap:10px;padding:12px 14px;border:1px solid #dfe7e3;border-radius:12px;background:#fff}
+.counter-day-picker input[type=date]{height:48px;min-width:11rem;font-size:17px;border:1px solid #cddbd4;border-radius:9px;padding:0 12px;background:#fff}
+.counter-day-picker p{flex:1 1 100%;margin:0;font-size:16px;font-weight:650;color:#3d5148}
+.counter-day-heading{list-style:none;padding:10px 4px 0}
+.counter-day-heading h2{margin:0;font-size:17px;font-weight:750;color:#3d5148}

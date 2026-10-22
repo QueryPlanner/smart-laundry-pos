@@ -8,7 +8,7 @@ import { countsOf, orderOf } from './listFixtures';
 const SEARCH_LABEL = 'Search bill number, phone, name or tag ID';
 
 const defaultProps = (): OrdersPageProps => ({
-  query: '', onQuery: vi.fn(), segment: 'all', onSegment: vi.fn(), counts: countsOf(), results: [], loading: false,
+  query: '', onQuery: vi.fn(), segment: 'all', onSegment: vi.fn(), day: '2026-10-17', today: '2026-10-17', onDay: vi.fn(), counts: countsOf(), results: [], loading: false,
   hasMore: false, onLoadMore: vi.fn(), onOpen: vi.fn(), onHandover: vi.fn(), onReprintBill: vi.fn(), busy: false,
 });
 const renderPage = (overrides: Partial<OrdersPageProps> = {}) => {
@@ -162,9 +162,82 @@ describe('OrdersPage', () => {
       ['in_process', 'Nothing is in process.'],
       ['today', 'No orders received today.'],
       ['all', 'No orders yet.'],
+      ['day', 'No orders were received on this day.'],
     ] as const)('explains an empty %s segment', (segment, message) => {
       renderPage({ segment });
       expect(screen.getByText(message)).toBeTruthy();
+    });
+  });
+
+  describe('picking a day', () => {
+    const picker = () => screen.queryByRole('group', { name: 'Pick a day' });
+    const dayInput = () => screen.getByLabelText('Day') as HTMLInputElement;
+
+    it('shows the day controls only on the Pick a day segment', () => {
+      renderPage({ segment: 'ready' });
+      expect(picker()).toBeNull();
+      cleanup();
+      renderPage({ segment: 'day', day: '2026-10-15' });
+      expect(picker()).not.toBeNull();
+      expect(dayInput().value).toBe('2026-10-15');
+      expect(screen.getByText('Orders received on 15 Oct 2026')).toBeTruthy();
+    });
+
+    it('hides them while a search is looking through every order', () => {
+      renderPage({ segment: 'day', query: 'rita' });
+      expect(picker()).toBeNull();
+    });
+
+    it('steps one day back and forward', () => {
+      const props = renderPage({ segment: 'day', day: '2026-10-15' });
+      fireEvent.click(screen.getByRole('button', { name: '← Previous day' }));
+      expect(props.onDay).toHaveBeenLastCalledWith('2026-10-14');
+      fireEvent.click(screen.getByRole('button', { name: 'Next day →' }));
+      expect(props.onDay).toHaveBeenLastCalledWith('2026-10-16');
+    });
+
+    it('steps across a month end', () => {
+      const props = renderPage({ segment: 'day', day: '2026-11-01' });
+      fireEvent.click(screen.getByRole('button', { name: '← Previous day' }));
+      expect(props.onDay).toHaveBeenCalledWith('2026-10-31');
+    });
+
+    it('never goes past today', () => {
+      renderPage({ segment: 'day', day: '2026-10-17', today: '2026-10-17' });
+      expect((screen.getByRole('button', { name: 'Next day →' }) as HTMLButtonElement).disabled).toBe(true);
+      expect(dayInput().max).toBe('2026-10-17');
+      expect((screen.getByRole('button', { name: '← Previous day' }) as HTMLButtonElement).disabled).toBe(false);
+    });
+
+    it('takes a date typed or picked, and ignores a cleared box', () => {
+      const props = renderPage({ segment: 'day', day: '2026-10-15' });
+      fireEvent.change(dayInput(), { target: { value: '2026-09-30' } });
+      expect(props.onDay).toHaveBeenCalledExactlyOnceWith('2026-09-30');
+      fireEvent.change(dayInput(), { target: { value: '' } });
+      expect(props.onDay).toHaveBeenCalledOnce();
+    });
+  });
+
+  describe('day headings', () => {
+    const headings = () => screen.queryAllByRole('heading', { level: 2 }).map(item => item.textContent);
+
+    it('gives each day of the All list a heading, newest first', () => {
+      renderPage({ segment: 'all', today: '2026-10-17', results: [
+        orderOf({ id: 'a', receivedAt: '2026-10-17T05:00:00Z' }), orderOf({ id: 'b', receivedAt: '2026-10-16T05:00:00Z' }),
+        orderOf({ id: 'c', receivedAt: '2026-10-12T05:00:00Z' }),
+      ] });
+      expect(headings()).toEqual(['Today', 'Yesterday', '12 Oct 2026']);
+      expect(within(screen.getByRole('list', { name: 'Orders' })).getAllByRole('listitem')).toHaveLength(3);
+    });
+
+    it('gives search results headings too', () => {
+      renderPage({ segment: 'ready', query: 'rita', today: '2026-10-17', results: [orderOf({ id: 'a', receivedAt: '2026-10-16T05:00:00Z' })] });
+      expect(headings()).toEqual(['Yesterday']);
+    });
+
+    it.each(['ready', 'balance_due', 'overdue', 'in_process', 'today', 'day'] as const)('leaves the %s list without headings', segment => {
+      renderPage({ segment, results: [orderOf({ id: 'a' }), orderOf({ id: 'b', receivedAt: '2026-10-10T05:00:00Z' })] });
+      expect(headings()).toEqual([]);
     });
   });
 

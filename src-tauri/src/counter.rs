@@ -2159,12 +2159,20 @@ enum OrderFilter {
     Overdue,
     InProcess,
     Today,
+    /// Orders received on one shop (IST) day, from the filter text `day:YYYY-MM-DD`.
+    Day(chrono::NaiveDate),
 }
 
 impl OrderFilter {
     /// `None`, or a blank value, lists every order. Any other unknown value is refused.
     fn parse(text: Option<&str>) -> Result<Self, String> {
-        match text.map(str::trim).unwrap_or_default() {
+        let text = text.map(str::trim).unwrap_or_default();
+        if let Some(date) = text.strip_prefix("day:") {
+            return chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d")
+                .map(Self::Day)
+                .map_err(|_| "Choose a valid date.".to_string());
+        }
+        match text {
             "" | "all" => Ok(Self::All),
             "ready" => Ok(Self::Ready),
             "balance_due" => Ok(Self::BalanceDue),
@@ -2185,7 +2193,7 @@ impl OrderFilter {
             }
             Self::Overdue => "m.overdue=1".into(),
             Self::InProcess => format!("m.status IN ({IN_PROCESS_STATUSES})"),
-            Self::Today => "m.received_epoch>=?7 AND m.received_epoch<?8".into(),
+            Self::Today | Self::Day(_) => "m.received_epoch>=?7 AND m.received_epoch<?8".into(),
         }
     }
 
@@ -2197,7 +2205,9 @@ impl OrderFilter {
                 "m.promised_epoch IS NULL,m.promised_epoch,m.created_at DESC,m.id"
             }
             Self::BalanceDue => "m.balance_minor DESC,m.created_at DESC,m.id",
-            Self::All | Self::Today => "m.received_epoch DESC,m.created_at DESC,m.id",
+            Self::All | Self::Today | Self::Day(_) => {
+                "m.received_epoch DESC,m.created_at DESC,m.id"
+            }
         }
     }
 }
@@ -2215,6 +2225,14 @@ struct ListScope {
 }
 
 impl ListScope {
+    /// The same scope with the day bounds moved to the given shop (IST) day.
+    fn on_day(mut self, date: chrono::NaiveDate) -> Self {
+        let midnight_utc = date.and_time(chrono::NaiveTime::MIN).and_utc().timestamp();
+        self.day_start = midnight_utc - IST_OFFSET_SECONDS;
+        self.day_end = self.day_start + 86_400;
+        self
+    }
+
     fn new(query: &str, now: chrono::DateTime<Utc>) -> Self {
         let q = query.trim();
         // A typed phone number ("98765 43210", "+91 98765 43210") also matches the stored digits.
@@ -2324,6 +2342,10 @@ async fn search_orders_at(
         return Ok(Vec::new());
     }
     let scope = ListScope::new(query, now);
+    let scope = match filter {
+        OrderFilter::Day(date) => scope.on_day(date),
+        _ => scope,
+    };
     // An exact tag id and today's bill rank first; everything else keeps the filter's order.
     let sql = format!(
         "SELECT m.* FROM ({list}) m WHERE ({pred}) AND (?1='' OR m.match_reason IS NOT NULL) \
@@ -5833,6 +5855,83 @@ mod counter_tests {
                 .await,
                 sorted_ids(&[&yesterday, &today])
             );
+            cleanup(db, path).await;
+        });
+    }
+
+    #[test]
+    fn a_chosen_day_lists_the_orders_received_that_shop_day_newest_first() {
+        tauri::async_runtime::block_on(async {
+            let path = fixture_path();
+            let db = DatabaseState::open(path.clone()).await;
+            let _admin = admin_fixture(&db).await;
+            let staff = staff_fixture(&db).await;
+            let now = ist_instant("2026-10-20T11:30:00+05:30");
+            let mut saved = Vec::new();
+            // The 16th ends at 23:59:59 IST and the 17th begins at 00:00:00 IST.
+            for (name, phone, at) in [
+                ("Late16", "9000000031", "2026-10-16T23:59:59+05:30"),
+                ("Early17", "9000000032", "2026-10-17T00:00:00+05:30"),
+                ("Noon17", "9000000033", "2026-10-17T12:00:00+05:30"),
+                ("Early18", "9000000034", "2026-10-18T00:00:00+05:30"),
+            ] {
+                let order = save_at(
+                    &db,
+                    &staff,
+                    customer_order(name, phone, "svc-wash", 1),
+                    name,
+                    ist_instant(at),
+                    None,
+                )
+                .await
+                .unwrap();
+                saved.push(order);
+            }
+
+            // Newest received first within the day, and nothing from the days either side.
+            assert_eq!(
+                listed_in_order(&db, &staff, "", Some("day:2026-10-17"), now).await,
+                vec![saved[2].order_id.clone(), saved[1].order_id.clone()]
+            );
+            assert_eq!(
+                listed_in_order(&db, &staff, "", Some("day:2026-10-16"), now).await,
+                vec![saved[0].order_id.clone()]
+            );
+            // The chosen day does not depend on today's date; a day with no orders is an empty list.
+            assert!(
+                listed_in_order(&db, &staff, "", Some("day:2026-10-19"), now)
+                    .await
+                    .is_empty()
+            );
+            assert!(
+                listed_in_order(&db, &staff, "", Some("day:2030-01-01"), now)
+                    .await
+                    .is_empty()
+            );
+            // A search narrows the day.
+            assert_eq!(
+                listed_in_order(&db, &staff, "Noon", Some("day:2026-10-17"), now).await,
+                vec![saved[2].order_id.clone()]
+            );
+            assert!(
+                listed_in_order(&db, &staff, "Late16", Some("day:2026-10-17"), now)
+                    .await
+                    .is_empty()
+            );
+            // Today still means today.
+            assert!(listed_in_order(&db, &staff, "", Some("today"), now)
+                .await
+                .is_empty());
+
+            // A date that is not a date is refused, including an impossible one.
+            for bad in ["day:", "day:tomorrow", "day:2026-02-30", "day:17-10-2026"] {
+                assert_eq!(
+                    search_orders_at(&db, &staff, "", 0, 50, Some(bad), now)
+                        .await
+                        .unwrap_err(),
+                    "Choose a valid date."
+                );
+            }
             cleanup(db, path).await;
         });
     }

@@ -299,6 +299,62 @@ describe('reloading', () => {
   });
 });
 
+describe('picking a day', () => {
+  it('searches the chosen day, and stays on the day segment', async () => {
+    vi.setSystemTime(new Date('2026-10-20T06:30:00Z'));
+    const { result } = setup();
+    await settle();
+    expect(result.current).toMatchObject({ day: '2026-10-20', today: '2026-10-20' });
+    api.searchCounterOrders.mockClear();
+    act(() => result.current.setDay('2026-10-17'));
+    await settle();
+    expect(result.current).toMatchObject({ segment: 'day', day: '2026-10-17' });
+    expect(api.searchCounterOrders).toHaveBeenCalledWith('', 0, 50, 'day:2026-10-17');
+    // Choosing another ready-made list leaves the day behind but remembers it.
+    act(() => result.current.setSegment('all'));
+    await settle();
+    expect(api.searchCounterOrders).toHaveBeenLastCalledWith('', 0, 50, 'all');
+    act(() => result.current.setSegment('day'));
+    await settle();
+    expect(api.searchCounterOrders).toHaveBeenLastCalledWith('', 0, 50, 'day:2026-10-17');
+  });
+
+  it('shows the shop day, which can already be tomorrow in UTC terms', () => {
+    vi.setSystemTime(new Date('2026-10-19T20:00:00Z'));
+    const { result } = setup({ active: false });
+    expect(result.current.today).toBe('2026-10-20');
+  });
+
+  it('lets a typed search look through every order, whatever day is chosen', async () => {
+    const { result } = setup();
+    await settle();
+    act(() => result.current.setDay('2026-10-17'));
+    act(() => result.current.setQuery('rita'));
+    await settle(180);
+    expect(api.searchCounterOrders).toHaveBeenLastCalledWith('rita', 0, 50, 'all');
+  });
+
+  it('goes back to today when the list is reset for the next person', async () => {
+    vi.setSystemTime(new Date('2026-10-20T06:30:00Z'));
+    const { result } = setup();
+    await settle();
+    act(() => result.current.setDay('2026-10-01'));
+    await settle();
+    act(() => result.current.reset());
+    await settle();
+    expect(result.current).toMatchObject({ day: '2026-10-20', segment: 'ready' });
+  });
+
+  it('is not overridden by the automatic first choice', async () => {
+    api.getCounterOrderQueueCounts.mockResolvedValue(countsOf({ ready: 0 }));
+    const { result } = setup();
+    act(() => result.current.setDay('2026-10-17'));
+    await settle();
+    await settle();
+    expect(result.current.segment).toBe('day');
+  });
+});
+
 describe('resetting', () => {
   it('forgets the text, the segment, the counts and the orders, and lets the automatic choice happen again', async () => {
     api.getCounterOrderQueueCounts.mockResolvedValue(countsOf({ ready: 0 }));
@@ -312,6 +368,7 @@ describe('resetting', () => {
     api.searchCounterOrders.mockResolvedValue(page(50));
     act(() => result.current.reset());
     expect(result.current).toMatchObject({ query: '', segment: 'ready', counts: null, results: [], hasMore: false });
+    expect(result.current.day).toBe(result.current.today);
     await settle();
     await settle();
     // Nothing was ready, and the cashier has not chosen anything since the reset: In process opens again.

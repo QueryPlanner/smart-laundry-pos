@@ -15,10 +15,10 @@ const group = () => screen.getByRole('group', { name: 'Order filters' });
 afterEach(cleanup);
 
 describe('SegmentBar', () => {
-  it('lists the six filters in order, each with its count', () => {
+  it('lists the filters in order, each with its count, and Pick a day last without one', () => {
     renderBar();
     const buttons = within(group()).getAllByRole('button');
-    expect(buttons.map(button => button.textContent)).toEqual(['Ready 2', 'Balance due 4', 'Overdue 1', 'In process 3', 'Today 5', 'All 12']);
+    expect(buttons.map(button => button.textContent)).toEqual(['Ready 2', 'Balance due 4', 'Overdue 1', 'In process 3', 'Today 5', 'All 12', 'Pick a day']);
   });
 
   it('shows only the labels while the counts are not known yet', () => {
@@ -42,6 +42,7 @@ describe('SegmentBar', () => {
     ['In process 3', 'in_process'],
     ['Today 5', 'today'],
     ['All 12', 'all'],
+    ['Pick a day', 'day'],
   ])('%s picks the %s filter', (name, filter) => {
     const props = renderBar({ segment: filter === 'all' ? 'ready' : 'all' });
     fireEvent.click(screen.getByRole('button', { name }));

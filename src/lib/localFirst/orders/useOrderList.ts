@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { getCounterOrderQueueCounts, searchCounterOrders } from '../counter';
-import type { CounterOrderFilter, CounterOrderSummary, CounterQueueCounts } from '../counter';
+import type { CounterOrderFilter, CounterOrderSegment, CounterOrderSummary, CounterQueueCounts } from '../counter';
+import { shopDateOf } from '../salesRange';
 
 /**
  * The Orders / Pickup list: the search text, the chosen segment, the page of orders and the segment counts.
@@ -9,6 +10,9 @@ import type { CounterOrderFilter, CounterOrderSummary, CounterQueueCounts } from
  */
 
 const PAGE_SIZE = 50;
+
+/** What the buttons above the list choose between: the ready-made lists, or the orders of one chosen day. */
+export type OrderSegment = CounterOrderSegment | 'day';
 
 export interface OrderListOptions {
   active: boolean;
@@ -20,8 +24,14 @@ export interface OrderListOptions {
 export interface OrderList {
   query: string;
   setQuery(query: string): void;
-  segment: CounterOrderFilter;
-  setSegment(segment: CounterOrderFilter): void;
+  segment: OrderSegment;
+  setSegment(segment: OrderSegment): void;
+  /** The day shown by the "Pick a day" segment, shop-local `YYYY-MM-DD`. */
+  day: string;
+  /** Show the orders received on this day (and switch to the day segment). */
+  setDay(day: string): void;
+  /** Today in shop time, so the day picker never goes past it. */
+  today: string;
   counts: CounterQueueCounts | null;
   results: CounterOrderSummary[];
   loading: boolean;
@@ -35,7 +45,8 @@ export interface OrderList {
 
 export const useOrderList = ({ active, onError, debounceMs = 180 }: OrderListOptions): OrderList => {
   const [query, setQuery] = useState('');
-  const [segment, setSegmentState] = useState<CounterOrderFilter>('ready');
+  const [segment, setSegmentState] = useState<OrderSegment>('ready');
+  const [day, setDayState] = useState(() => shopDateOf(new Date()));
   const [counts, setCounts] = useState<CounterQueueCounts | null>(null);
   const [results, setResults] = useState<CounterOrderSummary[]>([]);
   // Already loading on the first render when the page is showing, so "nothing here" never flashes before the list.
@@ -55,7 +66,7 @@ export const useOrderList = ({ active, onError, debounceMs = 180 }: OrderListOpt
 
   const text = query.trim();
   // Searching looks through every order, whatever segment is selected.
-  const filter: CounterOrderFilter = text ? 'all' : segment;
+  const filter: CounterOrderFilter = text ? 'all' : segment === 'day' ? `day:${day}` : segment;
 
   useEffect(() => {
     if (!active) return undefined;
@@ -111,6 +122,9 @@ export const useOrderList = ({ active, onError, debounceMs = 180 }: OrderListOpt
     setQuery,
     segment,
     setSegment: next => { chosen.current = true; setSegmentState(next); },
+    day,
+    setDay: next => { chosen.current = true; setDayState(next); setSegmentState('day'); },
+    today: shopDateOf(new Date()),
     counts,
     results,
     loading,
@@ -122,6 +136,7 @@ export const useOrderList = ({ active, onError, debounceMs = 180 }: OrderListOpt
       countsSeen.current = false;
       setQuery('');
       setSegmentState('ready');
+      setDayState(shopDateOf(new Date()));
       setCounts(null);
       setResults([]);
       setHasMore(false);

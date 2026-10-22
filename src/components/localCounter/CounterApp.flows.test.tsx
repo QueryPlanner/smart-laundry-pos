@@ -1140,6 +1140,34 @@ describe('Orders / Pickup', () => {
     await screen.findByText('Bill SL-1 sent to the printer.');
   });
 
+  describe('going through earlier orders', () => {
+    it('opens a chosen day, steps back a day at a time, and opens an order from it', async () => {
+      await signIn();
+      api.searchCounterOrders.mockResolvedValue([summary(1, { status: 'washing' })]);
+      nav('Orders / Pickup');
+      await screen.findByText('SL-1');
+      fireEvent.click(screen.getByRole('button', { name: 'Pick a day' }));
+      const input = await screen.findByLabelText('Day') as HTMLInputElement;
+      const first = input.value;
+      await waitFor(() => expect(api.searchCounterOrders).toHaveBeenLastCalledWith('', 0, 50, `day:${first}`));
+      fireEvent.click(screen.getByRole('button', { name: '← Previous day' }));
+      await waitFor(() => expect((screen.getByLabelText('Day') as HTMLInputElement).value < first).toBe(true));
+      const earlier = (screen.getByLabelText('Day') as HTMLInputElement).value;
+      await waitFor(() => expect(api.searchCounterOrders).toHaveBeenLastCalledWith('', 0, 50, `day:${earlier}`));
+      fireEvent.click(screen.getAllByRole('button', { name: 'Open' })[0]);
+      await screen.findByRole('heading', { name: 'SL-1' });
+    });
+
+    it('shows All with a heading for each day', async () => {
+      await signIn();
+      api.searchCounterOrders.mockResolvedValue([summary(1, { status: 'washing' })]);
+      nav('Orders / Pickup');
+      await screen.findByText('SL-1');
+      fireEvent.click(screen.getByRole('button', { name: /^All/ }));
+      expect((await screen.findAllByRole('heading', { level: 2 })).length).toBeGreaterThan(0);
+    });
+  });
+
   describe('reprinting a bill straight from the Orders list', () => {
     const openList = async (results = [summary(1, { status: 'washing' }), summary(2, { status: 'ready' })]) => {
       api.searchCounterOrders.mockResolvedValue(results);

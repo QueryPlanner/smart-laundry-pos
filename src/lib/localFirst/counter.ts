@@ -77,7 +77,10 @@ export interface CounterOrderSummary {
   matchReason: string | null;
 }
 export interface CounterRecordPaymentInput { amountMinor: number; method: CounterPaymentMethod; reference?: string; idempotencyKey: string }
-export type CounterOrderFilter = 'all' | 'ready' | 'balance_due' | 'overdue' | 'in_process' | 'today';
+/** The ready-made lists of the Orders screen, each with a count. */
+export type CounterOrderSegment = 'all' | 'ready' | 'balance_due' | 'overdue' | 'in_process' | 'today';
+/** What the native search filters by: a list above, or every order received on one shop day (`day:2026-10-17`). */
+export type CounterOrderFilter = CounterOrderSegment | `day:${string}`;
 export interface CounterQueueCounts {
   ready: number; balanceDue: number; overdue: number; inProcess: number; today: number; all: number;
   balanceDueMinor: number;
