@@ -331,11 +331,15 @@ describe('narrow screens', () => {
     expect(lastRule('.counter-topbar')).toContain('position:static');
   });
 
-  it('keeps the menu on one row that scrolls sideways, with buttons that never shrink', () => {
-    expect(lastRule('.counter-nav')).toContain('flex-wrap:nowrap');
-    expect(lastRule('.counter-nav')).toContain('overflow-x:auto');
-    expect(lastRule('.counter-nav-group')).toContain('flex-wrap:nowrap');
+  it('lets the menu wrap onto a second row instead of hiding items, with buttons that never shrink', () => {
+    expect(lastRule('.counter-nav')).toContain('flex-wrap:wrap');
+    expect(lastRule('.counter-nav')).not.toContain('overflow-x');
+    expect(css).toContain('.counter-nav-group{flex-wrap:wrap}');
     expect(css).toMatch(/\.counter-nav button\{[^}]*flex:none;white-space:nowrap/);
+  });
+
+  it('drops the group captions on mid-size screens, and on phones, to keep the menu short', () => {
+    expect(css).toMatch(/@media\(max-width:1500px\) and \(min-width:621px\)\{\.counter-nav-label\{display:none\}/);
     expect(css).toMatch(/@media\(max-width:620px\)\{[^@]*\.counter-nav-label\{display:none\}/);
   });
 });

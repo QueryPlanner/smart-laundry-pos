@@ -795,12 +795,14 @@ All colors MUST be HSL.
 .counter-chip-minus svg{width:15px}
 @media(max-width:620px){.counter-garment-grid{grid-template-columns:repeat(1,minmax(0,1fr))}}
 
-/* Frozen top: the title row and the menu stay in view while a page scrolls. The menu is one row
-   that scrolls sideways on a narrow screen, so the frozen part stays short. */
+/* Frozen top: the title row and the menu stay in view while a page scrolls. The group captions go on
+   mid-size screens so the whole menu usually fits on one row; when it does not it wraps, and every item
+   stays visible (a sideways scroll would hide items from people who do not look for it). */
 .counter-sticky-head{position:sticky;top:0;z-index:20;background:#fff;box-shadow:0 2px 10px #152b2312}
 .counter-topbar{position:static;height:60px}
-.counter-nav{flex-wrap:nowrap;overflow-x:auto;gap:4px 14px;padding-top:4px;padding-bottom:4px}
-.counter-nav-group{flex:none;flex-wrap:nowrap}
+.counter-nav{flex-wrap:wrap;gap:4px 8px;padding-top:4px;padding-bottom:4px}
+.counter-nav-group{flex-wrap:wrap}
+@media(max-width:1500px) and (min-width:621px){.counter-nav-label{display:none}.counter-nav-group+.counter-nav-group{border-left:1px solid #dfe7e3;padding-left:8px}.counter-nav button{padding:8px 10px}}
 .counter-back{height:42px;padding:0 16px;font-size:16px;font-weight:700}
 .counter-aside{top:128px}
 .counter-summary{max-height:calc(100vh - 148px)}
