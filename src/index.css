@@ -809,3 +809,13 @@ All colors MUST be HSL.
 .counter-order-actions{grid-area:action;justify-self:end;display:flex;flex-direction:column;gap:8px;min-width:9.5rem}
 .counter-order-actions .counter-touch{width:100%}
 @media (max-width:900px){.counter-order-actions{justify-self:stretch;min-width:0}}
+
+/* Order page: the always-visible actions, and the trash confirmation under them. */
+.counter-detail-actions{display:flex;flex-wrap:wrap;align-items:flex-start;gap:10px;margin-top:10px}
+.counter-trash-confirm{display:grid;gap:8px;max-width:420px;padding:12px 14px;border:1px solid #e8c9bf;border-radius:12px;background:#fff7f4}
+.counter-trash-confirm p{margin:0;font-size:14px}
+/* The Trash page. */
+.counter-trash-list{margin:0;padding:0;list-style:none;display:grid;gap:12px}
+.counter-trash-list li{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px}
+.counter-trash-list li>div{flex:1 1 320px;display:grid;gap:4px}
+.counter-trash-list li span{font-size:14px;color:#5f6f68}

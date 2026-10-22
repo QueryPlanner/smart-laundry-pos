@@ -1151,6 +1151,95 @@ pub async fn dismiss_trash_request(
     tx.commit().await.map_err(db_err)
 }
 
+/// An order in the trash, as the Trash page lists it.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrashedOrder {
+    pub order_id: String,
+    pub order_number: String,
+    pub customer_name: String,
+    pub customer_phone: String,
+    pub status: String,
+    pub total_minor: i64,
+    pub received_at: String,
+    pub trashed_at: String,
+    /// Who moved it to the trash; empty when that account no longer exists.
+    pub trashed_by: String,
+    /// Why staff asked for it to be trashed, when they did.
+    pub reason: String,
+}
+
+/// Most orders the Trash page shows at once, newest first. The trash is small in practice; the
+/// cap only keeps one screen from loading an unbounded list.
+const MAX_TRASHED_ORDERS_LISTED: i64 = 200;
+
+/// Orders in the trash, newest first. Administrators only, like everything else about the trash.
+pub async fn list_trashed_orders(
+    db: &DatabaseState,
+    session: &CounterSession,
+) -> Result<Vec<TrashedOrder>, String> {
+    require_admin(session, "see the trash")?;
+    let rows = sqlx::query(
+        "SELECT o.id,o.order_number,o.customer_name,o.customer_phone,o.status,CAST(ROUND(o.total_amount*100) AS INTEGER) AS total_minor,\
+o.received_at,o.trashed_at,COALESCE(a.full_name,'') AS trashed_by,COALESCE(o.trash_request_reason,'') AS reason \
+FROM orders o LEFT JOIN counter_accounts a ON a.id=o.trashed_by \
+WHERE o.trashed_at IS NOT NULL ORDER BY o.trashed_at DESC,o.id LIMIT ?",
+    )
+    .bind(MAX_TRASHED_ORDERS_LISTED)
+    .fetch_all(db.writer_pool()?)
+    .await
+    .map_err(db_err)?;
+    rows.iter()
+        .map(|row| {
+            Ok(TrashedOrder {
+                order_id: row.try_get("id").map_err(db_err)?,
+                order_number: row.try_get("order_number").map_err(db_err)?,
+                customer_name: row.try_get("customer_name").map_err(db_err)?,
+                customer_phone: row.try_get("customer_phone").map_err(db_err)?,
+                status: row.try_get("status").map_err(db_err)?,
+                total_minor: row.try_get("total_minor").map_err(db_err)?,
+                received_at: row.try_get("received_at").map_err(db_err)?,
+                trashed_at: row.try_get("trashed_at").map_err(db_err)?,
+                trashed_by: row.try_get("trashed_by").map_err(db_err)?,
+                reason: row.try_get("reason").map_err(db_err)?,
+            })
+        })
+        .collect()
+}
+
+/// Takes an order out of the trash: lists, sales, the dashboard and customer totals count it again.
+/// Any trash request on it is cleared too, so it does not come back as a pending request.
+pub async fn restore_order(
+    db: &DatabaseState,
+    session: &CounterSession,
+    order_id: &str,
+) -> Result<(), String> {
+    require_admin(session, "restore an order from the trash")?;
+    let mut tx = db.begin_counter_write().await?;
+    let actor = require_admin_in_tx(&mut tx, session, "restore an order from the trash").await?;
+    let now = Utc::now().to_rfc3339();
+    let changed = sqlx::query("UPDATE orders SET trashed_at=NULL,trashed_by=NULL,trash_requested_at=NULL,trash_requested_by=NULL,trash_request_reason=NULL,updated_at=? WHERE id=? AND trashed_at IS NOT NULL")
+        .bind(&now)
+        .bind(order_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(db_err)?
+        .rows_affected();
+    if changed != 1 {
+        return Err("This order is not in the trash.".into());
+    }
+    audit(
+        &mut tx,
+        &actor.id,
+        "order_restored",
+        "order",
+        order_id,
+        &now,
+    )
+    .await?;
+    tx.commit().await.map_err(db_err)
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DiscountRule {
@@ -4044,6 +4133,116 @@ mod counter_tests {
                 .unwrap();
                 assert!(rows >= 1, "{action} is audited");
             }
+            cleanup(db, path).await;
+        });
+    }
+
+    #[test]
+    fn an_admin_lists_the_trash_and_restores_an_order_from_it() {
+        tauri::async_runtime::block_on(async {
+            let path = fixture_path();
+            let db = DatabaseState::open(path.clone()).await;
+            let admin = admin_fixture(&db).await;
+            let staff = staff_fixture(&db).await;
+            let first = save_with(&db, &staff, order_input(1), "first")
+                .await
+                .unwrap();
+            let second = save_with(&db, &staff, order_input(2), "second")
+                .await
+                .unwrap();
+
+            // Only an administrator sees or empties the trash; an empty trash is an empty list.
+            assert!(list_trashed_orders(&db, &staff)
+                .await
+                .unwrap_err()
+                .contains("Administrator access"));
+            assert!(restore_order(&db, &staff, &first.order_id)
+                .await
+                .unwrap_err()
+                .contains("Administrator access"));
+            assert!(list_trashed_orders(&db, &admin).await.unwrap().is_empty());
+
+            // An order that is not in the trash, or does not exist, cannot be restored.
+            assert!(restore_order(&db, &admin, &first.order_id)
+                .await
+                .unwrap_err()
+                .contains("not in the trash"));
+            assert!(restore_order(&db, &admin, "missing")
+                .await
+                .unwrap_err()
+                .contains("not in the trash"));
+
+            // Trashing lists it with who did it and, for a staff request, why.
+            request_order_trash(&db, &staff, &first.order_id, "Added twice")
+                .await
+                .unwrap();
+            trash_order(&db, &admin, &first.order_id).await.unwrap();
+            trash_order(&db, &admin, &second.order_id).await.unwrap();
+            let trashed = list_trashed_orders(&db, &admin).await.unwrap();
+            assert_eq!(trashed.len(), 2);
+            let listed = trashed
+                .iter()
+                .find(|t| t.order_id == first.order_id)
+                .unwrap();
+            assert_eq!(listed.order_number, first.order_number);
+            assert_eq!(listed.total_minor, first.total_minor);
+            assert_eq!(
+                (listed.trashed_by.as_str(), listed.reason.as_str()),
+                ("fixture-admin", "Added twice")
+            );
+            let plain = trashed
+                .iter()
+                .find(|t| t.order_id == second.order_id)
+                .unwrap();
+            assert_eq!(plain.reason, "");
+            assert!(
+                listed.trashed_at.len() > 10
+                    && !listed.received_at.is_empty()
+                    && !listed.customer_name.is_empty()
+            );
+            assert!(!listed.customer_phone.is_empty() && !listed.status.is_empty());
+
+            // Restoring brings it back into the lists and clears the old request.
+            restore_order(&db, &admin, &first.order_id).await.unwrap();
+            assert!(restore_order(&db, &admin, &first.order_id)
+                .await
+                .unwrap_err()
+                .contains("not in the trash"));
+            let remaining = list_trashed_orders(&db, &admin).await.unwrap();
+            assert_eq!(
+                remaining
+                    .iter()
+                    .map(|t| t.order_id.as_str())
+                    .collect::<Vec<_>>(),
+                vec![second.order_id.as_str()]
+            );
+            let listed_orders = search_orders(&db, &admin, "", 0, 50, None).await.unwrap();
+            assert_eq!(
+                listed_orders
+                    .iter()
+                    .map(|o| o.id.as_str())
+                    .collect::<Vec<_>>(),
+                vec![first.order_id.as_str()]
+            );
+            assert!(list_trash_requests(&db, &admin).await.unwrap().is_empty());
+            let columns: (Option<String>, Option<String>) =
+                sqlx::query_as("SELECT trashed_by,trash_request_reason FROM orders WHERE id=?")
+                    .bind(&first.order_id)
+                    .fetch_one(db.writer_pool().unwrap())
+                    .await
+                    .unwrap();
+            assert_eq!(columns, (None, None));
+
+            // It can be trashed again, and the restore was audited.
+            trash_order(&db, &admin, &first.order_id).await.unwrap();
+            let audited: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM counter_audit WHERE action='order_restored' AND entity_id=?",
+            )
+            .bind(&first.order_id)
+            .fetch_one(db.writer_pool().unwrap())
+            .await
+            .unwrap();
+            assert_eq!(audited, 1);
             cleanup(db, path).await;
         });
     }

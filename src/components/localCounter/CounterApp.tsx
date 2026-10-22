@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, BarChart3, ClipboardList, LayoutDashboard, LockKeyhole, LogOut, Package, Printer, Receipt, Settings, ShieldCheck, ShoppingBasket, Store, Users, WashingMachine, Wrench, type LucideIcon } from 'lucide-react';
+import { ArrowLeft, BarChart3, ClipboardList, LayoutDashboard, LockKeyhole, LogOut, Package, Printer, Receipt, Settings, ShieldCheck, ShoppingBasket, Store, Trash2, Users, WashingMachine, Wrench, type LucideIcon } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -34,6 +34,7 @@ import { ExpensesPage } from './ExpensesPage';
 import { InventoryPage } from './InventoryPage';
 import { MachinesPage } from './MachinesPage';
 import { ShopSettingsPage } from './ShopSettingsPage';
+import { TrashPage } from './TrashPage';
 
 const problem = (e: unknown) => e instanceof Error ? e.message : String(e || 'Something went wrong.');
 
@@ -69,7 +70,7 @@ const originLabel = (from: Page): string | undefined => {
 
 const NAV_ICON: Record<SectionId, LucideIcon> = {
   order: ShoppingBasket, orders: ClipboardList, queue: Printer, dashboard: LayoutDashboard, sales: BarChart3,
-  customers: Users, expenses: Receipt, inventory: Package, machines: Wrench, admin: ShieldCheck, settings: Settings,
+  customers: Users, expenses: Receipt, inventory: Package, machines: Wrench, admin: ShieldCheck, settings: Settings, trash: Trash2,
 };
 
 export const CounterApp = () => {
@@ -373,6 +374,7 @@ export const CounterApp = () => {
     {showing('inventory') && <InventoryPage {...sectionProps} />}
     {showing('machines') && <MachinesPage {...sectionProps} />}
     {showing('settings') && <ShopSettingsPage {...sectionProps} />}
+    {showing('trash') && <TrashPage {...sectionProps} />}
     {page === 'prints' && saved && <PrintProgress onBack={() => navigate('detail')} orderNumber={saved.orderNumber} promisedAt={saved.promisedAt} jobs={savedOrderJobs.length ? savedOrderJobs : saved.printJobs} pieces={saved.pieces} selected={selectedReprintPieces} onSelected={setSelectedReprintPieces} reprintBusy={reprintBusy} onReprintBill={() => void reprint(saved.orderId, 'bill')} onReprintTags={() => void reprint(saved.orderId, 'tags', selectedReprintPieces)} onRetry={doRetry} onResume={resumePendingJob} />}
     {page === 'queue' && <PrintQueue jobs={jobs} onRefresh={() => void refreshJobs()} onOpenOrder={orderId => void openOrder(orderId)} onRetry={doRetry} onResume={resumePendingJob} />}
   </div>;

@@ -36,6 +36,7 @@ vi.mock('./ExpensesPage', () => ({ ExpensesPage: stand('Expenses') }));
 vi.mock('./InventoryPage', () => ({ InventoryPage: stand('Inventory') }));
 vi.mock('./MachinesPage', () => ({ MachinesPage: stand('Machines') }));
 vi.mock('./ShopSettingsPage', () => ({ ShopSettingsPage: stand('Settings') }));
+vi.mock('./TrashPage', () => ({ TrashPage: stand('Trash') }));
 
 const staff: CounterAccount = { id: 'staff-1', fullName: 'Asha Patil', role: 'staff', active: true };
 const admin: CounterAccount = { id: 'admin-1', fullName: 'Mira Shah', role: 'admin', active: true };
@@ -82,7 +83,7 @@ describe('navigation registry', () => {
   it('lists the groups in the order the shell shows them', () => {
     expect(NAV_GROUPS.map(group => group.label)).toEqual(['Counter', 'Insights', 'Shop', 'Admin']);
     expect(NAV_GROUPS.flatMap(group => group.sections.map(section => section.label))).toEqual([
-      'New order', 'Orders / Pickup', 'Print queue', 'Dashboard', 'Sales', 'Customers', 'Expenses', 'Inventory', 'Machines', 'Admin', 'Shop settings',
+      'New order', 'Orders / Pickup', 'Print queue', 'Dashboard', 'Sales', 'Customers', 'Expenses', 'Inventory', 'Machines', 'Admin', 'Shop settings', 'Trash',
     ]);
   });
 
@@ -91,6 +92,8 @@ describe('navigation registry', () => {
     expect(visibleNavGroups('admin').map(group => group.label)).toEqual(['Counter', 'Insights', 'Shop', 'Admin']);
     expect(canOpen('admin', 'staff')).toBe(false);
     expect(canOpen('settings', 'staff')).toBe(false);
+    expect(canOpen('trash', 'staff')).toBe(false);
+    expect(canOpen('trash', 'admin')).toBe(true);
     expect(canOpen('sales', 'staff')).toBe(true);
     expect(canOpen('settings', 'admin')).toBe(true);
   });
@@ -102,12 +105,13 @@ describe('role-filtered navigation', () => {
     expect(labels()).toEqual(['New order', 'Orders / Pickup', 'Print queue', 'Dashboard', 'Sales', 'Customers', 'Expenses', 'Inventory', 'Machines']);
     expect(screen.queryByRole('button', { name: 'Admin' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Shop settings' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Trash' })).toBeNull();
     expect(screen.queryByRole('group', { name: 'Admin' })).toBeNull();
   });
 
   it('shows administrators every section in four labelled groups', async () => {
     await signedInAs(admin);
-    expect(labels()).toHaveLength(11);
+    expect(labels()).toHaveLength(12);
     expect(navigation().getByRole('button', { name: 'Admin' })).toBeTruthy();
     expect(navigation().getByRole('button', { name: 'Shop settings' })).toBeTruthy();
     for (const group of ['Counter', 'Insights', 'Shop', 'Admin']) expect(navigation().getByRole('group', { name: group })).toBeTruthy();
@@ -145,6 +149,13 @@ describe('section pages', () => {
     expect(await screen.findByRole('heading', { name: heading })).toBeTruthy();
     expect(navigation().getByRole('button', { name }).getAttribute('aria-current')).toBe('page');
     expect(screen.queryByLabelText('Garments')).toBeNull();
+  });
+
+  it('opens the Trash for administrators, with the signed-in account', async () => {
+    await signedInAs(admin);
+    go('Trash');
+    expect(await screen.findByRole('heading', { name: 'Trash page' })).toBeTruthy();
+    expect(screen.getByText('Trash for Mira Shah')).toBeTruthy();
   });
 
   it('opens Shop settings and Admin for administrators', async () => {

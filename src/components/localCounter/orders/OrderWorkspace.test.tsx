@@ -128,7 +128,6 @@ describe('the detail view', () => {
 
   describe('moving to the trash', () => {
     const openTrash = () => {
-      fireEvent.click(button('More actions'));
       fireEvent.click(button('Move to trash'));
       fireEvent.click(button('Confirm move to trash'));
     };
@@ -155,7 +154,6 @@ describe('the detail view', () => {
 
   describe('marking for the trash (staff)', () => {
     const send = () => {
-      fireEvent.click(button('More actions'));
       fireEvent.click(button('Mark for trash'));
       fireEvent.change(screen.getByLabelText('Why should this bill be trashed?'), { target: { value: 'Added by mistake' } });
       fireEvent.click(button('Send to the owner'));

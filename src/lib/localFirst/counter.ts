@@ -126,6 +126,17 @@ export interface CounterTrashRequest {
 export const requestCounterOrderTrash = (orderId: string, reason: string): Promise<void> => call('counter_request_order_trash', { orderId, reason });
 /** Admin only. Bills staff marked for the trash, oldest first. */
 export const listCounterTrashRequests = (): Promise<CounterTrashRequest[]> => call('counter_list_trash_requests');
+/** An order in the trash, for the Trash page. */
+export interface CounterTrashedOrder {
+  orderId: string; orderNumber: string; customerName: string; customerPhone: string; status: string;
+  totalMinor: number; receivedAt: string; trashedAt: string; trashedBy: string;
+  /** Why staff asked for it to be trashed; empty when nobody did. */
+  reason: string;
+}
+/** Admin only. Orders in the trash, newest first. */
+export const listCounterTrashedOrders = (): Promise<CounterTrashedOrder[]> => call('counter_list_trashed_orders');
+/** Admin only. Takes an order out of the trash: lists, sales and customer totals count it again. */
+export const restoreCounterOrder = (orderId: string): Promise<void> => call('counter_restore_order', { orderId });
 /** Admin only. Keeps the bill and clears the request. */
 export const dismissCounterTrashRequest = (orderId: string): Promise<void> => call('counter_dismiss_trash_request', { orderId });
 export const listCounterDiscounts = (): Promise<CounterDiscountRule[]> => call('counter_list_discounts');

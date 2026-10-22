@@ -9,6 +9,7 @@ import { count } from '../ui';
 import { MoneyPanel } from './MoneyPanel';
 import { MoreActions } from './MoreActions';
 import { StageStepper } from './StageStepper';
+import { TrashActions } from './TrashActions';
 
 /** The payment form the parent owns; `MoneyPanel` renders it and reports every change back through these callbacks. */
 export interface MoneyForm {
@@ -61,7 +62,10 @@ export const OrderDetailPage = ({ order, customer, isAdmin, busy, backLabel, onB
           <p>{`${customer.name} · ${customer.phone}`}</p>
           <div><StatusBadge status={order.status} /></div>
           <p>{piecesText(order.pieces)}</p>
-          <Button variant="outline" className="counter-touch" disabled={busy} onClick={onReprintBill}>Reprint bill</Button>
+          <div className="counter-detail-actions">
+            <Button variant="outline" className="counter-touch" disabled={busy} onClick={onReprintBill}>Reprint bill</Button>
+            <TrashActions isAdmin={isAdmin} busy={busy} onTrash={onTrash} onRequestTrash={onRequestTrash} />
+          </div>
           <p>{`Received ${formatShopDateTime(order.receivedAt)} · Promised ${formatShopDateTime(order.promisedAt)}`}</p>
         </div>
       </header>
@@ -88,8 +92,6 @@ export const OrderDetailPage = ({ order, customer, isAdmin, busy, backLabel, onB
         onReprintTags={onReprintTags}
         onOpenPrints={onOpenPrints}
         onCancel={onCancel}
-        onTrash={onTrash}
-        onRequestTrash={onRequestTrash}
       />
     </section>
   );
