@@ -39,7 +39,8 @@ const quoteFor = (input: CounterOrderInput, total?: number) => {
   const pieceCount = input.items.reduce((n, x) => n + x.quantity, 0);
   const unit = (x: CounterOrderInput['items'][number]) => x.unitPriceOverrideMinor ?? 2000;
   const subtotal = input.items.reduce((n, x) => n + unit(x) * x.quantity, 0);
-  return { lines: input.items.map(x => ({ garmentId: x.garmentId, serviceId: x.serviceId, garment: 'Shirt', service: 'Wash + Iron', quantity: x.quantity, unitPriceMinor: unit(x), listPriceMinor: 2000, lineTotalMinor: unit(x) * x.quantity, rateVersion: 1 })), subtotalMinor: subtotal, discountPercentBp: 0, discountMinor: 0, totalMinor: total ?? subtotal, pieceCount, promisedAt: '2026-10-17T11:30:00.000Z', catalogueVersion: '2' };
+  const manual = input.manualDiscountMinor ?? 0;
+  return { lines: input.items.map(x => ({ garmentId: x.garmentId, serviceId: x.serviceId, garment: 'Shirt', service: 'Wash + Iron', quantity: x.quantity, unitPriceMinor: unit(x), listPriceMinor: 2000, lineTotalMinor: unit(x) * x.quantity, rateVersion: 1 })), subtotalMinor: subtotal, discountPercentBp: 0, discountMinor: manual, manualDiscountMinor: manual, totalMinor: total ?? subtotal - manual, pieceCount, promisedAt: '2026-10-17T11:30:00.000Z', catalogueVersion: '2' };
 };
 const unauthenticated = (extra: Record<string, unknown> = {}) => ({ setupRequired: false, authenticated: false, account: null, accounts: [staff, admin, retired], warning: null, ...extra });
 
@@ -280,6 +281,99 @@ describe('previewing a bill', () => {
     await screen.findByRole('dialog');
     fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' });
     expect(screen.queryByRole('dialog')).toBeNull();
+  });
+});
+
+describe('giving a discount on one bill', () => {
+  it('prices, saves and previews the order with the amount taken off, and says how much is left to collect', async () => {
+    await signIn();
+    await startOrder();
+    fireEvent.click(screen.getByRole('button', { name: 'Give a discount' }));
+    fireEvent.change(screen.getByLabelText('Discount on this bill (₹)'), { target: { value: '5' } });
+    await waitFor(() => expect(api.quoteCounterOrder).toHaveBeenLastCalledWith(expect.objectContaining({ manualDiscountMinor: 500 })));
+    expect((await screen.findByText('Extra discount')).nextSibling?.textContent).toBe('-₹5.00');
+    expect(screen.getByText('Amount to collect').nextSibling?.textContent).toBe('₹15.00');
+
+    api.previewCounterDraftBill.mockResolvedValue(previewData('Discount: -₹5.00'));
+    fireEvent.click(screen.getByRole('button', { name: 'Preview bill' }));
+    await screen.findByRole('dialog', { name: 'Bill preview' });
+    expect(api.previewCounterDraftBill).toHaveBeenCalledWith(expect.objectContaining({ manualDiscountMinor: 500 }), 0);
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+
+    saveNow();
+    await screen.findByText(/Order SL-1 saved/);
+    expect(api.saveCounterOrder).toHaveBeenCalledWith(expect.objectContaining({
+      manualDiscountMinor: 500, reviewedQuote: expect.objectContaining({ manualDiscountMinor: 500, totalMinor: 1500 }),
+    }));
+  });
+
+  it('sends nothing about a discount when none was given, or when it was taken away again', async () => {
+    await signIn();
+    await startOrder();
+    fireEvent.click(screen.getByRole('button', { name: 'Give a discount' }));
+    fireEvent.change(screen.getByLabelText('Discount on this bill (₹)'), { target: { value: '5' } });
+    await waitFor(() => expect(api.quoteCounterOrder).toHaveBeenLastCalledWith(expect.objectContaining({ manualDiscountMinor: 500 })));
+    fireEvent.click(screen.getByRole('button', { name: 'No discount' }));
+    await waitFor(() => expect(api.quoteCounterOrder.mock.calls.at(-1)?.[0]).not.toHaveProperty('manualDiscountMinor'));
+    await waitFor(() => expect(saveButton().disabled).toBe(false));
+    saveNow();
+    await screen.findByText(/Order SL-1 saved/);
+    expect(api.saveCounterOrder.mock.calls[0][0]).not.toHaveProperty('manualDiscountMinor');
+  });
+
+  it('shows the reason when the discount is more than the bill, and blocks saving until it is fixed', async () => {
+    await signIn();
+    await startOrder();
+    fireEvent.click(screen.getByRole('button', { name: 'Give a discount' }));
+    api.quoteCounterOrder.mockRejectedValueOnce(new Error('The extra discount cannot be more than the customer owes.'));
+    fireEvent.change(screen.getByLabelText('Discount on this bill (₹)'), { target: { value: '500' } });
+    expect((await screen.findByRole('alert')).textContent).toBe('The extra discount cannot be more than the customer owes.');
+    expect(saveButton().disabled).toBe(true);
+    fireEvent.change(screen.getByLabelText('Discount on this bill (₹)'), { target: { value: '5' } });
+    await waitFor(() => expect(saveButton().disabled).toBe(false));
+  });
+
+  it('fills in a percentage of the subtotal from the quick buttons', async () => {
+    await signIn();
+    await startOrder();
+    fireEvent.click(screen.getByRole('button', { name: 'Give a discount' }));
+    fireEvent.click(screen.getByRole('button', { name: '10%' }));
+    expect((screen.getByLabelText('Discount on this bill (₹)') as HTMLInputElement).value).toBe('2.00');
+    await waitFor(() => expect(api.quoteCounterOrder).toHaveBeenLastCalledWith(expect.objectContaining({ manualDiscountMinor: 200 })));
+  });
+
+  it('gets a new request key for a different discount before saving, and keeps it once a save was tried', async () => {
+    await signIn();
+    await startOrder();
+    fireEvent.click(screen.getByRole('button', { name: 'Give a discount' }));
+    api.saveCounterOrder.mockRejectedValueOnce(new Error('database is busy'));
+    fireEvent.change(screen.getByLabelText('Discount on this bill (₹)'), { target: { value: '1' } });
+    fireEvent.change(screen.getByLabelText('Discount on this bill (₹)'), { target: { value: '2' } });
+    await waitFor(() => expect(api.quoteCounterOrder).toHaveBeenLastCalledWith(expect.objectContaining({ manualDiscountMinor: 200 })));
+    await waitFor(() => expect(saveButton().disabled).toBe(false));
+    saveNow();
+    await screen.findByText(/Order save did not complete/);
+    // The first try is in flight under its key; a different discount now must not reuse another key.
+    fireEvent.change(screen.getByLabelText('Discount on this bill (₹)'), { target: { value: '3' } });
+    await waitFor(() => expect(api.quoteCounterOrder).toHaveBeenLastCalledWith(expect.objectContaining({ manualDiscountMinor: 300 })));
+    await waitFor(() => expect(saveButton().disabled).toBe(false));
+    saveNow();
+    await screen.findByText(/Order SL-1 saved/);
+    const keys = api.saveCounterOrder.mock.calls.map(call => call[0].idempotencyKey);
+    expect(keys[1]).toBe(keys[0]);
+  });
+
+  it('clears the discount for the next order', async () => {
+    await signIn();
+    await startOrder();
+    fireEvent.click(screen.getByRole('button', { name: 'Give a discount' }));
+    fireEvent.change(screen.getByLabelText('Discount on this bill (₹)'), { target: { value: '5' } });
+    await waitFor(() => expect(saveButton().disabled).toBe(false));
+    nav('Orders / Pickup');
+    fireEvent.click(await screen.findByRole('button', { name: 'Discard order' }));
+    nav('New order');
+    await screen.findByRole('button', { name: 'Give a discount' });
+    expect(screen.queryByLabelText('Discount on this bill (₹)')).toBeNull();
   });
 });
 

@@ -36,13 +36,24 @@ export interface CounterOrderLineInput {
   /** A price for this bill only, in paise per piece. Omit to charge the rate card. */
   unitPriceOverrideMinor?: number;
 }
-export interface CounterOrderInput { customer: CounterCustomer; items: CounterOrderLineInput[] }
+export interface CounterOrderInput {
+  customer: CounterCustomer; items: CounterOrderLineInput[];
+  /** An extra discount for this bill only, in paise, on top of any automatic one. Any signed-in user may give one. */
+  manualDiscountMinor?: number;
+}
 export interface CounterQuoteLine {
   garmentId: string; serviceId: string; garment: string; service: string;
   quantity: number; unitPriceMinor: number; listPriceMinor: number; lineTotalMinor: number; rateVersion: number; serviceKey: CounterServiceKey;
 }
 export interface CounterQuote {
-  lines: CounterQuoteLine[]; subtotalMinor: number; discountPercentBp: number; discountMinor: number; totalMinor: number;
+  lines: CounterQuoteLine[]; subtotalMinor: number;
+  /** The automatic discount's percentage (basis points); 0 when there is none. */
+  discountPercentBp: number;
+  /** Everything taken off: the automatic discount plus `manualDiscountMinor`. */
+  discountMinor: number;
+  /** The part of `discountMinor` given by hand for this bill. */
+  manualDiscountMinor: number;
+  totalMinor: number;
   pieceCount: number; promisedAt: string; catalogueVersion: string;
 }
 export interface CounterSaveInput extends CounterOrderInput {

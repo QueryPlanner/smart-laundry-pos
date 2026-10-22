@@ -424,6 +424,10 @@ pub struct LineInput {
 pub struct OrderInput {
     pub customer: CustomerInput,
     pub items: Vec<LineInput>,
+    /// An extra discount for this bill only, in paise, on top of any automatic discount. Any
+    /// signed-in user may give one, up to what the customer owes; it is audited. `None` gives none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manual_discount_minor: Option<i64>,
 }
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -466,7 +470,11 @@ pub struct Quote {
     pub subtotal_minor: i64,
     /// Automatic discount, in basis points (1/100 of a percent), resolved natively.
     pub discount_percent_bp: i64,
+    /// Everything taken off the subtotal: the automatic discount plus the extra one below.
     pub discount_minor: i64,
+    /// The part of `discount_minor` given by hand for this bill.
+    #[serde(default)]
+    pub manual_discount_minor: i64,
     pub total_minor: i64,
     pub piece_count: u32,
     pub promised_at: String,
@@ -748,6 +756,16 @@ async fn resolve_discount(
     Ok(shop.unwrap_or(0))
 }
 
+/// The `orders.discount_value` of a new order: the percentage for an automatic discount, or the
+/// rupees taken off when part of it was given by hand (the order is then stored as a fixed discount).
+fn order_discount_value(quote: &Quote) -> f64 {
+    if quote.manual_discount_minor > 0 {
+        quote.discount_minor as f64 / 100.0
+    } else {
+        quote.discount_percent_bp as f64 / 100.0
+    }
+}
+
 /// Round-half-up percentage of a paise amount, so the same order always yields the same paise.
 fn discount_amount(subtotal_minor: i64, percent_bp: i64) -> Result<i64, String> {
     if !(0..=10_000).contains(&percent_bp) || subtotal_minor < 0 {
@@ -849,12 +867,21 @@ async fn quote_at(
         let mut conn = pool.acquire().await.map_err(db_err)?;
         resolve_discount(&mut conn, &input.customer).await?
     };
-    let discount = discount_amount(total, percent_bp)?;
+    let automatic = discount_amount(total, percent_bp)?;
+    let manual = input.manual_discount_minor.unwrap_or(0);
+    if manual < 0 {
+        return Err("The discount cannot be less than zero.".into());
+    }
+    if manual > total - automatic {
+        return Err("The extra discount cannot be more than the customer owes.".into());
+    }
+    let discount = automatic + manual;
     Ok(Quote {
         lines,
         subtotal_minor: total,
         discount_percent_bp: percent_bp,
         discount_minor: discount,
+        manual_discount_minor: manual,
         total_minor: total - discount,
         piece_count: count,
         promised_at: due_time(now),
@@ -1851,8 +1878,8 @@ async fn save_order_at(
         .await
         .map_err(db_err)?
         .unwrap_or_default();
-    sqlx::query("INSERT INTO orders(id,order_number,customer_id,customer_name,customer_phone,order_type,received_at,expected_ready_at,status,subtotal,discount_type,discount_value,discount_amount,total_amount,payment_status,created_by,created_at,updated_at,origin_device_id,idempotency_key) VALUES(?,?,?,?,?,'piece',?,?,'received',?,'percentage',?,?,?,?,?,?,?,?,?)")
- .bind(&oid).bind(&order_no).bind(customer_id).bind(input.order.customer.name.trim()).bind(&phone).bind(&received).bind(&due).bind(quote.subtotal_minor as f64/100.0).bind(quote.discount_percent_bp as f64/100.0).bind(quote.discount_minor as f64/100.0).bind(quote.total_minor as f64/100.0).bind(derive_payment_status(quote.total_minor, paid, false)).bind(&actor.id).bind(&received).bind(&received).bind(device).bind(&input.idempotency_key).execute(&mut *tx).await.map_err(db_err)?;
+    sqlx::query("INSERT INTO orders(id,order_number,customer_id,customer_name,customer_phone,order_type,received_at,expected_ready_at,status,subtotal,discount_type,discount_value,discount_amount,total_amount,payment_status,created_by,created_at,updated_at,origin_device_id,idempotency_key) VALUES(?,?,?,?,?,'piece',?,?,'received',?,?,?,?,?,?,?,?,?,?,?)")
+ .bind(&oid).bind(&order_no).bind(customer_id).bind(input.order.customer.name.trim()).bind(&phone).bind(&received).bind(&due).bind(quote.subtotal_minor as f64/100.0).bind(if quote.manual_discount_minor > 0 { "fixed" } else { "percentage" }).bind(order_discount_value(&quote)).bind(quote.discount_minor as f64/100.0).bind(quote.total_minor as f64/100.0).bind(derive_payment_status(quote.total_minor, paid, false)).bind(&actor.id).bind(&received).bind(&received).bind(device).bind(&input.idempotency_key).execute(&mut *tx).await.map_err(db_err)?;
     sqlx::query("INSERT INTO counter_order_requests(idempotency_key,order_id,payload_hash,created_at) VALUES(?,?,?,?)")
         .bind(&input.idempotency_key).bind(&oid).bind(&payload_hash).bind(&received).execute(&mut *tx).await.map_err(db_err)?;
     // One order item per quote line, in quote order.
@@ -1945,6 +1972,23 @@ async fn save_order_at(
       .bind(Uuid::new_v4().to_string()).bind(&oid).bind(kind).bind(serde_json::to_string(&doc).map_err(|e|e.to_string())?).bind(&received).bind(&received).execute(&mut *tx).await.map_err(db_err)?;
     }
     audit(&mut tx, &actor.id, "order_saved", "order", &oid, &received).await?;
+    // A discount given by hand leaves a trail: who gave how much, on what.
+    if quote.manual_discount_minor > 0 {
+        audit_details(
+            &mut tx,
+            &actor.id,
+            "order_manual_discount",
+            "order",
+            &oid,
+            &received,
+            &serde_json::json!({
+                "manualDiscountMinor": quote.manual_discount_minor,
+                "automaticDiscountMinor": quote.discount_minor - quote.manual_discount_minor,
+                "subtotalMinor": quote.subtotal_minor,
+            }),
+        )
+        .await?;
+    }
     // A price typed at the counter for this bill leaves a trail: who changed what, from and to.
     for line in quote
         .lines
@@ -3350,7 +3394,13 @@ fn bill_document(
             })
             .collect(),
         subtotal_minor: quote.subtotal_minor,
-        discount_percent_bp: quote.discount_percent_bp,
+        // A discount partly given by hand is not a percentage of the subtotal, so the bill says just
+        // "Discount" for it.
+        discount_percent_bp: if quote.manual_discount_minor > 0 {
+            0
+        } else {
+            quote.discount_percent_bp
+        },
         discount_minor: quote.discount_minor,
         paid_minor,
         balance_minor: quote.total_minor - paid_minor,
@@ -3629,6 +3679,7 @@ mod counter_tests {
                 quantity,
                 unit_price_override_minor: None,
             }],
+            manual_discount_minor: None,
         }
     }
     #[test]
@@ -4118,6 +4169,7 @@ mod counter_tests {
                     quantity: 1,
                     unit_price_override_minor: None,
                 }],
+                manual_discount_minor: None,
             };
             assert!(quote(&db, &staff, &order("svc-wash")).await.is_err());
             set_rate(&db, &admin, &id, "svc-wash", Some(30000), true)
@@ -4591,6 +4643,176 @@ mod counter_tests {
     }
 
     #[test]
+    fn staff_can_take_an_extra_amount_off_one_bill_and_it_is_checked_stored_audited_and_printed() {
+        tauri::async_runtime::block_on(async {
+            let path = fixture_path();
+            let db = DatabaseState::open(path.clone()).await;
+            let admin = admin_fixture(&db).await;
+            let staff = staff_fixture(&db).await;
+            let with = |manual: Option<i64>| {
+                let mut order = order_input(2);
+                order.manual_discount_minor = manual;
+                order
+            };
+
+            // Without one nothing changes, and the amount only subtracts from the subtotal (6000).
+            let plain = quote(&db, &staff, &with(None)).await.unwrap();
+            assert_eq!(
+                (
+                    plain.subtotal_minor,
+                    plain.manual_discount_minor,
+                    plain.total_minor
+                ),
+                (6000, 0, 6000)
+            );
+            let extra = quote(&db, &staff, &with(Some(500))).await.unwrap();
+            assert_eq!(
+                (
+                    extra.subtotal_minor,
+                    extra.discount_percent_bp,
+                    extra.discount_minor,
+                    extra.manual_discount_minor,
+                    extra.total_minor
+                ),
+                (6000, 0, 500, 500, 5500)
+            );
+            // It adds to an automatic discount (10% of 6000 is 600), and may take the rest to zero.
+            set_discount(&db, &admin, None, 1000, true, "Shop")
+                .await
+                .unwrap();
+            let both = quote(&db, &staff, &with(Some(500))).await.unwrap();
+            assert_eq!(
+                (
+                    both.discount_percent_bp,
+                    both.discount_minor,
+                    both.manual_discount_minor,
+                    both.total_minor
+                ),
+                (1000, 1100, 500, 4900)
+            );
+            let everything = quote(&db, &staff, &with(Some(5400))).await.unwrap();
+            assert_eq!(everything.total_minor, 0);
+            // Not below zero, and not a negative one.
+            assert!(quote(&db, &staff, &with(Some(5401)))
+                .await
+                .unwrap_err()
+                .contains("more than the customer owes"));
+            assert!(quote(&db, &staff, &with(Some(-1)))
+                .await
+                .unwrap_err()
+                .contains("less than zero"));
+            set_discount(&db, &admin, None, 1000, false, "Shop")
+                .await
+                .unwrap();
+
+            // The reviewed quote must be for this very discount.
+            let reviewed_without = quote(&db, &staff, &with(None)).await.unwrap();
+            let mismatch = save_order(
+                &db,
+                &staff,
+                SaveInput {
+                    order: with(Some(500)),
+                    reviewed_quote: reviewed_without,
+                    idempotency_key: "mismatch".into(),
+                    payment: None,
+                },
+            )
+            .await;
+            assert!(mismatch.unwrap_err().contains("Review the refreshed quote"));
+
+            // Saved: the total, the stored discount (fixed rupees), the bill, and an audit entry.
+            let saved = save_with(&db, &staff, with(Some(500)), "extra-discount")
+                .await
+                .unwrap();
+            assert_eq!(saved.total_minor, 5500);
+            let stored: (String, f64, f64, f64) = sqlx::query_as("SELECT discount_type,discount_value,discount_amount,total_amount FROM orders WHERE id=?")
+                .bind(&saved.order_id)
+                .fetch_one(db.writer_pool().unwrap())
+                .await
+                .unwrap();
+            assert_eq!(stored, ("fixed".to_string(), 5.0, 5.0, 55.0));
+            let payload: String = sqlx::query_scalar(
+                "SELECT payload_json FROM print_jobs WHERE order_id=? AND kind='bill'",
+            )
+            .bind(&saved.order_id)
+            .fetch_one(db.writer_pool().unwrap())
+            .await
+            .unwrap();
+            let crate::printing::PrintDocument::Bill(bill) =
+                serde_json::from_str(&payload).unwrap()
+            else {
+                panic!("a bill document");
+            };
+            assert_eq!((bill.discount_minor, bill.discount_percent_bp), (500, 0));
+            let audit: (String, String) = sqlx::query_as("SELECT actor_id,details_json FROM counter_audit WHERE action='order_manual_discount' AND entity_id=?")
+                .bind(&saved.order_id)
+                .fetch_one(db.writer_pool().unwrap())
+                .await
+                .unwrap();
+            assert_eq!(audit.0, "fixture-staff");
+            let details: serde_json::Value = serde_json::from_str(&audit.1).unwrap();
+            assert_eq!(
+                (
+                    details["manualDiscountMinor"].as_i64(),
+                    details["automaticDiscountMinor"].as_i64(),
+                    details["subtotalMinor"].as_i64()
+                ),
+                (Some(500), Some(0), Some(6000))
+            );
+
+            // The printed bill says plain "Discount" for it, with no percentage.
+            let preview = preview_order_bill(&db, &staff, &saved.order_id)
+                .await
+                .unwrap();
+            let text = preview_text(&preview);
+            assert!(
+                text.iter().any(|line| line == "Discount: -\u{20b9}5.00"),
+                "{text:?}"
+            );
+            assert!(
+                !text.iter().any(|line| line.starts_with("Discount (")),
+                "{text:?}"
+            );
+
+            // An order with no extra discount leaves no such audit entry and keeps its percentage label.
+            set_discount(&db, &admin, None, 1000, true, "Shop")
+                .await
+                .unwrap();
+            let automatic = save_with(&db, &staff, with(None), "automatic-only")
+                .await
+                .unwrap();
+            let none: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM counter_audit WHERE action='order_manual_discount' AND entity_id=?")
+                .bind(&automatic.order_id)
+                .fetch_one(db.writer_pool().unwrap())
+                .await
+                .unwrap();
+            assert_eq!(none, 0);
+            let preview = preview_order_bill(&db, &staff, &automatic.order_id)
+                .await
+                .unwrap();
+            assert!(preview_text(&preview)
+                .iter()
+                .any(|line| line.starts_with("Discount (10%)")));
+            let stored: (String, f64) =
+                sqlx::query_as("SELECT discount_type,discount_value FROM orders WHERE id=?")
+                    .bind(&automatic.order_id)
+                    .fetch_one(db.writer_pool().unwrap())
+                    .await
+                    .unwrap();
+            assert_eq!(stored, ("percentage".to_string(), 10.0));
+
+            // The preview of an order still being taken shows the extra discount too.
+            let draft = preview_draft_bill(&db, &staff, &with(Some(300)), None)
+                .await
+                .unwrap();
+            assert!(preview_text(&draft)
+                .iter()
+                .any(|line| line.starts_with("Discount")));
+            cleanup(db, path).await;
+        });
+    }
+
+    #[test]
     fn a_discount_or_rate_changed_after_review_blocks_the_save() {
         tauri::async_runtime::block_on(async {
             let path = fixture_path();
@@ -4975,6 +5197,7 @@ mod counter_tests {
                         unit_price_override_minor: None,
                     })
                     .collect(),
+                manual_discount_minor: None,
             };
             let total = quote(&db, &staff, &order).await.unwrap().total_minor;
             let saved = save_at(
@@ -5802,6 +6025,7 @@ mod counter_tests {
                 quantity,
                 unit_price_override_minor: None,
             }],
+            manual_discount_minor: None,
         }
     }
 

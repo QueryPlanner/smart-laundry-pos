@@ -17,6 +17,7 @@ import {
 import { BillPreview } from './BillPreview';
 import { GarmentGrid } from './GarmentGrid';
 import { OrderSummary } from './OrderSummary';
+import { discountMinorOf } from '@/lib/localFirst/manualDiscount';
 import { advanceToSend } from '@/lib/localFirst/payment';
 import { backStep, pushTrail } from '@/lib/localFirst/backTrail';
 import { useOrderList } from '@/lib/localFirst/orders/useOrderList';
@@ -95,6 +96,8 @@ export const CounterApp = () => {
   const [paymentMethod, setPaymentMethod] = useState<'cash' | 'upi' | 'card' | 'bank_transfer' | 'other'>('cash');
   /** The advance the customer pays on the new order, in rupees as typed. Empty means nothing is paid now. */
   const [advance, setAdvance] = useState('');
+  /** An extra discount for this bill only, in rupees as typed. Empty means none. */
+  const [discount, setDiscount] = useState('');
   const [saved, setSaved] = useState<Awaited<ReturnType<typeof saveCounterOrder>> | null>(null);
   const [jobs, setJobs] = useState<CounterPrintJob[]>([]);
   // Where the open order was reached from, so Back on its page returns there.
@@ -132,6 +135,9 @@ export const CounterApp = () => {
     const [garmentId, treatmentId] = key.split('|');
     return { garmentId, serviceId: treatmentId, quantity, ...(key in priceOverrides ? { unitPriceOverrideMinor: priceOverrides[key] } : {}) };
   }), [lines, priceOverrides]);
+  const manualDiscountMinor = discountMinorOf(discount);
+  // What is priced, saved and previewed: the garments, and the extra discount when there is one.
+  const orderInput = useMemo(() => ({ customer, items: orderItems, ...(manualDiscountMinor > 0 ? { manualDiscountMinor } : {}) }), [customer, orderItems, manualDiscountMinor]);
   const draftInProgress = orderItems.length > 0 || customer.name.trim() !== '' || customer.phone.trim() !== '';
   useEffect(() => {
     if (!account) return;
@@ -144,14 +150,14 @@ export const CounterApp = () => {
     if (!account || !customer.name.trim() || orderItems.length === 0) return;
     let active = true;
     const timer = setTimeout(() => {
-      void quoteCounterOrder({ customer, items: orderItems }).then(q => {
+      void quoteCounterOrder(orderInput).then(q => {
         if (!active) return;
         reviewedQuote.current = q;
         setQuote(q);
       }).catch(e => { if (active) setQuoteError(problem(e)); });
     }, 140);
     return () => { active = false; clearTimeout(timer); };
-  }, [account, customer, orderItems, quoteRefresh]);
+  }, [account, customer, orderItems, orderInput, quoteRefresh]);
 
   const addGarment = (garmentId: string, treatment: string) => setLines(current => {
     const key = `${garmentId}|${treatment}`;
@@ -183,7 +189,7 @@ export const CounterApp = () => {
     setSelectedReprintPieces([]); reprintRequestKeys.current = {};
   };
   const clearDraft = () => {
-    setCustomer({ name: '', phone: '' }); setLines({}); setPriceOverrides({}); setPaymentMethod('cash'); setAdvance('');
+    setCustomer({ name: '', phone: '' }); setLines({}); setPriceOverrides({}); setPaymentMethod('cash'); setAdvance(''); setDiscount('');
     setQuote(null); setQuoteError(''); reviewedQuote.current = null;
     setReprintBusy(false); resetOrderScopedState();
     idempotencyKey.current = crypto.randomUUID(); saveAttempted.current = false;
@@ -192,6 +198,11 @@ export const CounterApp = () => {
   /** Before any save, a different advance or method is a different submission, so it gets a new request key. */
   const changeAdvance = (text: string) => {
     setAdvance(text);
+    if (!saveAttempted.current) idempotencyKey.current = crypto.randomUUID();
+  };
+  /** A different discount is a different order, so before any save it gets a new request key too. */
+  const changeDiscount = (text: string) => {
+    setDiscount(text);
     if (!saveAttempted.current) idempotencyKey.current = crypto.randomUUID();
   };
   const changePaymentMethod = (method: 'cash' | 'upi' | 'card' | 'bank_transfer' | 'other') => {
@@ -208,7 +219,7 @@ export const CounterApp = () => {
       // Throws the reason for an advance that cannot be sent (the Save button is disabled for one, but an
       // order must never be saved quietly without the money the cashier typed).
       const advanceMinor = advanceToSend(advance, quoteToSave.totalMinor);
-      const result = await saveCounterOrder({ customer, items: orderItems, reviewedQuote: quoteToSave, idempotencyKey: idempotencyKey.current, ...(advanceMinor > 0 ? { payment: { amountMinor: advanceMinor, method: paymentMethod } } : {}) });
+      const result = await saveCounterOrder({ ...orderInput, reviewedQuote: quoteToSave, idempotencyKey: idempotencyKey.current, ...(advanceMinor > 0 ? { payment: { amountMinor: advanceMinor, method: paymentMethod } } : {}) });
       setSaved(result); clearDraft(); navigate('prints');
       try {
         const dispatched = await dispatchPrintJobs(result.orderId);
@@ -291,7 +302,7 @@ export const CounterApp = () => {
     try {
       const reviewed = reviewedQuote.current as CounterQuote;
       const advanceMinor = advanceToSend(advance, reviewed.totalMinor);
-      setPreview({ title: 'Bill preview', data: await previewCounterDraftBill({ customer, items: orderItems }, advanceMinor) });
+      setPreview({ title: 'Bill preview', data: await previewCounterDraftBill(orderInput, advanceMinor) });
     } catch (e) { setError(problem(e)); }
   });
   /** Shows the bill of a saved order, as a reprint would print it now. */
@@ -385,7 +396,7 @@ export const CounterApp = () => {
     {quoteError && <p className="counter-error" role="alert">{quoteError}</p>}
     {restoreWaiting && <RestorePendingBanner />}
     {startupWarning && <p className="counter-error" role="status">{startupWarning}</p>}
-    {page === 'order' && <fieldset className="counter-fieldset" disabled={busy}><div className="counter-layout"><main className="counter-main"><CustomerEntry customer={customer} onChange={setCustomer} search={searchCounterCustomers} /><section className="counter-panel"><GarmentGrid catalogue={catalogue} lines={lines} onAdd={addGarment} onQuantity={setQuantity} /></section></main><aside className="counter-aside"><OrderSummary catalogue={catalogue} lines={lines} quote={quote} quoteFailed={quoteError !== ''} customer={customer} advance={advance} onAdvance={changeAdvance} paymentMethod={paymentMethod} onPaymentMethod={changePaymentMethod} onRemove={(id, sid) => setQuantity(id, 0, sid)} onQuantity={setQuantity} onPrice={setLinePrice} onSave={() => void save()} onPreview={() => void previewDraft()} busy={busy} /></aside></div></fieldset>}
+    {page === 'order' && <fieldset className="counter-fieldset" disabled={busy}><div className="counter-layout"><main className="counter-main"><CustomerEntry customer={customer} onChange={setCustomer} search={searchCounterCustomers} /><section className="counter-panel"><GarmentGrid catalogue={catalogue} lines={lines} onAdd={addGarment} onQuantity={setQuantity} /></section></main><aside className="counter-aside"><OrderSummary catalogue={catalogue} lines={lines} quote={quote} quoteFailed={quoteError !== ''} customer={customer} advance={advance} onAdvance={changeAdvance} discount={discount} onDiscount={changeDiscount} paymentMethod={paymentMethod} onPaymentMethod={changePaymentMethod} onRemove={(id, sid) => setQuantity(id, 0, sid)} onQuantity={setQuantity} onPrice={setLinePrice} onSave={() => void save()} onPreview={() => void previewDraft()} busy={busy} /></aside></div></fieldset>}
     {page === 'orders' && admin && <TrashRequestsPanel onError={reportError} onNotice={setNotice} onChanged={orderList.reload} />}
     {page === 'orders' && <OrdersPage query={orderList.query} onQuery={orderList.setQuery} segment={orderList.segment} onSegment={orderList.setSegment} day={orderList.day} today={orderList.today} onDay={orderList.setDay} counts={orderList.counts} results={orderList.results} loading={orderList.loading} hasMore={orderList.hasMore} onLoadMore={orderList.loadMore} onOpen={id => void openOrder(id)} onHandover={id => void openOrder(id, 'handover')} onReprintBill={id => void reprint(id, 'bill')} busy={busy} />}
     {(page === 'detail' || page === 'handover') && saved && <OrderWorkspace order={saved} view={page} isAdmin={admin} backLabel={origin.label} onBack={() => arrive(origin.page)} onView={navigate} onOrder={replaceOrder} onError={reportError} onNotice={setNotice} onReprintBill={() => void reprint(saved.orderId, 'bill')} onPreviewBill={() => void previewSaved(saved)} onReprintTags={() => void reprint(saved.orderId, 'tags', saved.pieces.filter(piece => piece.tagged).map(piece => piece.shortId))} onOpenPrints={() => { void refreshJobs(saved.orderId); navigate('prints'); }} onFinished={finishHandover} />}

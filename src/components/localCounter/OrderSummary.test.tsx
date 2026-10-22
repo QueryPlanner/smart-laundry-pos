@@ -7,9 +7,9 @@ import type { CounterCatalogue, CounterQuote } from '@/lib/localFirst/counter';
 import { ADVANCE_ABOVE_TOTAL, ADVANCE_NOT_AMOUNT } from '@/lib/localFirst/payment';
 
 const catalogue: CounterCatalogue = { garments: [{ id: 'g1', key: 'shirt', nameEn: 'Shirt', nameMr: 'शर्ट', category: 'tops', imageKey: 'shirt', billingUnit: 'piece', active: true }], services: [{ id: 's1', key: 'wash_iron', name: 'Wash + Iron', active: true }], rates: [] };
-const quote: CounterQuote = { lines: [{ garmentId: 'g1', serviceId: 's1', garment: 'Shirt', service: 'Wash + Iron', quantity: 1, unitPriceMinor: 1200, listPriceMinor: 1200, lineTotalMinor: 1200, rateVersion: 2, serviceKey: 'wash_iron' }], subtotalMinor: 1200, discountPercentBp: 0, discountMinor: 0, totalMinor: 1200, pieceCount: 1, promisedAt: '2026-10-17T11:30:00Z', catalogueVersion: '2' };
+const quote: CounterQuote = { lines: [{ garmentId: 'g1', serviceId: 's1', garment: 'Shirt', service: 'Wash + Iron', quantity: 1, unitPriceMinor: 1200, listPriceMinor: 1200, lineTotalMinor: 1200, rateVersion: 2, serviceKey: 'wash_iron' }], subtotalMinor: 1200, discountPercentBp: 0, discountMinor: 0, manualDiscountMinor: 0, totalMinor: 1200, pieceCount: 1, promisedAt: '2026-10-17T11:30:00Z', catalogueVersion: '2' };
 const props = (overrides: Partial<React.ComponentProps<typeof OrderSummary>> = {}) => ({
-  catalogue, lines: { 'g1|s1': 1 }, quote, customer: { name: 'Rita', phone: '9876543210' }, advance: '', onAdvance: vi.fn(), paymentMethod: 'cash' as const,
+  catalogue, lines: { 'g1|s1': 1 }, quote, customer: { name: 'Rita', phone: '9876543210' }, advance: '', onAdvance: vi.fn(), discount: '', onDiscount: vi.fn(), paymentMethod: 'cash' as const,
   onPaymentMethod: vi.fn(), onRemove: vi.fn(), onQuantity: vi.fn(), onPrice: vi.fn(), onSave: vi.fn(), onPreview: vi.fn(), busy: false, quoteFailed: false, ...overrides,
 });
 const saveButton = () => screen.getByRole('button', { name: /Save & Print|Saving and dispatching/ }) as HTMLButtonElement;
@@ -115,6 +115,98 @@ describe('OrderSummary', () => {
     render(<OrderSummary {...props({ quote: discounted })} />);
     expect(screen.getByText('Discount (12.5%)').nextSibling?.textContent).toBe('-₹1.50');
     expect(screen.getByText('Amount to collect').nextSibling?.textContent).toBe('₹10.50');
+  });
+
+  describe('discount on this bill', () => {
+    const discountBox = () => screen.getByLabelText('Discount on this bill (₹)') as HTMLInputElement;
+
+    it('starts as one button, with no box until it is asked for', () => {
+      render(<OrderSummary {...props()} />);
+      expect(screen.queryByLabelText('Discount on this bill (₹)')).toBeNull();
+      fireEvent.click(button('Give a discount'));
+      expect(discountBox().value).toBe('');
+      expect(screen.queryByRole('button', { name: 'Give a discount' })).toBeNull();
+    });
+
+    it('reports every typed amount exactly as typed', () => {
+      const p = props();
+      render(<OrderSummary {...p} />);
+      fireEvent.click(button('Give a discount'));
+      fireEvent.change(discountBox(), { target: { value: '2.5' } });
+      expect(p.onDiscount).toHaveBeenCalledWith('2.5');
+    });
+
+    it('is already open when a discount was typed, and shows it', () => {
+      render(<OrderSummary {...props({ discount: '3' })} />);
+      expect(discountBox().value).toBe('3');
+    });
+
+    it.each([[5, '0.60'], [10, '1.20'], [20, '2.40']])('the %d%% button fills in that share of the subtotal', (percent, text) => {
+      const p = props();
+      render(<OrderSummary {...p} />);
+      fireEvent.click(button('Give a discount'));
+      fireEvent.click(button(`${percent}%`));
+      expect(p.onDiscount).toHaveBeenCalledWith(text);
+    });
+
+    it('never fills in more than the customer still owes after the automatic discount', () => {
+      const p = props({ quote: { ...quote, discountPercentBp: 9500, discountMinor: 1140, totalMinor: 60 } });
+      render(<OrderSummary {...p} />);
+      fireEvent.click(button('Give a discount'));
+      fireEvent.click(button('20%'));
+      expect(p.onDiscount).toHaveBeenCalledWith('0.60');
+    });
+
+    it('cannot work out a percentage until the price is known', () => {
+      render(<OrderSummary {...props({ quote: null })} />);
+      fireEvent.click(button('Give a discount'));
+      for (const percent of ['5%', '10%', '20%']) expect(button(percent).disabled).toBe(true);
+    });
+
+    it('takes the discount away with No discount and goes back to one button', () => {
+      const p = props({ discount: '3' });
+      render(<OrderSummary {...p} />);
+      fireEvent.click(button('No discount'));
+      expect(p.onDiscount).toHaveBeenCalledWith('');
+    });
+
+    it('goes back to the single button when the discount is cleared by the parent', () => {
+      const p = props();
+      const view = render(<OrderSummary {...p} />);
+      fireEvent.click(button('Give a discount'));
+      fireEvent.click(button('No discount'));
+      view.rerender(<OrderSummary {...p} discount="" />);
+      expect(screen.queryByLabelText('Discount on this bill (₹)')).toBeNull();
+      expect(button('Give a discount')).toBeTruthy();
+    });
+
+    it('says when the amount is not a number, and then blocks Save and Preview', () => {
+      render(<OrderSummary {...props({ discount: 'abc' })} />);
+      expect(screen.getByRole('alert').textContent).toBe('Enter the discount as an amount such as 50 or 50.50.');
+      expect(saveButton().disabled).toBe(true);
+      expect(button('Preview bill').disabled).toBe(true);
+    });
+
+    it('shows the automatic and the extra discount on their own lines, and the amount to collect', () => {
+      const both = { ...quote, discountPercentBp: 1000, discountMinor: 220, manualDiscountMinor: 100, totalMinor: 980 };
+      render(<OrderSummary {...props({ quote: both })} />);
+      expect(screen.getByText('Discount (10%)').nextSibling?.textContent).toBe('-₹1.20');
+      expect(screen.getByText('Extra discount').nextSibling?.textContent).toBe('-₹1.00');
+      expect(screen.getByText('Amount to collect').nextSibling?.textContent).toBe('₹9.80');
+    });
+
+    it('shows only the extra discount line when there is no automatic discount', () => {
+      const extra = { ...quote, discountMinor: 100, manualDiscountMinor: 100, totalMinor: 1100 };
+      render(<OrderSummary {...props({ quote: extra })} />);
+      expect(screen.getByText('Extra discount').nextSibling?.textContent).toBe('-₹1.00');
+      expect(screen.queryByText(/^Discount \(/)).toBeNull();
+    });
+
+    it('shows neither line when nothing was taken off', () => {
+      render(<OrderSummary {...props()} />);
+      expect(screen.queryByText('Extra discount')).toBeNull();
+      expect(screen.queryByText(/^Discount \(/)).toBeNull();
+    });
   });
 
   it('reports every typed advance exactly as typed', () => {

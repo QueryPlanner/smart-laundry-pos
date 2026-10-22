@@ -575,8 +575,14 @@ fn layout_bill(
         false,
     )];
     if bill.discount_minor > 0 {
+        // A discount that is not a plain percentage (one given by hand) carries no percentage.
+        let label = if bill.discount_percent_bp > 0 {
+            format!("Discount ({}%)", format_percent(bill.discount_percent_bp))
+        } else {
+            "Discount".to_string()
+        };
         totals.push((
-            format!("Discount ({}%)", format_percent(bill.discount_percent_bp)),
+            label,
             format!("-{}", format_money(bill.discount_minor)),
             false,
         ));

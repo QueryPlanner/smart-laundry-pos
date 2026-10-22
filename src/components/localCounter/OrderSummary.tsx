@@ -5,6 +5,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import type { CounterCatalogue, CounterPaymentMethod, CounterQuote } from '@/lib/localFirst/counter';
 import { formatPercentBp } from '@/lib/localFirst/discount';
+import { DISCOUNT_PERCENTS, discountProblem, percentOff } from '@/lib/localFirst/manualDiscount';
 import { advanceProblem, halfOf, parsePaymentAmountMinor, rupeesText } from '@/lib/localFirst/payment';
 
 const money = (minor: number) => new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR' }).format(minor / 100);
@@ -27,6 +28,9 @@ interface OrderSummaryProps {
   /** The advance the customer pays now, typed in rupees. An empty string means nothing is paid now. */
   advance: string;
   onAdvance: (text: string) => void;
+  /** An extra discount for this bill, typed in rupees. An empty string means none. */
+  discount: string;
+  onDiscount: (text: string) => void;
   paymentMethod: CounterPaymentMethod;
   onPaymentMethod: (method: CounterPaymentMethod) => void;
   onRemove: (garmentId: string, serviceId: string) => void;
@@ -61,9 +65,15 @@ const PriceField = ({ label, chargedMinor, listMinor, onChange }: { label: strin
 };
 
 /** Summary of the order being taken. The customer may pay any advance now, including nothing; the rest is due at pickup. */
-export const OrderSummary = ({ catalogue, lines, quote, quoteFailed, customer, advance, onAdvance, paymentMethod, onPaymentMethod, onRemove, onQuantity, onPrice, onSave, onPreview, busy }: OrderSummaryProps) => {
+export const OrderSummary = ({ catalogue, lines, quote, quoteFailed, customer, advance, onAdvance, discount, onDiscount, paymentMethod, onPaymentMethod, onRemove, onQuantity, onPrice, onSave, onPreview, busy }: OrderSummaryProps) => {
   const items = Object.entries(lines).filter(([, quantity]) => quantity > 0);
-  const hasDiscount = (quote?.discountMinor ?? 0) > 0;
+  // The automatic discount (a percentage rule) and the extra one given by hand are shown on separate lines.
+  const manualMinor = quote?.manualDiscountMinor ?? 0;
+  const automaticMinor = quote ? quote.discountMinor - manualMinor : 0;
+  const owedBeforeExtra = quote ? quote.subtotalMinor - automaticMinor : 0;
+  const [discountOpen, setDiscountOpen] = useState(false);
+  const showDiscount = discountOpen || discount.trim() !== '';
+  const extraProblem = discountProblem(discount);
   const nothingToPay = quote !== null && quote.totalMinor === 0;
   // Never show 0.00 while there is no price: that reads as "free".
   const amount = (pick: (q: CounterQuote) => number) => (quote ? money(pick(quote)) : '—');
@@ -81,7 +91,7 @@ export const OrderSummary = ({ catalogue, lines, quote, quoteFailed, customer, a
     return '';
   };
   const blocker = saveBlocker();
-  const cannotSave = busy || !quote || items.length === 0 || !customer.name.trim() || advanceError !== null;
+  const cannotSave = busy || !quote || items.length === 0 || !customer.name.trim() || advanceError !== null || extraProblem !== null;
   return (
     <section className="counter-summary counter-panel" aria-label="Order summary">
       <div className="counter-summary-head">
@@ -119,9 +129,27 @@ export const OrderSummary = ({ catalogue, lines, quote, quoteFailed, customer, a
           <span>{quote ? promiseFormat.format(new Date(quote.promisedAt)) : 'Saved date + 2 days, 5:00 PM IST'}</span>
         </div>
       </div>
+      <div className="counter-discount">
+        {showDiscount ? (
+          <>
+            <Label htmlFor="bill-discount">Discount on this bill (₹)</Label>
+            <Input id="bill-discount" inputMode="decimal" placeholder="0" value={discount} onChange={event => onDiscount(event.target.value)} />
+            <div className="flex flex-wrap gap-2" role="group" aria-label="Quick discounts">
+              {DISCOUNT_PERCENTS.map(percent => (
+                <button key={percent} type="button" className="counter-touch" disabled={!quote} onClick={() => quote && onDiscount(rupeesText(percentOff(quote.subtotalMinor, percent, owedBeforeExtra)))}>{`${percent}%`}</button>
+              ))}
+              <button type="button" className="counter-touch" onClick={() => { onDiscount(''); setDiscountOpen(false); }}>No discount</button>
+            </div>
+            {extraProblem && <p role="alert" className="text-sm font-semibold text-red-700">{extraProblem}</p>}
+          </>
+        ) : (
+          <Button variant="outline" className="counter-touch" onClick={() => setDiscountOpen(true)}>Give a discount</Button>
+        )}
+      </div>
       <div className="counter-totals">
         <div><span>Subtotal</span><strong>{amount(q => q.subtotalMinor)}</strong></div>
-        {hasDiscount && quote && <div><span>Discount ({formatPercentBp(quote.discountPercentBp)}%)</span><strong>-{money(quote.discountMinor)}</strong></div>}
+        {automaticMinor > 0 && quote && <div><span>Discount ({formatPercentBp(quote.discountPercentBp)}%)</span><strong>-{money(automaticMinor)}</strong></div>}
+        {manualMinor > 0 && <div><span>Extra discount</span><strong>-{money(manualMinor)}</strong></div>}
         <div className="balance"><span>Amount to collect</span><strong>{amount(q => q.totalMinor)}</strong></div>
       </div>
       <div className="counter-payment">

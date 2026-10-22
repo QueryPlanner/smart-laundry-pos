@@ -57,7 +57,7 @@ Admin > Rate card lists every garment with each of the five services: Iron, Wash
 
 ## Discounts
 
-Admin > Discounts. Staff cannot change or type in a discount. The program applies it automatically.
+Admin > Discounts sets the standing discounts, which the program applies automatically. Staff cannot change those. **Any signed-in person can also give a discount on one bill:** on the New order screen press **Give a discount**, type the rupees off (or tap 5%, 10% or 20%). It is taken off on top of any standing discount, can never be more than the customer owes, shows on the bill as "Discount" and is recorded with the name of the person who gave it (audit entry `order_manual_discount`).
 
 - **All customers:** one percentage for every order, with an optional label. Use the Active box to switch it on or off. A percentage above 50% needs an extra tick, to guard against typing 100 instead of 10.
 - **Specific customer:** a percentage for one customer. Search for them by mobile number (they must already have had an order saved), enter the percentage and press **Save customer discount**. A customer's own percentage replaces the shop-wide one, so enter 0 to stop one customer getting the shop discount. **Turn off** in the list removes it and that customer goes back to the shop-wide rule.
