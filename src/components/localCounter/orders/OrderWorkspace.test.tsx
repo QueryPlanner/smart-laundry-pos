@@ -119,8 +119,8 @@ describe('the detail view', () => {
   it('passes the reprint and print-status requests up', () => {
     const p = props();
     render(<OrderWorkspace {...p} />);
-    fireEvent.click(button('More actions'));
     fireEvent.click(button('Reprint bill'));
+    fireEvent.click(button('More actions'));
     fireEvent.click(button('Reprint tags'));
     fireEvent.click(button('Print status'));
     expect([p.onReprintBill, p.onReprintTags, p.onOpenPrints].map(fn => (fn as ReturnType<typeof vi.fn>).mock.calls.length)).toEqual([1, 1, 1]);

@@ -470,7 +470,7 @@ describe('print queue and recovery', () => {
     expect(keys[0]).toBe(keys[1]);
     api.reprintCounterOutput.mockResolvedValue(job('bill'));
     fireEvent.click(screen.getByRole('button', { name: 'Reprint customer bill' }));
-    await screen.findByText('A bill reprint was added to the Canon queue.');
+    await screen.findByText('Bill SL-1 sent to the printer.');
   });
 });
 
@@ -965,7 +965,7 @@ describe('a double tap never runs a print or pickup action twice', () => {
     fireEvent.click(button);
     expect(api.reprintCounterOutput).toHaveBeenCalledTimes(1);
     created.resolve(job('bill'));
-    await screen.findByText('A bill reprint was added to the Canon queue.');
+    await screen.findByText('Bill SL-1 sent to the printer.');
     expect(api.dispatchPrintJob).toHaveBeenCalledTimes(1);
   });
 
@@ -1137,7 +1137,65 @@ describe('Orders / Pickup', () => {
     expect(api.reprintCounterOutput).toHaveBeenCalledWith('o-1', 'tags', ['2600001-1', '2600001-2'], expect.any(String));
     api.reprintCounterOutput.mockResolvedValue(job('bill'));
     fireEvent.click(screen.getByRole('button', { name: 'Reprint bill' }));
-    await screen.findByText('A bill reprint was added to the Canon queue.');
+    await screen.findByText('Bill SL-1 sent to the printer.');
+  });
+
+  describe('reprinting a bill straight from the Orders list', () => {
+    const openList = async (results = [summary(1, { status: 'washing' }), summary(2, { status: 'ready' })]) => {
+      api.searchCounterOrders.mockResolvedValue(results);
+      nav('Orders / Pickup');
+      await screen.findByText(results[0].orderNumber);
+    };
+
+    it('prints the bill of the chosen order and says so, without opening the order', async () => {
+      await signIn();
+      await openList();
+      api.reprintCounterOutput.mockResolvedValue(job('bill', 'pending', 'o-2'));
+      api.dispatchPrintJob.mockResolvedValue(job('bill', 'submitted', 'o-2'));
+      fireEvent.click(screen.getAllByRole('button', { name: 'Reprint bill' })[1]);
+      await screen.findByText('Bill SL-1 sent to the printer.');
+      expect(api.reprintCounterOutput).toHaveBeenCalledWith('o-2', 'bill', [], expect.any(String));
+      expect(screen.queryByRole('heading', { name: 'SL-2' })).toBeNull();
+    });
+
+    it('uses a separate request key for each order, and a fresh one after a bill printed', async () => {
+      await signIn();
+      await openList();
+      api.reprintCounterOutput.mockResolvedValue(job('bill', 'pending'));
+      api.dispatchPrintJob.mockResolvedValue(job('bill', 'submitted'));
+      const [first, second] = screen.getAllByRole('button', { name: 'Reprint bill' });
+      fireEvent.click(first);
+      await screen.findByText('Bill SL-1 sent to the printer.');
+      fireEvent.click(second);
+      await waitFor(() => expect(api.reprintCounterOutput).toHaveBeenCalledTimes(2));
+      fireEvent.click(first);
+      await waitFor(() => expect(api.reprintCounterOutput).toHaveBeenCalledTimes(3));
+      const keys = api.reprintCounterOutput.mock.calls.map(call => call[3]);
+      expect(new Set(keys).size).toBe(3);
+    });
+
+    it('keeps the request key and says what to do when the printer does not take the bill', async () => {
+      await signIn();
+      await openList();
+      api.reprintCounterOutput.mockResolvedValue(job('bill', 'pending'));
+      api.dispatchPrintJob.mockResolvedValue(job('bill', 'failed'));
+      fireEvent.click(screen.getAllByRole('button', { name: 'Reprint bill' })[0]);
+      expect((await screen.findByRole('alert')).textContent).toContain('did not print');
+    });
+
+    it('says in plain words when the reprint cannot be requested, and retries with the same key', async () => {
+      await signIn();
+      await openList();
+      api.reprintCounterOutput.mockRejectedValueOnce(new Error('database is busy'));
+      fireEvent.click(screen.getAllByRole('button', { name: 'Reprint bill' })[0]);
+      expect((await screen.findByRole('alert')).textContent).toBe('The bill could not be printed: database is busy. Press Reprint bill again to retry.');
+      api.reprintCounterOutput.mockResolvedValue(job('bill', 'pending'));
+      api.dispatchPrintJob.mockResolvedValue(job('bill', 'submitted'));
+      fireEvent.click(screen.getAllByRole('button', { name: 'Reprint bill' })[0]);
+      await screen.findByText('Bill SL-1 sent to the printer.');
+      const keys = api.reprintCounterOutput.mock.calls.map(call => call[3]);
+      expect(keys[0]).toBe(keys[1]);
+    });
   });
 
   it('opens the print progress from the order page, and Back returns to the order', async () => {

@@ -9,7 +9,7 @@ const SEARCH_LABEL = 'Search bill number, phone, name or tag ID';
 
 const defaultProps = (): OrdersPageProps => ({
   query: '', onQuery: vi.fn(), segment: 'all', onSegment: vi.fn(), counts: countsOf(), results: [], loading: false,
-  hasMore: false, onLoadMore: vi.fn(), onOpen: vi.fn(), onHandover: vi.fn(), busy: false,
+  hasMore: false, onLoadMore: vi.fn(), onOpen: vi.fn(), onHandover: vi.fn(), onReprintBill: vi.fn(), busy: false,
 });
 const renderPage = (overrides: Partial<OrdersPageProps> = {}) => {
   const props = { ...defaultProps(), ...overrides };
@@ -91,6 +91,12 @@ describe('OrdersPage', () => {
       renderPage({ query: 'zzz', results: [] });
       expect(screen.getByText('No order matches. Check the number or search by phone.')).toBeTruthy();
     });
+  });
+
+  it('reprints the bill of a listed order from the list', () => {
+    const props = renderPage({ results: [orderOf({ id: 'o9' })] });
+    fireEvent.click(screen.getByRole('button', { name: 'Reprint bill' }));
+    expect(props.onReprintBill).toHaveBeenCalledWith('o9');
   });
 
   describe('Enter in the search box', () => {

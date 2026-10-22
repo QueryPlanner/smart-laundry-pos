@@ -14,7 +14,6 @@ export interface MoreActionsProps {
   paidMinor: number;
   isAdmin: boolean;
   busy: boolean;
-  onReprintBill(): void;
   onReprintTags(): void;
   onOpenPrints(): void;
   onCancel(reason: string): void;
@@ -24,10 +23,10 @@ export interface MoreActionsProps {
 }
 
 /**
- * Less-used actions behind a disclosure: reprints, the print status screen, and admin-only cancel.
+ * Less-used actions behind a disclosure: tag reprints, the print status screen, and admin-only cancel.
  * Cancel is hidden once an order is collected or cancelled; staff see a hint to ask an admin instead.
  */
-export const MoreActions = ({ status, taggedCount, paidMinor, isAdmin, busy, onReprintBill, onReprintTags, onOpenPrints, onCancel, onTrash, onRequestTrash }: MoreActionsProps) => {
+export const MoreActions = ({ status, taggedCount, paidMinor, isAdmin, busy, onReprintTags, onOpenPrints, onCancel, onTrash, onRequestTrash }: MoreActionsProps) => {
   const [open, setOpen] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [trashing, setTrashing] = useState(false);
@@ -78,7 +77,6 @@ export const MoreActions = ({ status, taggedCount, paidMinor, isAdmin, busy, onR
       <Button variant="outline" aria-expanded={open} aria-controls={regionId} onClick={toggle}>More actions</Button>
       {open && (
         <div id={regionId} role="region" aria-label="More actions" className="counter-more-panel">
-          <Button variant="outline" disabled={busy} onClick={onReprintBill}>Reprint bill</Button>
           {taggedCount > 0
             ? <Button variant="outline" disabled={busy} onClick={onReprintTags}>Reprint tags</Button>
             : <p>No tags needed</p>}

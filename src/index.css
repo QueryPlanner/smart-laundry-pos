@@ -804,3 +804,8 @@ All colors MUST be HSL.
 .counter-back{height:42px;padding:0 16px;font-size:16px;font-weight:700}
 .counter-aside{top:128px}
 .counter-summary{max-height:calc(100vh - 148px)}
+
+/* An order row's two buttons: the next step on top, Reprint bill under it. */
+.counter-order-actions{grid-area:action;justify-self:end;display:flex;flex-direction:column;gap:8px;min-width:9.5rem}
+.counter-order-actions .counter-touch{width:100%}
+@media (max-width:900px){.counter-order-actions{justify-self:stretch;min-width:0}}

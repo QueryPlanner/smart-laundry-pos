@@ -6,7 +6,7 @@ import { OrderRow } from './OrderRow';
 import { orderOf } from './listFixtures';
 
 const renderRow = (order = orderOf(), busy = false) => {
-  const props = { order, busy, onOpen: vi.fn(), onHandover: vi.fn() };
+  const props = { order, busy, onOpen: vi.fn(), onHandover: vi.fn(), onReprintBill: vi.fn() };
   render(<ul><OrderRow {...props} /></ul>);
   return props;
 };
@@ -115,6 +115,21 @@ describe('OrderRow', () => {
     it('is enabled when nothing is busy', () => {
       renderRow();
       expect((screen.getByRole('button', { name: 'Open' }) as HTMLButtonElement).disabled).toBe(false);
+    });
+  });
+
+  describe('reprint bill button', () => {
+    it.each(['ready', 'washing', 'collected', 'cancelled'])('is on a %s order and reprints that bill without opening it', status => {
+      const props = renderRow(orderOf({ status, balanceMinor: 0 }));
+      fireEvent.click(screen.getByRole('button', { name: 'Reprint bill' }));
+      expect(props.onReprintBill).toHaveBeenCalledWith('o1');
+      expect(props.onOpen).not.toHaveBeenCalled();
+      expect(props.onHandover).not.toHaveBeenCalled();
+    });
+
+    it('is disabled while another action is busy', () => {
+      renderRow(orderOf(), true);
+      expect((screen.getByRole('button', { name: 'Reprint bill' }) as HTMLButtonElement).disabled).toBe(true);
     });
   });
 });

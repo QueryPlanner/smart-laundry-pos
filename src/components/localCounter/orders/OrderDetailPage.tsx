@@ -61,6 +61,7 @@ export const OrderDetailPage = ({ order, customer, isAdmin, busy, backLabel, onB
           <p>{`${customer.name} · ${customer.phone}`}</p>
           <div><StatusBadge status={order.status} /></div>
           <p>{piecesText(order.pieces)}</p>
+          <Button variant="outline" className="counter-touch" disabled={busy} onClick={onReprintBill}>Reprint bill</Button>
           <p>{`Received ${formatShopDateTime(order.receivedAt)} · Promised ${formatShopDateTime(order.promisedAt)}`}</p>
         </div>
       </header>
@@ -84,7 +85,6 @@ export const OrderDetailPage = ({ order, customer, isAdmin, busy, backLabel, onB
         paidMinor={order.paidMinor}
         isAdmin={isAdmin}
         busy={busy}
-        onReprintBill={onReprintBill}
         onReprintTags={onReprintTags}
         onOpenPrints={onOpenPrints}
         onCancel={onCancel}

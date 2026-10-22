@@ -13,6 +13,7 @@ export interface OrdersPageProps {
   results: CounterOrderSummary[]; loading: boolean; hasMore: boolean; onLoadMore(): void;
   onOpen(orderId: string): void;       // open the order detail
   onHandover(orderId: string): void;   // open the handover screen
+  onReprintBill(orderId: string): void; // print the bill again, without opening the order
   busy: boolean;
 }
 
@@ -29,7 +30,7 @@ const EMPTY_MESSAGE: Record<CounterOrderFilter, string> = {
  * The Orders / Pickup list. A search replaces the segment filters and searches every order; a single
  * character is too vague to search, so it only shows a hint.
  */
-export const OrdersPage = ({ query, onQuery, segment, onSegment, counts, results, loading, hasMore, onLoadMore, onOpen, onHandover, busy }: OrdersPageProps) => {
+export const OrdersPage = ({ query, onQuery, segment, onSegment, counts, results, loading, hasMore, onLoadMore, onOpen, onHandover, onReprintBill, busy }: OrdersPageProps) => {
   const searching = query !== '';
   const shortQuery = query.trim().length === 1;
   const shown = shortQuery ? [] : results;
@@ -76,7 +77,7 @@ export const OrdersPage = ({ query, onQuery, segment, onSegment, counts, results
       {shortQuery && <p className="counter-search-hint">Type at least 2 characters.</p>}
       {shown.length > 0 && (
         <ul className="counter-order-list" aria-label="Orders">
-          {shown.map(order => <OrderRow key={order.id} order={order} busy={busy} onOpen={onOpen} onHandover={onHandover} />)}
+          {shown.map(order => <OrderRow key={order.id} order={order} busy={busy} onOpen={onOpen} onHandover={onHandover} onReprintBill={onReprintBill} />)}
         </ul>
       )}
       {!loading && !shortQuery && shown.length === 0 && (

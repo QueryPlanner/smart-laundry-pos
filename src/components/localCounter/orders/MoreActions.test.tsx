@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { MoreActions, type MoreActionsProps } from './MoreActions';
 
-const handlers = () => ({ onReprintBill: vi.fn(), onReprintTags: vi.fn(), onOpenPrints: vi.fn(), onCancel: vi.fn(), onTrash: vi.fn(), onRequestTrash: vi.fn() });
+const handlers = () => ({ onReprintTags: vi.fn(), onOpenPrints: vi.fn(), onCancel: vi.fn(), onTrash: vi.fn(), onRequestTrash: vi.fn() });
 const renderActions = (over: Partial<MoreActionsProps> = {}) => {
   const callbacks = handlers();
   const props: MoreActionsProps = { status: 'ready', taggedCount: 2, paidMinor: 0, isAdmin: true, busy: false, ...callbacks, ...over };
@@ -127,13 +127,11 @@ describe('MoreActions disclosure', () => {
 });
 
 describe('MoreActions reprints and print status', () => {
-  it('calls back for the bill, the tags and the print status', () => {
-    const { onReprintBill, onReprintTags, onOpenPrints } = renderActions();
+  it('calls back for the tags and the print status', () => {
+    const { onReprintTags, onOpenPrints } = renderActions();
     openDisclosure();
-    fireEvent.click(button('Reprint bill') as HTMLButtonElement);
     fireEvent.click(button('Reprint tags') as HTMLButtonElement);
     fireEvent.click(button('Print status') as HTMLButtonElement);
-    expect(onReprintBill).toHaveBeenCalledOnce();
     expect(onReprintTags).toHaveBeenCalledOnce();
     expect(onOpenPrints).toHaveBeenCalledOnce();
   });
@@ -143,13 +141,12 @@ describe('MoreActions reprints and print status', () => {
     openDisclosure();
     expect(screen.getByText('No tags needed')).toBeTruthy();
     expect(button('Reprint tags')).toBeNull();
-    expect(button('Reprint bill')).not.toBeNull();
+    expect(button('Reprint bill')).toBeNull();
   });
 
-  it('disables the reprints and the status link while the order is busy', () => {
+  it('disables the tag reprint and the status link while the order is busy', () => {
     renderActions({ busy: true });
     openDisclosure();
-    expect((button('Reprint bill') as HTMLButtonElement).disabled).toBe(true);
     expect((button('Reprint tags') as HTMLButtonElement).disabled).toBe(true);
     expect((button('Print status') as HTMLButtonElement).disabled).toBe(true);
   });
@@ -200,7 +197,7 @@ describe('MoreActions admin cancel', () => {
   it('disables the cancel confirmation while busy', () => {
     const { rerender } = renderActions();
     openCancelForm();
-    rerender(<MoreActions status="ready" taggedCount={2} paidMinor={0} isAdmin busy onReprintBill={vi.fn()} onReprintTags={vi.fn()} onOpenPrints={vi.fn()} onCancel={vi.fn()} onTrash={vi.fn()} />);
+    rerender(<MoreActions status="ready" taggedCount={2} paidMinor={0} isAdmin busy onReprintTags={vi.fn()} onOpenPrints={vi.fn()} onCancel={vi.fn()} onTrash={vi.fn()} />);
     expect((button('Confirm cancel order') as HTMLButtonElement).disabled).toBe(true);
   });
 

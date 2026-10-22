@@ -11,6 +11,7 @@ export interface OrderRowProps {
   busy: boolean;
   onOpen(orderId: string): void;
   onHandover(orderId: string): void;
+  onReprintBill(orderId: string): void;
 }
 
 /** Bill numbers issued since the daily-sequence format: `YYYYMMDD` plus a four-digit sequence. */
@@ -40,7 +41,7 @@ const MoneyChip = ({ state, balanceMinor }: { state: MoneyState; balanceMinor: n
 };
 
 /** One order in the Orders / Pickup list. The single primary button does what the order needs next. */
-export const OrderRow = ({ order, busy, onOpen, onHandover }: OrderRowProps) => {
+export const OrderRow = ({ order, busy, onOpen, onHandover, onReprintBill }: OrderRowProps) => {
   const action = rowAction(order);
   const handsOver = action.kind === 'receive_and_handover' || action.kind === 'handover';
   return (
@@ -60,9 +61,12 @@ export const OrderRow = ({ order, busy, onOpen, onHandover }: OrderRowProps) => 
         <MoneyChip state={moneyState(order)} balanceMinor={order.balanceMinor} />
       </div>
       {order.matchReason && <small className="counter-match-reason">{order.matchReason}</small>}
-      <Button className="counter-touch" disabled={busy} onClick={() => (handsOver ? onHandover(order.id) : onOpen(order.id))}>
-        {action.label}
-      </Button>
+      <div className="counter-order-actions">
+        <Button className="counter-touch" disabled={busy} onClick={() => (handsOver ? onHandover(order.id) : onOpen(order.id))}>
+          {action.label}
+        </Button>
+        <Button variant="outline" className="counter-touch" disabled={busy} onClick={() => onReprintBill(order.id)}>Reprint bill</Button>
+      </div>
     </li>
   );
 };

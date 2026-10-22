@@ -114,13 +114,19 @@ describe('OrderDetailPage money and actions', () => {
     expect(props.onCancel).toHaveBeenCalledWith('Wrong bill');
   });
 
-  it('offers reprints and the print status from the disclosure', () => {
+  it('offers the bill reprint in plain view, and the print status in the disclosure', () => {
     const { props } = renderPage();
+    fireEvent.click(screen.getByRole('button', { name: 'Reprint bill' }));
+    expect(props.onReprintBill).toHaveBeenCalledOnce();
     fireEvent.click(screen.getByRole('button', { name: 'More actions' }));
     const panel = screen.getByRole('region', { name: 'More actions' });
-    fireEvent.click(within(panel).getByRole('button', { name: 'Reprint bill' }));
+    expect(within(panel).queryByRole('button', { name: 'Reprint bill' })).toBeNull();
     fireEvent.click(within(panel).getByRole('button', { name: 'Print status' }));
-    expect(props.onReprintBill).toHaveBeenCalledOnce();
     expect(props.onOpenPrints).toHaveBeenCalledOnce();
+  });
+
+  it('disables the bill reprint while the order is busy', () => {
+    renderPage({ busy: true });
+    expect((screen.getByRole('button', { name: 'Reprint bill' }) as HTMLButtonElement).disabled).toBe(true);
   });
 });
