@@ -10,7 +10,7 @@ const catalogue: CounterCatalogue = { garments: [{ id: 'g1', key: 'shirt', nameE
 const quote: CounterQuote = { lines: [{ garmentId: 'g1', serviceId: 's1', garment: 'Shirt', service: 'Wash + Iron', quantity: 1, unitPriceMinor: 1200, listPriceMinor: 1200, lineTotalMinor: 1200, rateVersion: 2, serviceKey: 'wash_iron' }], subtotalMinor: 1200, discountPercentBp: 0, discountMinor: 0, totalMinor: 1200, pieceCount: 1, promisedAt: '2026-10-17T11:30:00Z', catalogueVersion: '2' };
 const props = (overrides: Partial<React.ComponentProps<typeof OrderSummary>> = {}) => ({
   catalogue, lines: { 'g1|s1': 1 }, quote, customer: { name: 'Rita', phone: '9876543210' }, advance: '', onAdvance: vi.fn(), paymentMethod: 'cash' as const,
-  onPaymentMethod: vi.fn(), onRemove: vi.fn(), onQuantity: vi.fn(), onPrice: vi.fn(), onSave: vi.fn(), busy: false, quoteFailed: false, ...overrides,
+  onPaymentMethod: vi.fn(), onRemove: vi.fn(), onQuantity: vi.fn(), onPrice: vi.fn(), onSave: vi.fn(), onPreview: vi.fn(), busy: false, quoteFailed: false, ...overrides,
 });
 const saveButton = () => screen.getByRole('button', { name: /Save & Print|Saving and dispatching/ }) as HTMLButtonElement;
 const advanceInput = () => screen.getByLabelText('Advance received now') as HTMLInputElement;
@@ -28,6 +28,31 @@ describe('OrderSummary', () => {
     expect(screen.queryByRole('group', { name: 'Payment method' })).toBeNull();
     expect(screen.queryByText(/Discount/)).toBeNull();
     expect(saveButton().disabled).toBe(false);
+  });
+
+  describe('preview bill button', () => {
+    const previewButton = () => screen.getByRole('button', { name: 'Preview bill' }) as HTMLButtonElement;
+
+    it('is next to Save and asks for the preview', () => {
+      const p = props();
+      render(<OrderSummary {...p} />);
+      expect(previewButton().disabled).toBe(false);
+      fireEvent.click(previewButton());
+      expect(p.onPreview).toHaveBeenCalledOnce();
+      expect(p.onSave).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['no price yet', { quote: null }],
+      ['no customer name', { customer: { name: ' ', phone: '' } }],
+      ['nothing added', { lines: {} }],
+      ['an advance that cannot be taken', { advance: '99999' }],
+      ['a save in progress', { busy: true }],
+    ])('is disabled with %s, exactly when Save is', (_label, over) => {
+      render(<OrderSummary {...props(over as Partial<React.ComponentProps<typeof OrderSummary>>)} />);
+      expect(previewButton().disabled).toBe(true);
+      expect(saveButton().disabled).toBe(true);
+    });
   });
 
   it('adjusts, removes and edits quantities, and saves', () => {

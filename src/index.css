@@ -826,3 +826,12 @@ All colors MUST be HSL.
 .counter-day-picker p{flex:1 1 100%;margin:0;font-size:16px;font-weight:650;color:#3d5148}
 .counter-day-heading{list-style:none;padding:10px 4px 0}
 .counter-day-heading h2{margin:0;font-size:17px;font-weight:750;color:#3d5148}
+
+/* The bill preview window. */
+.counter-modal-backdrop{position:fixed;inset:0;z-index:50;display:grid;place-items:center;background:#0f1d1894;padding:16px}
+.counter-modal{display:flex;flex-direction:column;gap:12px;width:min(900px,100%);max-height:calc(100vh - 32px);padding:18px;border-radius:16px;background:#fff;box-shadow:0 20px 60px #0007}
+.counter-modal header h2{margin:0;font-size:20px}
+.counter-modal header p{margin:4px 0 0;color:#5f6f68;font-size:14px}
+.counter-modal-body{display:grid;gap:14px;overflow:auto;padding:4px}
+.counter-bill-page{width:100%;height:auto;box-shadow:0 2px 12px #152b2326}
+.counter-modal footer{display:flex;flex-wrap:wrap;gap:10px;justify-content:flex-end}

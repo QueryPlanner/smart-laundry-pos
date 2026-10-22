@@ -34,6 +34,8 @@ export interface OrderDetailPageProps {
   onTrash(): void;                                         // admin only
   onRequestTrash(reason: string): void;                    // staff: ask an admin to trash it
   onReprintBill(): void; onReprintTags(): void; onOpenPrints(): void;
+  /** Show the bill on screen. */
+  onPreviewBill(): void;
 }
 
 /** "3 pieces", or "5 pieces (3 tagged, 2 without a tag)" when some pieces have no tag. */
@@ -48,7 +50,7 @@ const piecesText = (pieces: CounterPiece[]): string => {
  * One order in full: where it is in processing, what is still owed, the hand-over step, and the rarer actions.
  * Pure view: the parent loads the order and handles every callback.
  */
-export const OrderDetailPage = ({ order, customer, isAdmin, busy, backLabel, onBack, onMoveStage, onHandover, money, packingSlot, onCancel, onTrash, onRequestTrash, onReprintBill, onReprintTags, onOpenPrints }: OrderDetailPageProps) => {
+export const OrderDetailPage = ({ order, customer, isAdmin, busy, backLabel, onBack, onMoveStage, onHandover, money, packingSlot, onCancel, onTrash, onRequestTrash, onReprintBill, onReprintTags, onOpenPrints, onPreviewBill }: OrderDetailPageProps) => {
   const cancelled = order.status === 'cancelled';
   const collected = order.status === 'collected';
   const ready = order.status === 'ready';
@@ -63,6 +65,7 @@ export const OrderDetailPage = ({ order, customer, isAdmin, busy, backLabel, onB
           <div><StatusBadge status={order.status} /></div>
           <p>{piecesText(order.pieces)}</p>
           <div className="counter-detail-actions">
+            <Button variant="outline" className="counter-touch" disabled={busy} onClick={onPreviewBill}>Preview bill</Button>
             <Button variant="outline" className="counter-touch" disabled={busy} onClick={onReprintBill}>Reprint bill</Button>
             <TrashActions isAdmin={isAdmin} busy={busy} onTrash={onTrash} onRequestTrash={onRequestTrash} />
           </div>

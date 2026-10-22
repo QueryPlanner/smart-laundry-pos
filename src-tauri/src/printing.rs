@@ -1630,6 +1630,97 @@ mod windows_adapter {
     }
 }
 
+/// A5 landscape, the paper bills are printed on: 210 mm by 148 mm in points.
+const BILL_PAGE_WIDTH_PT: f32 = 210.0 * 72.0 / 25.4;
+const BILL_PAGE_HEIGHT_PT: f32 = 148.0 * 72.0 / 25.4;
+
+/// A bill laid out for the screen. Positions are in points from the page's top left, exactly as the
+/// printer layout produces them; only the text widths are approximate (see [`ApproxMeter`]).
+#[derive(Debug, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct BillPreview {
+    pub width_pt: f32,
+    pub height_pt: f32,
+    pub pages: Vec<PreviewPage>,
+}
+
+#[derive(Debug, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewPage {
+    pub rules: Vec<PreviewRule>,
+    pub lines: Vec<PreviewLine>,
+}
+
+#[derive(Debug, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewRule {
+    pub x1_pt: f32,
+    pub x2_pt: f32,
+    pub y_pt: f32,
+}
+
+#[derive(Debug, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewLine {
+    pub text: String,
+    pub size_pt: f32,
+    pub bold: bool,
+    pub x_pt: f32,
+    pub y_pt: f32,
+}
+
+/// Text width without a printer: the operating system measures the real font when it prints, so the
+/// preview uses an average sans-serif advance. Wrapping can therefore differ by a word on paper.
+struct ApproxMeter;
+
+impl crate::print_layout::TextMeter for ApproxMeter {
+    fn width_pt(&self, text: &str, size_pt: f32, bold: bool) -> f32 {
+        let advance = if bold { 0.56 } else { 0.52 };
+        text.chars().count() as f32 * size_pt * advance
+    }
+}
+
+/// Lays out a bill the way it will print, for showing on screen. The same checks as printing apply, so
+/// a bill that could not be printed cannot be previewed either.
+pub fn preview_bill(bill: &BillDocument) -> Result<BillPreview, PrintError> {
+    let document = PrintDocument::Bill(bill.clone());
+    validate_document(&document)?;
+    let spec = crate::print_layout::PageSpec {
+        width_pt: BILL_PAGE_WIDTH_PT,
+        height_pt: BILL_PAGE_HEIGHT_PT,
+    };
+    let pages = crate::print_layout::layout_document(&document, spec, &ApproxMeter)?;
+    Ok(BillPreview {
+        width_pt: spec.width_pt,
+        height_pt: spec.height_pt,
+        pages: pages
+            .into_iter()
+            .map(|page| PreviewPage {
+                rules: page
+                    .rules
+                    .into_iter()
+                    .map(|rule| PreviewRule {
+                        x1_pt: rule.x1_pt,
+                        x2_pt: rule.x2_pt,
+                        y_pt: rule.y_pt,
+                    })
+                    .collect(),
+                lines: page
+                    .lines
+                    .into_iter()
+                    .map(|line| PreviewLine {
+                        text: line.text,
+                        size_pt: line.size_pt,
+                        bold: line.bold,
+                        x_pt: line.x_pt,
+                        y_pt: line.y_pt,
+                    })
+                    .collect(),
+            })
+            .collect(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1677,6 +1768,34 @@ mod tests {
             balance_minor: 3500,
             physical_piece_count: 1,
         })
+    }
+
+    #[test]
+    fn a_bill_is_previewed_on_a5_landscape_and_one_that_could_not_print_is_refused() {
+        let PrintDocument::Bill(mut bill) = bill() else {
+            unreachable!("the fixture is a bill");
+        };
+        let preview = preview_bill(&bill).unwrap();
+        assert!((preview.width_pt - 595.28).abs() < 0.1);
+        assert!((preview.height_pt - 419.53).abs() < 0.1);
+        assert!(!preview.pages.is_empty());
+        let text: String = preview.pages[0]
+            .lines
+            .iter()
+            .map(|line| line.text.as_str())
+            .collect::<Vec<_>>()
+            .join("|");
+        assert!(text.contains("SL-103") && text.contains("Kurta"), "{text}");
+        // Wider text takes more room, bold more than regular, as the stand-in measurer promises.
+        let meter = ApproxMeter;
+        assert!(meter.width_pt("abcd", 10.0, false) > meter.width_pt("ab", 10.0, false));
+        assert!(meter.width_pt("abcd", 10.0, true) > meter.width_pt("abcd", 10.0, false));
+
+        bill.discount_minor = 999_999;
+        assert!(matches!(
+            preview_bill(&bill),
+            Err(PrintError::Invalid(message)) if message.contains("discount")
+        ));
     }
 
     #[test]

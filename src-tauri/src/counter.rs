@@ -1907,35 +1907,15 @@ async fn save_order_at(
     // The shop identity is copied into the document now, so a reprint matches this bill.
     let print_settings = crate::shop_settings::load_for_order(&mut tx).await?;
     let header = print_settings.bill_header();
-    let bill = crate::printing::BillDocument {
+    let bill = bill_document(
         header,
-        order_number: order_no.clone(),
-        created_at_ist: ist_time(now),
-        promised_at_ist: ist_time(
-            chrono::DateTime::parse_from_rfc3339(&due)
-                .map_err(|e| e.to_string())?
-                .with_timezone(&Utc),
-        ),
-        customer_name: input.order.customer.name.trim().into(),
-        customer_phone: phone.clone(),
-        items: quote
-            .lines
-            .iter()
-            .map(|x| crate::printing::BillItem {
-                garment: x.garment.clone(),
-                service: x.service.clone(),
-                quantity: x.quantity,
-                unit_price_minor: x.unit_price_minor,
-                line_total_minor: x.line_total_minor,
-            })
-            .collect(),
-        subtotal_minor: quote.subtotal_minor,
-        discount_percent_bp: quote.discount_percent_bp,
-        discount_minor: quote.discount_minor,
-        paid_minor: paid,
-        balance_minor: quote.total_minor - paid,
-        physical_piece_count: quote.piece_count,
-    };
+        &order_no,
+        now,
+        &quote,
+        input.order.customer.name.trim(),
+        &phone,
+        paid,
+    )?;
     let mut documents = vec![("bill", crate::printing::PrintDocument::Bill(bill))];
     if tagged_total > 0 {
         let tags = crate::printing::TagDocument {
@@ -3336,6 +3316,107 @@ pub async fn retry_job(
         .find(|job| job.id == job_id)
         .ok_or("Print job not found.".into())
 }
+/// The bill as it prints: the shop header, the customer, one row per line of the quote, and the money.
+/// Used both for a saved order and for the preview of an order that is still being taken.
+fn bill_document(
+    header: crate::printing::BillHeader,
+    order_number: &str,
+    now: chrono::DateTime<Utc>,
+    quote: &Quote,
+    customer_name: &str,
+    customer_phone: &str,
+    paid_minor: i64,
+) -> Result<crate::printing::BillDocument, String> {
+    Ok(crate::printing::BillDocument {
+        header,
+        order_number: order_number.into(),
+        created_at_ist: ist_time(now),
+        promised_at_ist: ist_time(
+            chrono::DateTime::parse_from_rfc3339(&quote.promised_at)
+                .map_err(|e| e.to_string())?
+                .with_timezone(&Utc),
+        ),
+        customer_name: customer_name.into(),
+        customer_phone: customer_phone.into(),
+        items: quote
+            .lines
+            .iter()
+            .map(|x| crate::printing::BillItem {
+                garment: x.garment.clone(),
+                service: x.service.clone(),
+                quantity: x.quantity,
+                unit_price_minor: x.unit_price_minor,
+                line_total_minor: x.line_total_minor,
+            })
+            .collect(),
+        subtotal_minor: quote.subtotal_minor,
+        discount_percent_bp: quote.discount_percent_bp,
+        discount_minor: quote.discount_minor,
+        paid_minor,
+        balance_minor: quote.total_minor - paid_minor,
+        physical_piece_count: quote.piece_count,
+    })
+}
+
+/// The bill of an order that has not been saved yet, laid out as it would print. Nothing is stored:
+/// the order number is a placeholder and the advance is only shown, never recorded.
+pub async fn preview_draft_bill(
+    db: &DatabaseState,
+    session: &CounterSession,
+    input: &OrderInput,
+    advance_minor: Option<i64>,
+) -> Result<crate::printing::BillPreview, String> {
+    let _ = actor(session)?;
+    let pool = db.writer_pool()?;
+    let now = Utc::now();
+    let quote = quote_at(pool, input, now).await?;
+    let paid = advance_minor.unwrap_or(0);
+    if !(0..=quote.total_minor).contains(&paid) {
+        return Err("The advance cannot be more than the amount to collect.".into());
+    }
+    let phone = normalize_phone(&input.customer.phone)?;
+    let mut tx = pool.begin().await.map_err(db_err)?;
+    let header = crate::shop_settings::load_for_order(&mut tx)
+        .await?
+        .bill_header();
+    tx.rollback().await.map_err(db_err)?;
+    let bill = bill_document(
+        header,
+        "NOT SAVED YET",
+        now,
+        &quote,
+        input.customer.name.trim(),
+        &phone,
+        paid,
+    )?;
+    crate::printing::preview_bill(&bill).map_err(|e| e.to_string())
+}
+
+/// The bill of a saved order as a reprint would print it now: the saved document, with the money
+/// received so far.
+pub async fn preview_order_bill(
+    db: &DatabaseState,
+    session: &CounterSession,
+    order_id: &str,
+) -> Result<crate::printing::BillPreview, String> {
+    let _ = actor(session)?;
+    let p = db.writer_pool()?;
+    let payload: String = sqlx::query_scalar("SELECT payload_json FROM print_jobs WHERE order_id=? AND kind='bill' AND source_job_id IS NULL ORDER BY created_at DESC LIMIT 1")
+        .bind(order_id)
+        .fetch_optional(p)
+        .await
+        .map_err(db_err)?
+        .ok_or("Saved print document not found.")?;
+    let mut document: crate::printing::PrintDocument = serde_json::from_str(&payload)
+        .map_err(|e| format!("Saved print document is invalid: {e}"))?;
+    let crate::printing::PrintDocument::Bill(bill) = &mut document else {
+        return Err("Saved bill document has the wrong format.".into());
+    };
+    let (paid_minor, total_minor) = live_payment_totals(p, order_id).await?;
+    bill.paid_minor = paid_minor;
+    bill.balance_minor = total_minor - paid_minor;
+    crate::printing::preview_bill(bill).map_err(|e| e.to_string())
+}
 /// Money received on an order right now (voided payments excluded) and the order total, in paise.
 /// Each payment is rounded on its own so the total is never a float sum.
 async fn live_payment_totals(p: &SqlitePool, order_id: &str) -> Result<(i64, i64), String> {
@@ -4155,6 +4236,166 @@ mod counter_tests {
                 .unwrap();
                 assert!(rows >= 1, "{action} is audited");
             }
+            cleanup(db, path).await;
+        });
+    }
+
+    /// Every line of text on every page of a preview, in page order.
+    fn preview_text(preview: &crate::printing::BillPreview) -> Vec<String> {
+        preview
+            .pages
+            .iter()
+            .flat_map(|page| page.lines.iter().map(|line| line.text.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn the_bill_of_an_order_being_taken_can_be_previewed_without_saving_anything() {
+        tauri::async_runtime::block_on(async {
+            let path = fixture_path();
+            let db = DatabaseState::open(path.clone()).await;
+            let _admin = admin_fixture(&db).await;
+            let staff = staff_fixture(&db).await;
+            let before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM orders")
+                .fetch_one(db.writer_pool().unwrap())
+                .await
+                .unwrap();
+
+            let preview = preview_draft_bill(&db, &staff, &order_input(2), Some(1000))
+                .await
+                .unwrap();
+            // A5 landscape, one page, with the customer, the placeholder bill number and the advance.
+            assert!(
+                (preview.width_pt - 595.28).abs() < 0.1 && (preview.height_pt - 419.53).abs() < 0.1
+            );
+            assert_eq!(preview.pages.len(), 1);
+            let text = preview_text(&preview).join("\n");
+            assert!(
+                text.contains("Fixture Customer") && text.contains("9990000000"),
+                "{text}"
+            );
+            assert!(text.contains("NOT SAVED YET"), "{text}");
+            assert!(
+                text.contains("Advance paid") && text.contains("\u{20b9}10.00"),
+                "{text}"
+            );
+            assert!(!preview.pages[0].rules.is_empty());
+            let line = &preview.pages[0].lines[0];
+            assert!(line.size_pt > 0.0 && line.x_pt >= 0.0 && line.y_pt >= 0.0);
+
+            // No advance means nothing paid; the advance cannot exceed what is due or be negative.
+            let none = preview_draft_bill(&db, &staff, &order_input(2), None)
+                .await
+                .unwrap();
+            // Exactly as printed: with a balance left, the money line is the advance, here nothing.
+            let none_text = preview_text(&none).join("\n");
+            assert!(
+                none_text.contains("Advance paid") && none_text.contains("\u{20b9}0.00"),
+                "{none_text}"
+            );
+            assert!(
+                preview_draft_bill(&db, &staff, &order_input(1), Some(99_999_999))
+                    .await
+                    .unwrap_err()
+                    .contains("advance cannot be more")
+            );
+            assert!(preview_draft_bill(&db, &staff, &order_input(1), Some(-1))
+                .await
+                .unwrap_err()
+                .contains("advance cannot be more"));
+
+            // The same checks as a real quote: no customer name, no lines, an unknown rate.
+            let mut nameless = order_input(1);
+            nameless.customer.name = " ".into();
+            assert!(preview_draft_bill(&db, &staff, &nameless, None)
+                .await
+                .is_err());
+            let mut empty = order_input(1);
+            empty.items.clear();
+            assert!(preview_draft_bill(&db, &staff, &empty, None).await.is_err());
+
+            // Previewing needs a signed-in user and stores nothing.
+            assert!(
+                preview_draft_bill(&db, &CounterSession::default(), &order_input(1), None)
+                    .await
+                    .is_err()
+            );
+            let after: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM orders")
+                .fetch_one(db.writer_pool().unwrap())
+                .await
+                .unwrap();
+            assert_eq!(before, after);
+            let jobs: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM print_jobs")
+                .fetch_one(db.writer_pool().unwrap())
+                .await
+                .unwrap();
+            assert_eq!(jobs, 0);
+            cleanup(db, path).await;
+        });
+    }
+
+    #[test]
+    fn the_bill_of_a_saved_order_is_previewed_with_the_money_received_so_far() {
+        tauri::async_runtime::block_on(async {
+            let path = fixture_path();
+            let db = DatabaseState::open(path.clone()).await;
+            let _admin = admin_fixture(&db).await;
+            let staff = staff_fixture(&db).await;
+            let saved = save_with_advance(&db, &staff, order_input(2), "preview-1", Some(1000))
+                .await
+                .unwrap();
+
+            let first = preview_order_bill(&db, &staff, &saved.order_id)
+                .await
+                .unwrap();
+            let text = preview_text(&first).join("\n");
+            assert!(text.contains(&saved.order_number), "{text}");
+            assert!(text.contains("Advance paid"), "{text}");
+
+            // After the balance is paid the same preview says Paid, as a reprint would.
+            record_payment(
+                &db,
+                &staff,
+                &saved.order_id,
+                RecordPaymentInput {
+                    amount_minor: saved.total_minor - 1000,
+                    method: "cash".into(),
+                    reference: None,
+                    idempotency_key: "preview-balance".into(),
+                },
+            )
+            .await
+            .unwrap();
+            let settled = preview_order_bill(&db, &staff, &saved.order_id)
+                .await
+                .unwrap();
+            let text = preview_text(&settled).join("\n");
+            assert!(
+                !text.contains("Advance paid") && text.contains("Paid"),
+                "{text}"
+            );
+
+            // An order with no saved bill, a missing order and a signed-out user are all refused.
+            assert!(preview_order_bill(&db, &staff, "missing")
+                .await
+                .unwrap_err()
+                .contains("not found"));
+            assert!(
+                preview_order_bill(&db, &CounterSession::default(), &saved.order_id)
+                    .await
+                    .is_err()
+            );
+            sqlx::query(
+                "UPDATE print_jobs SET payload_json='{broken' WHERE order_id=? AND kind='bill'",
+            )
+            .bind(&saved.order_id)
+            .execute(db.writer_pool().unwrap())
+            .await
+            .unwrap();
+            assert!(preview_order_bill(&db, &staff, &saved.order_id)
+                .await
+                .unwrap_err()
+                .contains("invalid"));
             cleanup(db, path).await;
         });
     }

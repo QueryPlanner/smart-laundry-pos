@@ -6,14 +6,15 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import {
   dispatchPrintJob, dispatchPrintJobs, enumeratePrinters, getCounterBootstrap,
-  getCounterCatalogue, getCounterOrder,
+  getCounterCatalogue, getCounterOrder, previewCounterDraftBill, previewCounterOrderBill,
   listPrintJobs, lockCounter, loginCounter, quoteCounterOrder,
   retryPrintJob, saveCounterOrder, searchCounterCustomers,
   reprintCounterOutput,
   setupCounterAdmin,
   type CounterAccount, type CounterBootstrap, type CounterCatalogue,
-  type CounterPrintJob, type CounterQuote, type CounterSavedOrder, type NativePrinter,
+  type BillPreviewData, type CounterPrintJob, type CounterQuote, type CounterSavedOrder, type NativePrinter,
 } from '@/lib/localFirst/counter';
+import { BillPreview } from './BillPreview';
 import { GarmentGrid } from './GarmentGrid';
 import { OrderSummary } from './OrderSummary';
 import { advanceToSend } from '@/lib/localFirst/payment';
@@ -106,10 +107,13 @@ export const CounterApp = () => {
   const reprintRequestKeys = useRef<Record<string, string>>({});
   const [reprintBusy, setReprintBusy] = useState(false);
   const [selectedReprintPieces, setSelectedReprintPieces] = useState<string[]>([]);
+  /** The bill shown in the preview window, and the saved order it can be printed for (none for an unsaved order). */
+  const [preview, setPreview] = useState<{ title: string; data: BillPreviewData; orderId?: string } | null>(null);
   const [startupWarning, setStartupWarning] = useState('');
   const [restoreStaged, setRestoreStaged] = useState(false);
   const reviewedQuote = useRef<CounterQuote | null>(null);
   const printActionOnce = useSingleFlight();
+  const previewOnce = useSingleFlight();
 
   const refresh = useCallback(async () => {
     const b = await getCounterBootstrap(); setBootstrap(b); setAccount(b.account); setStartupWarning(b.warning || '');
@@ -282,8 +286,27 @@ export const CounterApp = () => {
         : `The ${kind} reprint request may already be saved. Retry this same selection to safely resume: ${problem(e)}`);
     } finally { setReprintBusy(false); }
   });
+  /** Shows the bill of the order being taken, with the advance typed so far. Nothing is saved. */
+  const previewDraft = () => previewOnce(async () => {
+    try {
+      const reviewed = reviewedQuote.current as CounterQuote;
+      const advanceMinor = advanceToSend(advance, reviewed.totalMinor);
+      setPreview({ title: 'Bill preview', data: await previewCounterDraftBill({ customer, items: orderItems }, advanceMinor) });
+    } catch (e) { setError(problem(e)); }
+  });
+  /** Shows the bill of a saved order, as a reprint would print it now. */
+  const previewSaved = (order: CounterSavedOrder) => previewOnce(async () => {
+    try {
+      setPreview({ title: `Bill ${order.orderNumber}`, data: await previewCounterOrderBill(order.orderId), orderId: order.orderId });
+    } catch (e) { setError(problem(e)); }
+  });
+  const printFromPreview = () => {
+    const orderId = (preview as { orderId: string }).orderId;
+    setPreview(null);
+    void reprint(orderId, 'bill');
+  };
   const openPrinterSettings = async () => { try { setPrinters(await enumeratePrinters()); navigate('admin'); } catch (e) { setError(problem(e)); } };
-  const logout = async () => { try { await lockCounter(); } catch (e) { setError(`The counter could not be locked: ${problem(e)}`); return; } clearDraft(); setSaved(null); setJobs([]); orderList.reset(); setSelectedReprintPieces([]); setAccount(null); setCatalogue(null); setPage('order'); setTrail([]); setBootstrap(await getCounterBootstrap()); };
+  const logout = async () => { try { await lockCounter(); } catch (e) { setError(`The counter could not be locked: ${problem(e)}`); return; } clearDraft(); setSaved(null); setPreview(null); setJobs([]); orderList.reset(); setSelectedReprintPieces([]); setAccount(null); setCatalogue(null); setPage('order'); setTrail([]); setBootstrap(await getCounterBootstrap()); };
 
   /** Shows a page and remembers the one being left, so Back can return to it. */
   const navigate = (next: Page) => { setTrail(current => pushTrail(current, page, next)); setPage(next); };
@@ -362,10 +385,10 @@ export const CounterApp = () => {
     {quoteError && <p className="counter-error" role="alert">{quoteError}</p>}
     {restoreWaiting && <RestorePendingBanner />}
     {startupWarning && <p className="counter-error" role="status">{startupWarning}</p>}
-    {page === 'order' && <fieldset className="counter-fieldset" disabled={busy}><div className="counter-layout"><main className="counter-main"><CustomerEntry customer={customer} onChange={setCustomer} search={searchCounterCustomers} /><section className="counter-panel"><GarmentGrid catalogue={catalogue} lines={lines} onAdd={addGarment} onQuantity={setQuantity} /></section></main><aside className="counter-aside"><OrderSummary catalogue={catalogue} lines={lines} quote={quote} quoteFailed={quoteError !== ''} customer={customer} advance={advance} onAdvance={changeAdvance} paymentMethod={paymentMethod} onPaymentMethod={changePaymentMethod} onRemove={(id, sid) => setQuantity(id, 0, sid)} onQuantity={setQuantity} onPrice={setLinePrice} onSave={() => void save()} busy={busy} /></aside></div></fieldset>}
+    {page === 'order' && <fieldset className="counter-fieldset" disabled={busy}><div className="counter-layout"><main className="counter-main"><CustomerEntry customer={customer} onChange={setCustomer} search={searchCounterCustomers} /><section className="counter-panel"><GarmentGrid catalogue={catalogue} lines={lines} onAdd={addGarment} onQuantity={setQuantity} /></section></main><aside className="counter-aside"><OrderSummary catalogue={catalogue} lines={lines} quote={quote} quoteFailed={quoteError !== ''} customer={customer} advance={advance} onAdvance={changeAdvance} paymentMethod={paymentMethod} onPaymentMethod={changePaymentMethod} onRemove={(id, sid) => setQuantity(id, 0, sid)} onQuantity={setQuantity} onPrice={setLinePrice} onSave={() => void save()} onPreview={() => void previewDraft()} busy={busy} /></aside></div></fieldset>}
     {page === 'orders' && admin && <TrashRequestsPanel onError={reportError} onNotice={setNotice} onChanged={orderList.reload} />}
     {page === 'orders' && <OrdersPage query={orderList.query} onQuery={orderList.setQuery} segment={orderList.segment} onSegment={orderList.setSegment} day={orderList.day} today={orderList.today} onDay={orderList.setDay} counts={orderList.counts} results={orderList.results} loading={orderList.loading} hasMore={orderList.hasMore} onLoadMore={orderList.loadMore} onOpen={id => void openOrder(id)} onHandover={id => void openOrder(id, 'handover')} onReprintBill={id => void reprint(id, 'bill')} busy={busy} />}
-    {(page === 'detail' || page === 'handover') && saved && <OrderWorkspace order={saved} view={page} isAdmin={admin} backLabel={origin.label} onBack={() => arrive(origin.page)} onView={navigate} onOrder={replaceOrder} onError={reportError} onNotice={setNotice} onReprintBill={() => void reprint(saved.orderId, 'bill')} onReprintTags={() => void reprint(saved.orderId, 'tags', saved.pieces.filter(piece => piece.tagged).map(piece => piece.shortId))} onOpenPrints={() => { void refreshJobs(saved.orderId); navigate('prints'); }} onFinished={finishHandover} />}
+    {(page === 'detail' || page === 'handover') && saved && <OrderWorkspace order={saved} view={page} isAdmin={admin} backLabel={origin.label} onBack={() => arrive(origin.page)} onView={navigate} onOrder={replaceOrder} onError={reportError} onNotice={setNotice} onReprintBill={() => void reprint(saved.orderId, 'bill')} onPreviewBill={() => void previewSaved(saved)} onReprintTags={() => void reprint(saved.orderId, 'tags', saved.pieces.filter(piece => piece.tagged).map(piece => piece.shortId))} onOpenPrints={() => { void refreshJobs(saved.orderId); navigate('prints'); }} onFinished={finishHandover} />}
     {showing('admin') && <CounterAdmin catalogue={catalogue} onCatalogue={setCatalogue} printers={printers} onReloadPrinters={openPrinterSettings} onError={reportError} onNotice={setNotice} onRestoreStaged={() => setRestoreStaged(true)} />}
     {showing('dashboard') && <DashboardPage {...sectionProps} />}
     {showing('sales') && <SalesPage {...sectionProps} />}
@@ -376,6 +399,7 @@ export const CounterApp = () => {
     {showing('settings') && <ShopSettingsPage {...sectionProps} />}
     {showing('trash') && <TrashPage {...sectionProps} />}
     {page === 'prints' && saved && <PrintProgress onBack={() => navigate('detail')} orderNumber={saved.orderNumber} promisedAt={saved.promisedAt} jobs={savedOrderJobs.length ? savedOrderJobs : saved.printJobs} pieces={saved.pieces} selected={selectedReprintPieces} onSelected={setSelectedReprintPieces} reprintBusy={reprintBusy} onReprintBill={() => void reprint(saved.orderId, 'bill')} onReprintTags={() => void reprint(saved.orderId, 'tags', selectedReprintPieces)} onRetry={doRetry} onResume={resumePendingJob} />}
+    {preview && <BillPreview title={preview.title} preview={preview.data} onClose={() => setPreview(null)} onPrint={preview.orderId ? printFromPreview : undefined} />}
     {page === 'queue' && <PrintQueue jobs={jobs} onRefresh={() => void refreshJobs()} onOpenOrder={orderId => void openOrder(orderId)} onRetry={doRetry} onResume={resumePendingJob} />}
   </div>;
 };

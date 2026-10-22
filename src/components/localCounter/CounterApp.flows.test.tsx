@@ -9,6 +9,7 @@ import type { CounterAccount, CounterCatalogue, CounterOrderInput, CounterOrderS
 const api = vi.hoisted(() => ({
   listCounterTrashRequests: vi.fn(), cancelCounterOrder: vi.fn(), collectCounterOrder: vi.fn(), createCounterStaff: vi.fn(), dispatchPrintJob: vi.fn(), dispatchPrintJobs: vi.fn(), enumeratePrinters: vi.fn(),
   getCounterBootstrap: vi.fn(), getCounterCatalogue: vi.fn(), getCounterOrder: vi.fn(), getCounterOrderQueueCounts: vi.fn(), getOrderPieces: vi.fn(), getPrinterProfiles: vi.fn(),
+  previewCounterDraftBill: vi.fn(), previewCounterOrderBill: vi.fn(),
   listCounterStaff: vi.fn(), listPrintJobs: vi.fn(), lockCounter: vi.fn(), loginCounter: vi.fn(), matchOrderPieces: vi.fn(), quoteCounterOrder: vi.fn(),
   recordCounterPayment: vi.fn(), reprintCounterOutput: vi.fn(), resetCounterStaffPin: vi.fn(), retryPrintJob: vi.fn(), saveCounterOrder: vi.fn(),
   searchCounterCustomers: vi.fn(), searchCounterOrders: vi.fn(), setCounterRate: vi.fn(), setCounterStaffActive: vi.fn(), setPrinterProfiles: vi.fn(),
@@ -199,6 +200,86 @@ describe('first run and sign-in', () => {
     await screen.findByLabelText('Garments');
     expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('');
     expect(screen.getByText('Tap a service on a garment to add it.')).toBeTruthy();
+  });
+});
+
+const previewData = (text: string) => ({ widthPt: 595.28, heightPt: 419.53, pages: [{ rules: [], lines: [{ text, sizePt: 10, bold: false, xPt: 24, yPt: 30 }] }] });
+
+describe('previewing a bill', () => {
+  it('shows the bill of the order being taken, with the advance typed, and stores nothing', async () => {
+    await signIn();
+    await startOrder();
+    fireEvent.change(advanceInput(), { target: { value: '5' } });
+    api.previewCounterDraftBill.mockResolvedValue(previewData('NOT SAVED YET'));
+    fireEvent.click(screen.getByRole('button', { name: 'Preview bill' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Bill preview' });
+    expect(within(dialog).getByText('NOT SAVED YET')).toBeTruthy();
+    expect(api.previewCounterDraftBill).toHaveBeenCalledWith(
+      { customer: { name: 'Rita Joshi', phone: '' }, items: [expect.objectContaining({ quantity: 1 })] },
+      500,
+    );
+    // A new order has nothing to print yet, so only Close is offered.
+    expect(within(dialog).queryByRole('button', { name: 'Print this bill' })).toBeNull();
+    expect(api.saveCounterOrder).not.toHaveBeenCalled();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Close' }));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('Rita Joshi');
+  });
+
+  it('ignores a second tap while the first preview is still loading', async () => {
+    await signIn();
+    await startOrder();
+    let finish!: (value: ReturnType<typeof previewData>) => void;
+    api.previewCounterDraftBill.mockReturnValue(new Promise(resolve => { finish = resolve; }));
+    const button = screen.getByRole('button', { name: 'Preview bill' });
+    fireEvent.click(button);
+    fireEvent.click(button);
+    expect(api.previewCounterDraftBill).toHaveBeenCalledTimes(1);
+    finish(previewData('ONE'));
+    await screen.findByRole('dialog');
+  });
+
+  it('says why the bill could not be shown and carries on', async () => {
+    await signIn();
+    await startOrder();
+    api.previewCounterDraftBill.mockRejectedValue(new Error('Rates changed.'));
+    fireEvent.click(screen.getByRole('button', { name: 'Preview bill' }));
+    expect((await screen.findByRole('alert')).textContent).toBe('Rates changed.');
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  it('shows the saved bill from the order page and prints it again from the window', async () => {
+    await signIn();
+    await openOrdersAndFirstOrder();
+    api.previewCounterOrderBill.mockResolvedValue(previewData('Advance paid'));
+    fireEvent.click(screen.getByRole('button', { name: 'Preview bill' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Bill SL-1' });
+    expect(api.previewCounterOrderBill).toHaveBeenCalledWith('o-1');
+    expect(within(dialog).getByText('Advance paid')).toBeTruthy();
+    api.reprintCounterOutput.mockResolvedValue(job('bill', 'pending'));
+    api.dispatchPrintJob.mockResolvedValue(job('bill', 'submitted'));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Print this bill' }));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    await screen.findByText('Bill SL-1 sent to the printer.');
+    expect(api.reprintCounterOutput).toHaveBeenCalledWith('o-1', 'bill', [], expect.any(String));
+  });
+
+  it('reports a saved bill that cannot be shown', async () => {
+    await signIn();
+    await openOrdersAndFirstOrder();
+    api.previewCounterOrderBill.mockRejectedValue(new Error('Saved print document not found.'));
+    fireEvent.click(screen.getByRole('button', { name: 'Preview bill' }));
+    expect((await screen.findByRole('alert')).textContent).toBe('Saved print document not found.');
+  });
+
+  it('closes the window with Escape and leaves the order as it was', async () => {
+    await signIn();
+    await startOrder();
+    api.previewCounterDraftBill.mockResolvedValue(previewData('x'));
+    fireEvent.click(screen.getByRole('button', { name: 'Preview bill' }));
+    await screen.findByRole('dialog');
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' });
+    expect(screen.queryByRole('dialog')).toBeNull();
   });
 });
 

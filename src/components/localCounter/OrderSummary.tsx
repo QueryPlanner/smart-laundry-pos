@@ -34,6 +34,8 @@ interface OrderSummaryProps {
   /** Change the price of one line for this bill only; `undefined` restores the rate-card price. */
   onPrice: (garmentId: string, serviceId: string, priceMinor: number | undefined) => void;
   onSave: () => void;
+  /** Show the bill on screen before saving. Stores nothing. */
+  onPreview: () => void;
   busy: boolean;
 }
 
@@ -59,7 +61,7 @@ const PriceField = ({ label, chargedMinor, listMinor, onChange }: { label: strin
 };
 
 /** Summary of the order being taken. The customer may pay any advance now, including nothing; the rest is due at pickup. */
-export const OrderSummary = ({ catalogue, lines, quote, quoteFailed, customer, advance, onAdvance, paymentMethod, onPaymentMethod, onRemove, onQuantity, onPrice, onSave, busy }: OrderSummaryProps) => {
+export const OrderSummary = ({ catalogue, lines, quote, quoteFailed, customer, advance, onAdvance, paymentMethod, onPaymentMethod, onRemove, onQuantity, onPrice, onSave, onPreview, busy }: OrderSummaryProps) => {
   const items = Object.entries(lines).filter(([, quantity]) => quantity > 0);
   const hasDiscount = (quote?.discountMinor ?? 0) > 0;
   const nothingToPay = quote !== null && quote.totalMinor === 0;
@@ -79,6 +81,7 @@ export const OrderSummary = ({ catalogue, lines, quote, quoteFailed, customer, a
     return '';
   };
   const blocker = saveBlocker();
+  const cannotSave = busy || !quote || items.length === 0 || !customer.name.trim() || advanceError !== null;
   return (
     <section className="counter-summary counter-panel" aria-label="Order summary">
       <div className="counter-summary-head">
@@ -140,7 +143,8 @@ export const OrderSummary = ({ catalogue, lines, quote, quoteFailed, customer, a
             </div>}
           </>}
       </div>
-      <Button className="counter-save" disabled={busy || !quote || items.length === 0 || !customer.name.trim() || advanceError !== null} onClick={onSave}>{busy ? 'Saving and dispatching…' : 'Save & Print'}</Button>
+      <Button className="counter-save" disabled={cannotSave} onClick={onSave}>{busy ? 'Saving and dispatching…' : 'Save & Print'}</Button>
+      <Button variant="outline" className="counter-touch counter-preview-button" disabled={cannotSave} onClick={onPreview}>Preview bill</Button>
       {blocker && <p className="counter-save-reason">{blocker}</p>}
       <p className="counter-summary-note">Saves the order and independently dispatches the customer bill and garment tags.</p>
     </section>

@@ -125,8 +125,16 @@ describe('OrderDetailPage money and actions', () => {
     expect(props.onOpenPrints).toHaveBeenCalledOnce();
   });
 
-  it('disables the bill reprint while the order is busy', () => {
+  it('previews the bill from a button beside the reprint', () => {
+    const { props } = renderPage();
+    fireEvent.click(screen.getByRole('button', { name: 'Preview bill' }));
+    expect(props.onPreviewBill).toHaveBeenCalledOnce();
+    expect(props.onReprintBill).not.toHaveBeenCalled();
+  });
+
+  it('disables the bill buttons while the order is busy', () => {
     renderPage({ busy: true });
     expect((screen.getByRole('button', { name: 'Reprint bill' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: 'Preview bill' }) as HTMLButtonElement).disabled).toBe(true);
   });
 });

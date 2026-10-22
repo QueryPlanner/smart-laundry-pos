@@ -25,6 +25,7 @@ export interface OrderWorkspaceProps {
   onError(error: unknown): void;
   onNotice(message: string): void;
   onReprintBill(): void;
+  onPreviewBill(): void;
   onReprintTags(): void;
   onOpenPrints(): void;
   /** The hand-over is done and the cashier asked for the next order. */
@@ -39,7 +40,7 @@ const PACKING_STAGES = ['ironing', 'quality_check', 'packing'];
  * live together here. The parent owns navigation and the order itself.
  */
 export const OrderWorkspace = ({
-  order, view, isAdmin, backLabel, onBack, onView, onOrder, onError, onNotice, onReprintBill, onReprintTags, onOpenPrints, onFinished,
+  order, view, isAdmin, backLabel, onBack, onView, onOrder, onError, onNotice, onReprintBill, onPreviewBill, onReprintTags, onOpenPrints, onFinished,
 }: OrderWorkspaceProps) => {
   const [busy, setBusy] = useState(false);
   const running = useRef(false);
@@ -132,7 +133,7 @@ export const OrderWorkspace = ({
       onCancel={reason => void cancel(reason)}
       onTrash={() => void trash()}
       onRequestTrash={reason => void requestTrash(reason)}
-      onReprintBill={onReprintBill} onReprintTags={onReprintTags} onOpenPrints={onOpenPrints}
+      onReprintBill={onReprintBill} onPreviewBill={onPreviewBill} onReprintTags={onReprintTags} onOpenPrints={onOpenPrints}
     />
   );
 };

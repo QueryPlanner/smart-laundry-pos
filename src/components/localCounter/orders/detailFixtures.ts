@@ -27,5 +27,5 @@ export const detailMoneyForm = (over: Partial<MoneyForm> = {}): MoneyForm => ({
 export const detailProps = (over: Partial<OrderDetailPageProps> = {}): OrderDetailPageProps => ({
   order: detailOrder(), customer: { name: 'Rita Mehta', phone: '9876543210' }, isAdmin: true, busy: false,
   backLabel: 'Orders', onBack: vi.fn(), onMoveStage: vi.fn(), onHandover: vi.fn(), money: detailMoneyForm(),
-  packingSlot: null, onCancel: vi.fn(), onTrash: vi.fn(), onRequestTrash: vi.fn(), onReprintBill: vi.fn(), onReprintTags: vi.fn(), onOpenPrints: vi.fn(), ...over,
+  packingSlot: null, onCancel: vi.fn(), onTrash: vi.fn(), onRequestTrash: vi.fn(), onReprintBill: vi.fn(), onPreviewBill: vi.fn(), onReprintTags: vi.fn(), onOpenPrints: vi.fn(), ...over,
 });

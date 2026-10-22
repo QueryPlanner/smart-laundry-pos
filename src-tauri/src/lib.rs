@@ -121,6 +121,8 @@ where
             counter_dismiss_trash_request,
             counter_list_trashed_orders,
             counter_restore_order,
+            counter_preview_draft_bill,
+            counter_preview_order_bill,
             counter_backup_settings,
             counter_set_backup_mirror,
             counter_backup_now,
@@ -382,6 +384,23 @@ async fn counter_restore_order(
     order_id: String,
 ) -> Result<(), String> {
     counter::restore_order(&state, &session, &order_id).await
+}
+#[tauri::command]
+async fn counter_preview_draft_bill(
+    state: State<'_, DatabaseState>,
+    session: State<'_, CounterSession>,
+    input: counter::OrderInput,
+    advance_minor: Option<i64>,
+) -> Result<printing::BillPreview, String> {
+    counter::preview_draft_bill(&state, &session, &input, advance_minor).await
+}
+#[tauri::command]
+async fn counter_preview_order_bill(
+    state: State<'_, DatabaseState>,
+    session: State<'_, CounterSession>,
+    order_id: String,
+) -> Result<printing::BillPreview, String> {
+    counter::preview_order_bill(&state, &session, &order_id).await
 }
 #[tauri::command]
 async fn counter_backup_settings(

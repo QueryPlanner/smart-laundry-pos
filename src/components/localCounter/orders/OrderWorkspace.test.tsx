@@ -16,7 +16,7 @@ type Props = ComponentProps<typeof OrderWorkspace>;
 const props = (over: Partial<Props> = {}): Props => ({
   order: owingOrder({ status: 'received' }), view: 'detail', isAdmin: true, backLabel: 'Dashboard',
   onBack: vi.fn(), onView: vi.fn(), onOrder: vi.fn(), onError: vi.fn(), onNotice: vi.fn(),
-  onReprintBill: vi.fn(), onReprintTags: vi.fn(), onOpenPrints: vi.fn(), onFinished: vi.fn(), ...over,
+  onReprintBill: vi.fn(), onPreviewBill: vi.fn(), onReprintTags: vi.fn(), onOpenPrints: vi.fn(), onFinished: vi.fn(), ...over,
 });
 const button = (name: string | RegExp) => screen.getByRole('button', { name }) as HTMLButtonElement;
 const settled = (over: Partial<CounterSavedOrder>): CounterSavedOrder => owingOrder(over);
