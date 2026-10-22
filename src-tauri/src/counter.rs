@@ -604,7 +604,7 @@ pub async fn catalogue(db: &DatabaseState, session: &CounterSession) -> Result<C
     let _ = actor(session)?;
     let p = db.writer_pool()?;
     let g=sqlx::query("SELECT id,garment_key AS key,name_en AS nameEn,name_mr AS nameMr,category,image_key AS imageKey,billing_unit AS billingUnit,active FROM garments ORDER BY sort_order").fetch_all(p).await.map_err(db_err)?;
-    let sv=sqlx::query("SELECT id,service_key AS key,name,active FROM service_methods ORDER BY CASE service_key WHEN 'iron' THEN 1 WHEN 'wash' THEN 2 WHEN 'dry_clean' THEN 3 ELSE 4 END").fetch_all(p).await.map_err(db_err)?;
+    let sv=sqlx::query("SELECT id,service_key AS key,name,active FROM service_methods ORDER BY CASE service_key WHEN 'iron' THEN 1 WHEN 'wash_only' THEN 2 WHEN 'wash' THEN 3 WHEN 'dry_clean' THEN 4 ELSE 5 END").fetch_all(p).await.map_err(db_err)?;
     let r=sqlx::query("SELECT garment_id AS garmentId,service_id AS serviceId,price_minor AS priceMinor,configured,available,version FROM garment_service_rates ORDER BY garment_id,service_id").fetch_all(p).await.map_err(db_err)?;
     Ok(Catalogue {
         garments: g.iter().map(row_value).collect(),
@@ -3785,7 +3785,7 @@ mod counter_tests {
                 ("g-heavy-saree", "svc-dry-clean", 28000),
                 ("g-coat", "svc-iron", 5000),
                 ("g-lehenga-heavy", "svc-dry-clean", 70000),
-                ("g-footmat-large", "svc-wash", 10000),
+                ("g-footmat-large", "svc-wash-only", 10000),
                 ("g-dhoti", "svc-dry-clean", 12000),
             ] {
                 let mut item = order_input(1);
@@ -3807,7 +3807,9 @@ mod counter_tests {
                     .unwrap_err()
                     .contains("unavailable"));
             }
-            for service in ["svc-iron", "svc-wash-iron", "svc-dry-clean"] {
+            // Shoes are washed only: not pressed, starched or dry cleaned, and "Wash + Press" is not
+            // offered for them either.
+            for service in ["svc-iron", "svc-wash-iron", "svc-dry-clean", "svc-wash"] {
                 let mut shoes = order_input(1);
                 shoes.items[0].garment_id = "g-shoes".into();
                 shoes.items[0].service_id = service.into();
@@ -3818,7 +3820,7 @@ mod counter_tests {
             }
             let mut shoes = order_input(1);
             shoes.items[0].garment_id = "g-shoes".into();
-            shoes.items[0].service_id = "svc-wash".into();
+            shoes.items[0].service_id = "svc-wash-only".into();
             assert_eq!(quote(&db, &admin, &shoes).await.unwrap().total_minor, 15000);
             let cat = catalogue(&db, &admin).await.unwrap();
             let names: Vec<_> = cat
@@ -3826,7 +3828,10 @@ mod counter_tests {
                 .iter()
                 .map(|s| s["name"].as_str().unwrap().to_string())
                 .collect();
-            assert_eq!(names, ["Iron", "Wash", "Dry Clean", "Starch"]);
+            assert_eq!(
+                names,
+                ["Iron", "Wash only", "Wash + Press", "Dry Clean", "Starch"]
+            );
             cleanup(db, path).await;
         });
     }
@@ -5119,7 +5124,7 @@ mod counter_tests {
             let mut order = order_input(2);
             order.items.push(LineInput {
                 garment_id: "g-shoes".into(),
-                service_id: "svc-wash".into(),
+                service_id: "svc-wash-only".into(),
                 quantity: 3,
                 unit_price_override_minor: None,
             });

@@ -36,21 +36,29 @@ describe('GarmentGrid', () => {
     expect(card('Shirt').queryByText('Dry Clean')).toBeNull();
   });
 
-  it('shows a pair price for shoes and cannot sell shoes ironed or starched, whatever the rate says', () => {
+  it('shows a pair price for shoes and never offers shoes ironed or starched, whatever the rate says', () => {
     setup();
     expect(card('Shoes').getByRole('button', { name: 'Add Shoes Wash' }).textContent).toBe('Wash₹150/pair');
     for (const service of ['Iron', 'Starch']) {
-      const button = card('Shoes').getByRole('button', { name: `Add Shoes ${service}` }) as HTMLButtonElement;
-      expect(button.disabled).toBe(true);
-      expect(button.textContent).toBe(`${service}—`);
+      expect(card('Shoes').queryByRole('button', { name: `Add Shoes ${service}` })).toBeNull();
     }
+    expect(card('Shoes').getAllByRole('button')).toHaveLength(1);
   });
 
-  it('marks a service that has no price as unavailable', () => {
+  it('shows only the services a garment has a price for, leaving out the rest instead of greying them', () => {
     setup();
-    const blankIron = card('Blank').getByRole('button', { name: 'Add Blank Iron' }) as HTMLButtonElement;
-    expect(blankIron.disabled).toBe(true);
-    expect(blankIron.textContent).toBe('Iron—');
+    expect(card('Blank').getAllByRole('button').map(button => button.textContent)).toEqual(['Wash₹5']);
+    expect(card('Blank').queryByRole('button', { name: 'Add Blank Iron' })).toBeNull();
+    expect(card('Blank').queryByText('—')).toBeNull();
+    expect(card('Blank').queryByText('No price set')).toBeNull();
+  });
+
+  it('names the two ways to wash side by side when a garment has both', () => {
+    const services = [
+      { id: 'only', key: 'wash_only' as const, name: 'Wash only', active: true }, { id: 'press', key: 'wash' as const, name: 'Wash + Press', active: true },
+    ];
+    setup({}, { services, rates: [rate('shirt', 'only', 2000), rate('shirt', 'press', 3000)] });
+    expect(card('Shirt').getAllByRole('button').map(button => button.textContent)).toEqual(['Wash only₹20', 'Wash + Press₹30']);
   });
 
   it('adds one piece of that garment under the tapped service', () => {
@@ -78,9 +86,11 @@ describe('GarmentGrid', () => {
     expect(document.querySelector('.counter-garment-fallback')?.textContent).toBe('S');
   });
 
-  it('dims a garment that cannot be sold under any service', () => {
+  it('dims a garment that cannot be sold under any service, and says why', () => {
     setup({}, { rates: catalogue.rates.filter(r => r.garmentId !== 'blank') });
     expect(screen.getByRole('group', { name: 'Blank services' }).closest('article')?.className).toContain('unavailable');
+    expect(card('Blank').getByText('No price set')).toBeTruthy();
+    expect(card('Blank').queryAllByRole('button')).toHaveLength(0);
     expect(screen.getByRole('group', { name: 'Shirt services' }).closest('article')?.className).not.toContain('unavailable');
   });
 

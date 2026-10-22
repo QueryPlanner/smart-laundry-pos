@@ -6,7 +6,7 @@ Download the latest Windows, macOS or Linux installer at **https://laundry.lordp
 
 ## What it does
 
-- **New order:** every garment is on screen at once; each card has Iron, Wash, Dry Clean and Starch buttons with their prices. Any user can change one line's price for one bill.
+- **New order:** every garment is on screen at once; each card has buttons for the services it is priced for (Iron, Wash only, Wash + Press, Dry Clean, Starch) with their prices. Any user can change one line's price for one bill.
 - **Orders / Pickup, Print queue:** hand-over checks, advance and balance payments, bill and tag reprints, cancel (admin) and trash (staff mark, admin approves).
 - **Dashboard, Sales, Customers, Expenses, Inventory, Machines.**
 - **Admin and Shop settings** (admins only): rate card, discounts, staff accounts, printers, backups.

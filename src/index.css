@@ -835,3 +835,6 @@ All colors MUST be HSL.
 .counter-modal-body{display:grid;gap:14px;overflow:auto;padding:4px}
 .counter-bill-page{width:100%;height:auto;box-shadow:0 2px 12px #152b2326}
 .counter-modal footer{display:flex;flex-wrap:wrap;gap:10px;justify-content:flex-end}
+
+/* A garment with no price for any service. */
+.counter-garment-none{margin:0;padding:12px 8px;color:#8a5a47;font-size:14px;text-align:center}

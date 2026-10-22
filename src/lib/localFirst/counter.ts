@@ -7,8 +7,11 @@ const call = <T>(command: string, args?: Record<string, unknown>): Promise<T> =>
 };
 
 export type CounterRole = 'admin' | 'staff';
-/** `wash_iron` is the "Starch" service since schema v6 (its key could not be changed). */
-export type CounterServiceKey = 'wash' | 'iron' | 'wash_iron' | 'dry_clean';
+/**
+ * `wash_iron` is the "Starch" service since schema v6, and `wash` is shown as "Wash + Press" since v8 (their
+ * keys could not be changed). `wash_only` is "Wash only".
+ */
+export type CounterServiceKey = 'wash' | 'iron' | 'wash_iron' | 'dry_clean' | 'wash_only';
 export type CounterJobKind = 'bill' | 'tags';
 export type CounterJobState = 'pending' | 'submitting' | 'submitted' | 'failed' | 'uncertain';
 export type CounterPaymentMethod = 'cash' | 'upi' | 'card' | 'bank_transfer' | 'other';
