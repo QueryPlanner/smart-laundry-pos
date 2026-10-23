@@ -439,6 +439,7 @@ fn seed_demo_month() {
                         customer_id: None,
                     },
                     items,
+                    manual_discount_minor: None,
                 };
                 let session = &staff_sessions[(order_key % 2) as usize];
                 let reviewed = quote(&db, session, &order).await.unwrap();

@@ -28,15 +28,15 @@ Never cancel builds; allow at least 60 s for `npm ci`. The desktop app has never
 - `src/lib/localFirst/` typed wrappers for the native `counter_*` commands and business helpers
 - `src/components/ui/` shadcn components that the screens use
 - `src-tauri/src/` Rust: `counter.rs` (accounts, rate card, quote/save order, payments, trash), `storage.rs` (SQLite, migrations, schema contract), `printing.rs`/`print_layout.rs` (bill and tags), `insights/`, `office.rs`
-- `src-tauri/migrations/` numbered SQL migrations (001 to 007). Frozen once released; add a new file and a `MIGRATION_STEPS` entry in `storage.rs`. A schema change also needs a `REQUIRED_TABLES_V*` entry; data-only migrations share the previous schema contract.
+- `src-tauri/migrations/` numbered SQL migrations (001 to 009). Frozen once released; add a new file and a `MIGRATION_STEPS` entry in `storage.rs`. A schema change also needs a `REQUIRED_TABLES_V*` entry; data-only migrations share the previous schema contract.
 - `landing/` + `vercel.json`: Vercel publishes only `landing/`
 
 ## Rules of the road
 
 - The UI reaches the database only through role-checked native `counter_*` commands. A new command must check the session role inside the command (admin writes use `require_admin_in_tx`), be registered in `src-tauri/src/lib.rs`, and have a TypeScript wrapper (`src/lib/localFirst/commands.guard.test.ts` fails otherwise).
 - Money is whole paise (integers). Prices come from the rate card; a line may carry a one-bill override (`unitPriceOverrideMinor`), audited as `order_price_changed`.
-- Services: Iron, Wash, Dry Clean, Starch. Starch is the service row with key `wash_iron` (the schema CHECK allows no new key). Wash includes ironing.
-- Every seeded garment needs a picture `public/garments/<image_key>-transparent.png` (a guard test checks it).
+- Services: Iron, Wash only, Wash + Press, Dry Clean, Starch. Wash + Press is the service row with key `wash` (renamed in v8; its prices include pressing), Wash only is `wash_only` (added in v8) and Starch is still the row with key `wash_iron`. An admin can add services (key `custom_<id>`, migration 009 widened the key CHECK and added `sort_order`) and remove them (`active = 0`, kept on past bills). A garment shows on the counter only the services it has a price for; the New order screen has one section per sellable service.
+- Every seeded garment needs a picture `public/garments/<image_key>-transparent.png` (a guard test checks it). Every bundled picture must be listed in `src/lib/localFirst/garmentPictures.ts`, the list an admin picks from when adding a garment.
 - Bills print on paper the shop chooses (A5 is used); the fixed Marathi terms are in `BILL_TERMS` (`print_layout.rs`), mirrored in `src/lib/localFirst/billTerms.ts`.
 - Keep 100% JavaScript coverage on the gated files; new code needs meaningful tests.
 - Releases: bump the version in `package.json`, `package-lock.json`, `src-tauri/Cargo.toml`, `src-tauri/Cargo.lock`, `src-tauri/tauri.conf.json` (never change the identifier `com.smartlaundry.pos`), build the installers, attach the exe, dmg and deb with SHA-256 to a GitHub release, upload to the R2 bucket `smart-laundry-pos-releases` (`latest/` and `releases/<version>/`) and update the version text in `landing/index.html`.

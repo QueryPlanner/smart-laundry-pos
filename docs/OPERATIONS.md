@@ -31,21 +31,20 @@ There is one screen layout for everyone. The menu under the title bar has four g
 
 | | Staff | Admin |
 | --- | --- | --- |
-| Take orders, record payments, move an order through processing, pack, hand over, reprint bills and tags | Yes | Yes |
+| Take orders, take payments, hand garments over (all at once or in parts), reprint bills and tags | Yes | Yes |
 | See Dashboard and Sales (the same figures for both) | Yes | Yes |
 | Add or edit customers, record expenses, add inventory items and adjust stock, add machines and record services | Yes | Yes |
 | Set prices (Rate card) and discounts | No | Yes |
 | Change one price on one bill (Current order > ₹ each) | Yes | Yes |
-| Mark a bill for the trash (More actions > Mark for trash, with a reason) | Yes | Yes |
+| Mark a bill for the trash (**Mark for trash** on the order or in the list, with a reason) | Yes | Yes |
 | Move a bill to the trash, or keep it, from the Orders / Pickup list (Trash requests) | No | Yes |
 | Create staff accounts, deactivate them, reset PINs | No | Yes |
 | Choose printers | No | Yes |
-| Back up now, set the USB folder, restore a backup | No | Yes |
+| Back up now, set the USB folder, restore a backup, clear all orders | No | Yes |
 | Change shop name, address, phone, bill footer and tag settings | No | Yes |
-| Cancel an order | No | Yes |
 | **Delete** a customer, expense, inventory item or machine | No | Yes |
 
-The program enforces this itself; hiding a menu item is only a convenience. Every delete asks for a reason (3 to 200 characters) and is recorded with the old values. Orders are never deleted, so bill numbers and records stay traceable: to remove an order, the admin cancels it.
+The program enforces this itself; hiding a menu item is only a convenience. Every delete asks for a reason (3 to 200 characters) and is recorded with the old values. Orders are never deleted one by one, so bill numbers and records stay traceable: to remove an order, the admin moves it to the trash.
 
 ## Staff accounts
 
@@ -53,11 +52,15 @@ Admin > Staff. Type a name and a first PIN, press **Create staff**. Each person 
 
 ## Prices (Rate card)
 
-Admin > Rate card lists every garment with each of the four services: Iron, Wash, Dry Clean and Starch. Type the price in rupees in the Rate box and press **Save** on that row. When you type a first price for a combination that has none, **Available** is ticked for you; untick it if you do not want to sell it yet. Untick Available to stop selling a combination. A garment and service with no price cannot be sold. A rate cannot be more than Rs 10,000. A new price applies to orders taken after you save it; saved orders keep their old price. Shoes are priced per pair and can only be washed, so the other services stay switched off for shoes. Each price change is recorded with the old and new price.
+Admin > Rate card lists every garment with each service. There are five to start with: Iron, Wash only, Wash + Press, Dry Clean and Starch. **Wash only has no prices until you set them**: type a price for each garment you wash without pressing. Type the price in rupees in the Rate box and press **Save** on that row. When you type a first price for a combination that has none, **Available** is ticked for you; untick it if you do not want to sell it yet. Untick Available to stop selling a combination. A garment and service with no price cannot be sold. A rate cannot be more than Rs 10,000. A new price applies to orders taken after you save it; saved orders keep their old price. Shoes are priced per pair and can only be washed, so the other services stay switched off for shoes. Each price change is recorded with the old and new price.
+
+**Services** (the sections of the New order screen) are listed at the top of the Rate card. **Add service** adds one, for example "Steam press"; it shows on the counter once you give it a price on at least one garment. **Remove** takes a service off the counter: bills already saved keep it, and **Bring back** (or adding the same name again) returns it with its old prices. One service must always stay.
+
+**New garment** adds a garment that is not in the list. Choose a **picture** for it from the pictures shown (shirts, sarees, churidar suits, sherwanis, uniforms, bedsheets, quilts, towels and more), or **No picture** to show its first letter. Then give it a price on each service it is sold with.
 
 ## Discounts
 
-Admin > Discounts. Staff cannot change or type in a discount. The program applies it automatically.
+Admin > Discounts sets the standing discounts, which the program applies automatically. Staff cannot change those. **Any signed-in person can also give a discount on one bill:** on the New order screen press **Give a discount**, type the rupees off (or tap 5%, 10% or 20%). It is taken off on top of any standing discount, can never be more than the customer owes, shows on the bill as "Discount" and is recorded with the name of the person who gave it (audit entry `order_manual_discount`).
 
 - **All customers:** one percentage for every order, with an optional label. Use the Active box to switch it on or off. A percentage above 50% needs an extra tick, to guard against typing 100 instead of 10.
 - **Specific customer:** a percentage for one customer. Search for them by mobile number (they must already have had an order saved), enter the percentage and press **Save customer discount**. A customer's own percentage replaces the shop-wide one, so enter 0 to stop one customer getting the shop discount. **Turn off** in the list removes it and that customer goes back to the shop-wide rule.
@@ -70,16 +73,15 @@ Install the Canon and TSC drivers as described in [PRINTING_WINDOWS.md](PRINTING
 
 ## Dashboard
 
-Insights > **Dashboard** is for a quick look at the day. It shows today's figures (orders and pieces, billed, **advance collected**, **balance received**, collected, **to collect** (the money still owed on open orders), orders ready to collect, orders in process, low-stock items), this month's figures (orders, billed, advance collected, balance received, collected, expenses and profit), a graph of the last 14 days (bars for what was billed, two lines for the advance and the balance collected), a list of orders that have been ready for pickup for more than 2 days, a list of orders in process (soonest promise first, overdue ones marked), and the most recent orders. Click a bill number to open that order in Orders / Pickup. Press **Refresh** to reload. Older orders that were saved without individual pieces are not shown in the two attention lists. **Profit** is money collected minus expenses (a cash figure, not an accounting profit).
+Insights > **Dashboard** is for a quick look at the day. It shows today's figures (orders and pieces, billed, collected, **to collect** (the money still owed on orders) and low-stock items), this month's figures (orders, billed, collected, expenses and profit), a graph of the last 14 days (bars for what was billed, a line for the money collected) and the most recent orders. Click a bill number to open that order in Orders / Pickup. Press **Refresh** to reload. **Profit** is money collected minus expenses (a cash figure, not an accounting profit).
 
 ## Sales
 
-Insights > **Sales** answers "how much did we do between these times". Choose a period (Today, Yesterday, Last 7 days, This month, or Custom with date and time boxes) and optionally filter by payment method, order status, staff member, or search by bill number, customer name or phone. All times are shop time (IST). A custom period includes its start and stops just before its end.
+Insights > **Sales** answers "how much did we do between these times". Choose a period (Today, Yesterday, Last 7 days, This month, or Custom with date and time boxes) and optionally filter by payment method or staff member, show only discounted orders, or search by bill number, customer name or phone. All times are shop time (IST). A custom period includes its start and stops just before its end.
 
-It shows summary cards (orders, before discount, discounts, billed, collected, refunded, net collected, cancelled, expenses, profit), a graph (the program picks hours, days or months from the period; you can switch), and two tables: **Orders** and **Transactions** (payments and refunds, who took them and why money went back). Rules to know:
+It shows six cards (orders, billed, discounts, collected, expenses, profit), a graph (the program picks hours, days or months from the period; you can switch), breakdowns by payment method, staff and service, and two tables: **Orders** (with Not collected, Collected or Cancelled) and **Transactions** (every payment). Rules to know:
 
-- **Billed** leaves out cancelled orders unless the filter says to include them. A cancelled order is counted as cancelled in the period it was cancelled.
-- **Collected** is the payments taken in the period. A payment that is cancelled later is shown as **Refunded** in the period when it was cancelled; earlier periods are never rewritten. **Net collected** is collected minus refunded.
+- **Billed** counts orders created in the period. **Collected** counts payments taken in the period, whenever the order was made.
 - **Expenses** are counted by the date of the expense, not the time. **Profit** is not shown while filters are on.
 - The **Staff** filter means: orders created by that person, and money taken by that person.
 
@@ -106,10 +108,12 @@ Admin group > **Shop settings** (admin only). Set the laundry name, address, pho
 ## Taking an order
 
 1. Open **New order**. Type the customer's **mobile number** and **name**. The mobile number is required; the program accepts it with spaces, dashes or +91 and stores 10 digits. If the customer has been before, tap their name in the list that appears.
-2. Every garment is shown at once. Along the bottom of each garment card are its services (Iron, Wash, Dry Clean, Starch) with the price of each; a service that garment does not offer is greyed out with a dash. Wash includes ironing. Under **Current order**, every line has a **₹ each** box: anyone, staff or admin, can type a different price for that bill only (for example a discount or a heavy item). The rate card does not change, the bill shows the new price, and the change is recorded with the old and new price. Type the rate-card price, or remove the line, to go back to the normal price.
+2. Every garment is shown at once. A row of **Section** buttons above them (All, Iron, Wash only, Wash + Press, Dry Clean, Starch and any services the owner added) narrows the screen to one service: only the garments priced for it, each with one button. Each section button shows how many pieces have been added in it. On **All**, along the bottom of each garment card are the services it is sold under (Iron, Wash only, Wash + Press, Dry Clean, Starch) with the price of each; a service with no price for that garment is not shown; a service that garment does not offer is greyed out with a dash. Wash includes ironing. Under **Current order**, every line shows `quantity × price = amount`, and **Change price** under it opens a box where anyone, staff or admin, can type a different price for that bill only (for example a discount or a heavy item). The rate card does not change, the bill shows the new price, and the change is recorded with the old and new price. Type the rate-card price, or remove the line, to go back to the normal price.
 3. Tap a service button on a garment card to add one piece with that service; tap again for more. A green count badge shows how many are added, and a **−** button appears on that service to take one off. The same garment can have several services on one bill. In **Current order** you can also type a quantity. A line can hold 1 to 200, an order can have 100 lines and 500 pieces, and an order total must stay under Rs 10,00,000. The bin icon removes a whole line.
-4. Check the summary on the right: the lines, the number of pieces, **Ready by** (received date plus two days, 5:00 PM, always), and the **Amount to collect**. Until a price is worked out the amounts show a dash, not 0. Under the Save button, a short note says what is still missing.
-5. Take the **advance**, if any. Type the amount under **Advance received now**, or tap **Nothing now**, **Half** or **Full**. Choose how it was paid (cash, UPI, card, bank transfer or other) when an amount is entered. The screen shows what is left to pay at pickup. Press **Save & Print**. The advance can be anything from nothing to the whole amount; the rest is taken when the clothes are collected. The screen is locked while it saves.
+4. Check the summary on the right: the lines, the number of pieces and the **Total**. Until a price is worked out the amounts show a dash, not 0. Under the Save button, a short note says what is still missing.
+5. Press **Save & Print**. Nothing is paid now: the customer pays when collecting. The screen is locked while it saves.
+
+The order being taken stays as it is while you look at another page, go Back, or Lock the counter; the **New order** button shows "in progress" meanwhile. It is cleared when it is saved, or with **Clear order** (which asks first). Closing the program loses it.
 
 If rates or a discount changed while the order was open, the program refuses to save and shows the new total. Check it and press Save again. The program saves the order and then prints the bill on the Canon and one tag for each piece on the TSC. A garment ordered as Iron only gets no tag, and if every garment is Iron only no tags print at all. A pair of shoes is one piece and gets one tag. Each tag shows the customer's name and phone number, the bill number, the garment, the service and the piece number. Stick or tie each tag to its garment.
 
@@ -117,22 +121,23 @@ Bill numbers look like `202610170001`: the date (year, month, day, shop time) fo
 
 If the program shows "Order save did not complete", nothing is saved twice; press Save again. If it says the order may already be saved, open Orders / Pickup and look for the bill before saving again. If it says the order is saved but printing failed, go to **Print queue**.
 
-## Packing, ready and pickup
+## Orders and pickup
 
-Open **Orders / Pickup**. It opens on the orders that are **Ready**, with a count on each filter: **Ready**, **Balance due**, **Overdue**, **In process**, **Today** and **All**. The **To collect** figure at the top is the money still owed on open orders. To find an order, type in the search box: a bill number, the last 2 to 4 digits of today's bill, a mobile number, a customer's name or a tag ID. Each order has one main button that does what it needs next: **Receive ₹X & hand over**, **Hand over**, **Open** or **View**.
+Open **Orders / Pickup**. It lists orders newest first under a heading for each day, with three tabs: **Not collected** (the default), **Collected** and **All**, each with its count. Every row shows the bill number, what is on the bill (for example "3 Shirt · Iron, 2 Saree · Dry Clean"), whether it is Not collected, Part collected or Collected, the total and anything still due. Tap the row to open the order, **Preview** to see the bill, or **Move to trash** / **Mark for trash**. Tap the customer's name to see all of that customer's bills. To find an order, type in the search box: a bill number, the last 2 to 4 digits of today's bill, a mobile number, a customer's name or a tag ID; Enter opens the order when there is only one match.
 
-- On an order's page, **Back** returns to wherever you opened it from (Orders, Dashboard, Sales, Customers or the Print queue).
-- The stage bar moves an order forward through Received, Washing, Drying, Ironing, Quality check and Packing to **Ready for pickup**: use **Move to ...** for the next stage or **Mark ready now**. It cannot go backwards, and skipping stages asks you to confirm.
-- The **money** panel shows the balance due and every payment (advance or balance). Choose how it was paid and press **Receive ₹X**. Tick **Part payment** to take less than the whole balance.
-- The **Packing check** appears while an order is being ironed or packed. Tick each piece, then **Save check & mark Ready**. A garment with no tag (Iron only) is checked by count.
-- **Hand over to customer** opens the hand-over screen, which has its own **Back** button. Tick every garment with the customer (type a tag ID and press Enter, or tap), take any balance, and press the one button at the bottom: **Receive ₹X**, **Receive ₹X & hand over** or **Hand over order**. It says exactly what is still missing. Taking the balance and handing over happen together, so one cannot happen without the other. Once collected, an order cannot be collected again.
-- **More actions** has Reprint bill, Reprint tags, Print status and (administrator only) Cancel order.
+On an order's page:
+
+- **Back** returns to wherever you opened it from (Orders, Dashboard, Sales, Customers or the Print queue).
+- Each line of the bill has a tick box. The lines still at the shop start ticked; untick what the customer is not taking today. **Amount received now** fills in what the ticked lines cost (any discount is shared out over the lines); change it to whatever the customer pays, choose Cash, UPI, Card or Other, and press the one button, for example **Receive ₹30.00 and hand over 3 pieces**. It can also just take money (untick everything) or just hand over (amount 0).
+- Any part can go unpaid. The last items need the whole bill paid first; the button says how much is missing.
+- Each line then says **Taken**, **2 of 3 taken** or **At the shop**, and the order shows **Part collected** until everything has gone, then **Collected** with the date.
+- **Preview bill**, **Reprint bill**, **Reprint tags** (every tag of the order) and **Print status** (each print job, retries, and reprinting single tags) are at the top.
 
 ## If something was entered wrongly
 
-Saved orders cannot be edited. The administrator can **cancel** an order that has not been collected: open the order, press **Cancel order**, write a reason of 3 to 200 characters, and press **Confirm cancel order**. This voids every payment on the order and cannot be undone. The program then reminds you to hand back any money received; it does not record the refund in a till, only the amount, the reason and who did it. Take the order again correctly as a new order. A cancelled order cannot be collected or have payments added. Its failed print jobs can still be retried in the Print queue, so do not retry them.
+Saved orders cannot be edited. Take the order again correctly, and move the wrong one to the trash (see "Bills added by mistake" below).
 
-For a wrong tag, use **Reprint selected tags** on the Print progress screen. For a lost or wrong bill, use **Reprint customer bill**. Reprints are available to staff.
+For a lost tag, use **Reprint tags** on the order, or pick single tags on its **Print status** screen. For a lost or wrong bill, use **Reprint bill**. Reprints are available to staff.
 
 ## Printing problems
 
@@ -165,6 +170,8 @@ The program saves a backup soon after it starts and every four hours while it st
 3. Type the full path in **Second backup folder** and press **Save second backup folder**. The program checks it can write there and creates a folder named `SmartLaundry-backups-` plus a short code for this computer inside it.
 
 From then on every backup is also copied into that subfolder (the newest 90 are kept there; nothing else in the folder is touched). If a different USB stick takes over the same drive letter, the program will not write to it, and the next backup shows a failure until you choose the folder again. Windows can give the drive a different letter on another day, so check the path if copies stop.
+
+**Clear all orders** (Admin > Backups > Start afresh) removes every order, payment and customer, for example after trying the program with made-up orders before the real ones are entered. Type `CLEAR` and press **Remove every order and customer**. A backup is saved first, and the message says where, so this can be undone with **Restore from backup**. The rate card, staff, shop settings, discounts for all customers, expenses, inventory and machines stay, and bill numbers start again at 0001.
 
 **Check the Backups tab every week.** It shows when the last backup was made and whether the last copy to the second folder worked, and warns if the last backup is more than a day old. If a backup itself fails, a message "The last automatic backup failed ..." appears after you sign in, and goes away after the next good backup. The second-folder and "more than a day" warnings appear only on the Backups tab. **Back up now** makes one immediately. Keep an extra copy somewhere other than the shop from time to time.
 
@@ -222,18 +229,16 @@ If the PIN was not acceptable, the file could not be read, or there is no admini
 | A restore is staged. Close and reopen the app before writing. | A restore is waiting. Close the program and open it again. |
 | A backup restore is staged. Close and reopen Smart Laundry… (yellow banner) | A restore was staged and is waiting for a restart. Close the program completely and open it again. Afterwards check who is active in Admin > Staff, because the backup's accounts and PINs come back. |
 | Administrator access is required to … / The administrator session is no longer valid. | A staff account tried an admin action, or the admin was deactivated while signed in. Sign in again as an admin. |
-| This customer has … order(s) and cannot be deleted… | Customers with orders are kept. To remove an order, the admin cancels it. |
+| This customer has … order(s) and cannot be deleted… | Customers with orders are kept. To remove an order, the admin moves it to the trash. |
 | Another Smart Laundry POS instance is using this database. | The program is already running. Do not start a second copy. |
-| This order still has … to pay. | The balance was not received. On the hand-over screen press **Receive ₹X & hand over**, or take the payment first, then hand over. |
-| Every order piece must be confirmed for collection first. | Tick every piece before completing pickup. |
-| A collected order cannot be cancelled. / This order is already cancelled. | Cancel works only on an order that is neither collected nor already cancelled. |
+| This order still has … to pay. Take the payment before the last items go. | These are the last items of the order. Enter the whole balance in **Amount received now** and press the button again. |
 | The staged database restore failed validation… | Your records were kept. The bad file was saved aside. Choose a valid backup. |
 | The database could not be safely copied before upgrading… | The upgrade was refused and your records are untouched. Free disk space and try again. |
 | The administrator PIN was not reset… | See Forgotten admin PIN; the message says why. |
 
 ## What the program does not do
 
-There is no barcode or QR code, no scanner, no link a customer can open, no cloud copy or second-computer sync, no Marathi on bills or tags, no editing of saved orders, no refund or till record beyond what cancelling notes, no way to void a single payment (only cancel the whole order), no export of sales to a spreadsheet, and no way to change the "ready in two days at 5 PM" rule. Old orders that were saved without individual pieces cannot be closed from the counter.
+There is no barcode or QR code, no scanner, no link a customer can open, no cloud copy or second-computer sync, no Marathi on bills or tags, no editing of saved orders, no refunds, no way to void a payment, no processing stages (washing, ironing and so on), and no export of sales to a spreadsheet. Old orders that were saved without individual pieces cannot be handed over line by line.
 
 ## Getting help
 
@@ -242,4 +247,4 @@ Before asking for help, write down the exact message, what you pressed, the bill
 
 ## Bills added by mistake (trash)
 
-A bill saved by mistake can be removed from sales. Staff open the order, press **More actions > Mark for trash** and give a reason. Until the owner decides, the bill still counts in sales. The owner sees a **Trash requests** box at the top of Orders / Pickup with the bill, who asked and why, and presses **Move to trash** or **Keep bill**. An administrator can also open any order and choose **Move to trash** directly. A trashed bill disappears from the order lists, Sales, the Dashboard and the customer's totals, so no sale is counted for it. Nothing is deleted: the bill and every request stay in the audit trail.
+A bill saved by mistake can be removed from sales. Staff press **Mark for trash** on the order or in the Orders list and give a reason. Until the owner decides, the bill still counts in sales. The owner sees a **Trash requests** box at the top of Orders / Pickup with the bill, who asked and why, and presses **Move to trash** or **Keep bill**. An administrator can press **Move to trash** directly, on the order or in the list. A trashed bill disappears from the order lists, Sales, the Dashboard and the customer's totals, so no sale is counted for it. Nothing is deleted: the bill and every request stay in the audit trail.

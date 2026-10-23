@@ -23,6 +23,8 @@ const MIGRATION_V4_SQL: &str = include_str!("../migrations/004_advance_daily_tag
 const MIGRATION_V5_SQL: &str = include_str!("../migrations/005_order_trash.sql");
 const MIGRATION_V6_SQL: &str = include_str!("../migrations/006_simplified_rate_card.sql");
 const MIGRATION_V7_SQL: &str = include_str!("../migrations/007_trash_requests.sql");
+const MIGRATION_V8_SQL: &str = include_str!("../migrations/008_wash_only_and_press.sql");
+const MIGRATION_V9_SQL: &str = include_str!("../migrations/009_custom_services.sql");
 /// Every schema step, oldest first: its version number, its SQL and a name for error messages.
 /// Startup, the schema contract and the test fixtures all read this one list, so a new step is
 /// added here once and nowhere else.
@@ -38,8 +40,14 @@ const MIGRATION_STEPS: &[(i64, &str, &str)] = &[
     (5, MIGRATION_V5_SQL, "v5 order trash"),
     (6, MIGRATION_V6_SQL, "v6 simplified rate card"),
     (7, MIGRATION_V7_SQL, "v7 trash requests"),
+    (8, MIGRATION_V8_SQL, "v8 wash only and wash + press"),
+    (9, MIGRATION_V9_SQL, "v9 custom services"),
 ];
-const SCHEMA_VERSION: i64 = 7;
+const SCHEMA_VERSION: i64 = 9;
+/// The last step that rebuilds a table other tables point to (steps 8 and 9 both rebuild
+/// `service_methods`). A database older than this is migrated with foreign keys switched off,
+/// which SQLite only allows outside a transaction.
+const LAST_TABLE_REBUILD_STEP: i64 = 9;
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const WRITER_CONNECTIONS: u32 = 1;
 const READER_CONNECTIONS: u32 = 4;
@@ -994,6 +1002,67 @@ fn unsupported_schema_version(version: i64) -> String {
     )
 }
 
+/// Turns foreign-key enforcement on or off for this connection. Outside a transaction only.
+async fn set_foreign_keys(
+    connection: &mut sqlx::pool::PoolConnection<sqlx::Sqlite>,
+    on: bool,
+) -> Result<(), String> {
+    sqlx::query(if on {
+        "PRAGMA foreign_keys = ON"
+    } else {
+        "PRAGMA foreign_keys = OFF"
+    })
+    .execute(&mut **connection)
+    .await
+    .map_err(|error| format!("Could not change foreign-key checking: {error}"))?;
+    Ok(())
+}
+
+/// Applies every step the database has not had, in one transaction, then checks the result against
+/// the schema contract and for integrity and foreign-key violations.
+async fn migrate_schema(
+    connection: &mut sqlx::pool::PoolConnection<sqlx::Sqlite>,
+    applied: i64,
+) -> Result<(), String> {
+    let mut transaction = connection
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(|error| format!("Could not begin the schema migration: {error}"))?;
+    let migration_result = async {
+        // Each step runs only if the database has not had it yet, oldest first, all in one
+        // transaction: a failure leaves the database exactly as it was.
+        for &(step, sql, name) in MIGRATION_STEPS {
+            if applied < step {
+                sqlx::raw_sql(sql)
+                    .execute(&mut *transaction)
+                    .await
+                    .map_err(|error| format!("The {name} migration failed: {error}"))?;
+            }
+        }
+        sqlx::query(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))
+            .execute(&mut *transaction)
+            .await
+            .map_err(|error| format!("Could not record the schema version: {error}"))?;
+        Ok::<_, String>(())
+    }
+    .await;
+    if let Err(error) = migration_result {
+        return match transaction.rollback().await {
+            Ok(()) => Err(error),
+            Err(rollback_error) => Err(format!(
+                "{error} The schema migration rollback also failed: {rollback_error}"
+            )),
+        };
+    }
+    transaction
+        .commit()
+        .await
+        .map_err(|error| format!("Could not commit the schema migration: {error}"))?;
+    validate_schema(connection, SCHEMA_VERSION).await?;
+    validate_integrity_and_foreign_keys(connection).await?;
+    Ok(())
+}
+
 async fn initialize_schema(pool: &SqlitePool, existed: bool) -> Result<(), String> {
     let mut connection = pool
         .acquire()
@@ -1029,42 +1098,21 @@ async fn initialize_schema(pool: &SqlitePool, existed: bool) -> Result<(), Strin
         }
     }
     if applied < SCHEMA_VERSION {
-        let mut transaction = connection
-            .begin_with("BEGIN IMMEDIATE")
-            .await
-            .map_err(|error| format!("Could not begin the schema migration: {error}"))?;
-        let migration_result = async {
-            // Each step runs only if the database has not had it yet, oldest first, all in one
-            // transaction: a failure leaves the database exactly as it was.
-            for &(step, sql, name) in MIGRATION_STEPS {
-                if applied < step {
-                    sqlx::raw_sql(sql)
-                        .execute(&mut *transaction)
-                        .await
-                        .map_err(|error| format!("The {name} migration failed: {error}"))?;
-                }
-            }
-            sqlx::query(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))
-                .execute(&mut *transaction)
-                .await
-                .map_err(|error| format!("Could not record the schema version: {error}"))?;
-            Ok::<_, String>(())
+        // Foreign keys must be off while a table that others point to is rebuilt, and SQLite ignores
+        // the setting inside a transaction, so it is switched off before the migration begins. It is
+        // switched back on whatever happens: this connection goes back into the pool.
+        let rebuilds_tables = applied < LAST_TABLE_REBUILD_STEP;
+        if rebuilds_tables {
+            set_foreign_keys(&mut connection, false).await?;
         }
-        .await;
-        if let Err(error) = migration_result {
-            return match transaction.rollback().await {
-                Ok(()) => Err(error),
-                Err(rollback_error) => Err(format!(
-                    "{error} The schema migration rollback also failed: {rollback_error}"
-                )),
-            };
+        let migrated = migrate_schema(&mut connection, applied).await;
+        if rebuilds_tables {
+            let restored = set_foreign_keys(&mut connection, true).await;
+            migrated?;
+            restored?;
+        } else {
+            migrated?;
         }
-        transaction
-            .commit()
-            .await
-            .map_err(|error| format!("Could not commit the schema migration: {error}"))?;
-        validate_schema(&mut connection, SCHEMA_VERSION).await?;
-        validate_integrity_and_foreign_keys(&mut connection).await?;
     }
 
     sqlx::query(

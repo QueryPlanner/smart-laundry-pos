@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { getCounterOrderQueueCounts, searchCounterOrders } from '../counter';
-import type { CounterOrderFilter, CounterOrderSummary, CounterQueueCounts } from '../counter';
+import type { CounterOrderSummary, CounterQueueCounts } from '../counter';
+import { shopDateOf } from '../salesRange';
 
 /**
  * The Orders / Pickup list: the search text, the chosen segment, the page of orders and the segment counts.
@@ -9,6 +10,9 @@ import type { CounterOrderFilter, CounterOrderSummary, CounterQueueCounts } from
  */
 
 const PAGE_SIZE = 50;
+
+/** The tabs above the list: orders still to be handed over (the default), finished ones, or every order. */
+export type OrderSegment = 'open' | 'collected' | 'all';
 
 export interface OrderListOptions {
   active: boolean;
@@ -20,8 +24,10 @@ export interface OrderListOptions {
 export interface OrderList {
   query: string;
   setQuery(query: string): void;
-  segment: CounterOrderFilter;
-  setSegment(segment: CounterOrderFilter): void;
+  segment: OrderSegment;
+  setSegment(segment: OrderSegment): void;
+  /** Today in shop time, for the day headings. */
+  today: string;
   counts: CounterQueueCounts | null;
   results: CounterOrderSummary[];
   loading: boolean;
@@ -35,7 +41,7 @@ export interface OrderList {
 
 export const useOrderList = ({ active, onError, debounceMs = 180 }: OrderListOptions): OrderList => {
   const [query, setQuery] = useState('');
-  const [segment, setSegmentState] = useState<CounterOrderFilter>('ready');
+  const [segment, setSegment] = useState<OrderSegment>('open');
   const [counts, setCounts] = useState<CounterQueueCounts | null>(null);
   const [results, setResults] = useState<CounterOrderSummary[]>([]);
   // Already loading on the first render when the page is showing, so "nothing here" never flashes before the list.
@@ -45,17 +51,13 @@ export const useOrderList = ({ active, onError, debounceMs = 180 }: OrderListOpt
   // The latest error handler, so a new function from the parent never restarts a fetch.
   const report = useRef(onError);
   report.current = onError;
-  // True once the cashier has picked a segment: the automatic choice below must never override it.
-  const chosen = useRef(false);
-  // True after the first counts arrived: the automatic choice is made once.
-  const countsSeen = useRef(false);
   // Counts every list fetch. A page that arrives for an older number is ignored.
   const generation = useRef(0);
   const loadingMore = useRef(false);
 
   const text = query.trim();
-  // Searching looks through every order, whatever segment is selected.
-  const filter: CounterOrderFilter = text ? 'all' : segment;
+  // Searching looks through every order, whatever tab is selected.
+  const filter = text ? 'all' : segment;
 
   useEffect(() => {
     if (!active) return undefined;
@@ -63,8 +65,6 @@ export const useOrderList = ({ active, onError, debounceMs = 180 }: OrderListOpt
     void getCounterOrderQueueCounts().then(next => {
       if (!live) return;
       setCounts(next);
-      if (!countsSeen.current && !chosen.current && next.ready === 0) setSegmentState('in_process');
-      countsSeen.current = true;
     }).catch(error => { if (live) report.current(error); });
     return () => { live = false; };
   }, [active, reloads]);
@@ -110,7 +110,8 @@ export const useOrderList = ({ active, onError, debounceMs = 180 }: OrderListOpt
     query,
     setQuery,
     segment,
-    setSegment: next => { chosen.current = true; setSegmentState(next); },
+    setSegment,
+    today: shopDateOf(new Date()),
     counts,
     results,
     loading,
@@ -118,10 +119,8 @@ export const useOrderList = ({ active, onError, debounceMs = 180 }: OrderListOpt
     loadMore,
     reload: () => setReloads(current => current + 1),
     reset: () => {
-      chosen.current = false;
-      countsSeen.current = false;
       setQuery('');
-      setSegmentState('ready');
+      setSegment('open');
       setCounts(null);
       setResults([]);
       setHasMore(false);

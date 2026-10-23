@@ -594,8 +594,13 @@ fn a_brand_new_database_has_the_default_rate_card_and_no_upgrade_copy() {
             Some(10000)
         );
         assert_eq!(rate_cell(pool, "g-dhoti", "svc-iron").await.0, Some(4000));
-        // Shoes are washed only.
-        assert_eq!(rate_cell(pool, "g-shoes", "svc-wash").await.0, Some(15000));
+        // Shoes are washed only: their wash price sits on the "Wash only" service, and Wash + Press is
+        // not offered for them.
+        assert_eq!(
+            rate_cell(pool, "g-shoes", "svc-wash-only").await.0,
+            Some(15000)
+        );
+        assert_eq!(rate_cell(pool, "g-shoes", "svc-wash").await.0, None);
         assert_eq!(
             rate_cell(pool, "g-shoes", "svc-dry-clean").await,
             (None, 0, 2)
@@ -671,21 +676,302 @@ fn owner_edited_rates_are_replaced_by_the_new_rate_card() {
 #[test]
 fn the_simplified_rate_card_migration_is_safe_to_run_twice() {
     tauri::async_runtime::block_on(async {
+        // Version 8 moved some of the v6 prices on purpose, so the v6 file is run a second time on a
+        // database that has had only the steps up to 6.
         let temporary = TempDatabase::new();
-        let fresh = open(&temporary.path).await;
-        assert_eq!(fresh.info().error, None);
-        let pool = &fresh.pools().unwrap().writer;
+        create_schema_file(&temporary.path, 6).await;
+        let pool = connect_writer_pool(&temporary.path, false, 1)
+            .await
+            .unwrap();
 
-        let before = rate_card_snapshot(pool).await;
+        let before = rate_card_snapshot(&pool).await;
         assert!(
             before.iter().any(|row| row.0 == "g-coat"),
             "the snapshot covers the rate card rows the migration writes"
         );
         sqlx::raw_sql(MIGRATION_V6_SQL)
-            .execute(pool)
+            .execute(&pool)
             .await
             .expect("running the v6 migration again should succeed");
-        assert_eq!(rate_card_snapshot(pool).await, before);
+        assert_eq!(rate_card_snapshot(&pool).await, before);
+        pool.close().await;
+    });
+}
+
+/// A version 7 database with an order that used "Wash" on a shirt, as a shop in daily use has.
+async fn seed_v7_database_with_a_washed_shirt(path: &Path) {
+    create_schema_file(path, 7).await;
+    let pool = connect_writer_pool(path, false, 1).await.unwrap();
+    seed_order_with_payments(&pool).await;
+    sqlx::query("UPDATE order_items SET garment_id = 'g-shirt', service_method_id = 'svc-wash' WHERE id = 'item-1'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE order_pieces SET garment_id = 'g-shirt', service_id = 'svc-wash'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    pool.close().await;
+}
+
+#[test]
+fn a_v7_database_gets_wash_only_and_wash_plus_press_and_keeps_every_past_order_link() {
+    tauri::async_runtime::block_on(async {
+        let temporary = TempDatabase::new();
+        seed_v7_database_with_a_washed_shirt(&temporary.path).await;
+        let setup = connect_writer_pool(&temporary.path, false, 1)
+            .await
+            .unwrap();
+        let shoes_before = rate_cell(&setup, "g-shoes", "svc-wash").await;
+        let shirt_before = rate_cell(&setup, "g-shirt", "svc-wash").await;
+        setup.close().await;
+
+        let upgraded = open(&temporary.path).await;
+        assert_eq!(upgraded.info().error, None);
+        let pool = &upgraded.pools().unwrap().writer;
+        assert_eq!(user_version(pool).await, SCHEMA_VERSION);
+
+        // Five services: Wash is now Wash + Press, and Wash only is new. Same ids as before.
+        let services: Vec<(String, String, String, i64)> =
+            sqlx::query_as("SELECT id, service_key, name, active FROM service_methods ORDER BY id")
+                .fetch_all(pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            services,
+            vec![
+                (
+                    "svc-dry-clean".to_string(),
+                    "dry_clean".to_string(),
+                    "Dry Clean".to_string(),
+                    1
+                ),
+                (
+                    "svc-iron".to_string(),
+                    "iron".to_string(),
+                    "Iron".to_string(),
+                    1
+                ),
+                (
+                    "svc-wash".to_string(),
+                    "wash".to_string(),
+                    "Wash + Press".to_string(),
+                    1
+                ),
+                (
+                    "svc-wash-iron".to_string(),
+                    "wash_iron".to_string(),
+                    "Starch".to_string(),
+                    1
+                ),
+                (
+                    "svc-wash-only".to_string(),
+                    "wash_only".to_string(),
+                    "Wash only".to_string(),
+                    1
+                ),
+            ]
+        );
+        let legacy: String = sqlx::query_scalar("SELECT name FROM services WHERE id = 'svc-wash'")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        assert_eq!(legacy, "Wash + Press");
+
+        // The order saved before the upgrade still points at the same garment and service: dropping
+        // the old table must not have fired ON DELETE SET NULL.
+        let item: (Option<String>, Option<String>, String) = sqlx::query_as(
+            "SELECT garment_id, service_method_id, service_name FROM order_items WHERE id = 'item-1'",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            item,
+            (
+                Some("g-shirt".to_string()),
+                Some("svc-wash".to_string()),
+                "Wash".to_string()
+            ),
+            "past bills keep the name they were billed under"
+        );
+        let pieces: Vec<Option<String>> =
+            sqlx::query_scalar("SELECT service_id FROM order_pieces ORDER BY id")
+                .fetch_all(pool)
+                .await
+                .unwrap();
+        assert_eq!(pieces, vec![Some("svc-wash".to_string()); 2]);
+
+        // Foreign keys are enforced again on the migrated connection, and nothing violates them.
+        let enforced: i64 = sqlx::query_scalar("PRAGMA foreign_keys")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        assert_eq!(enforced, 1);
+        let violations = sqlx::query("PRAGMA foreign_key_check")
+            .fetch_all(pool)
+            .await
+            .unwrap();
+        assert!(violations.is_empty());
+        assert!(
+            sqlx::query("INSERT INTO garment_service_rates(garment_id, service_id, updated_at) VALUES ('g-shirt', 'no-such-service', CURRENT_TIMESTAMP)")
+                .execute(pool)
+                .await
+                .is_err(),
+            "a rate for a service that does not exist is still refused"
+        );
+
+        // Since version 9 the key check only keeps keys short and plain, so the shop can add services.
+        for bad in ["Bad Key", "UPPER", "a/b", ""] {
+            assert!(
+                sqlx::query(
+                    "INSERT INTO service_methods(id, service_key, name) VALUES ('x', ?, 'Bad')"
+                )
+                .bind(bad)
+                .execute(pool)
+                .await
+                .is_err(),
+                "{bad}"
+            );
+        }
+
+        // Clothes keep their prices on Wash + Press; Wash only is waiting for the shop's prices.
+        assert_eq!(rate_cell(pool, "g-shirt", "svc-wash").await, shirt_before);
+        assert_eq!(
+            rate_cell(pool, "g-shirt", "svc-wash-only").await,
+            (None, 0, 1)
+        );
+        let offered: i64 = sqlx::query_scalar("SELECT available FROM garment_service_rates WHERE garment_id = 'g-shirt' AND service_id = 'svc-wash-only'")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        assert_eq!(offered, 0);
+        // Items that are never pressed carry their old Wash price on Wash only, with new rate versions.
+        for (garment, price) in [
+            ("g-shoes", 15000),
+            ("g-footmat-small", 5000),
+            ("g-footmat-large", 10000),
+            ("g-blanket-single", 20000),
+            ("g-blanket-double", 25000),
+            ("g-curtain-kg", 25000),
+        ] {
+            assert_eq!(
+                rate_cell(pool, garment, "svc-wash-only").await,
+                (Some(price), 1, 2),
+                "{garment}"
+            );
+            let old = rate_cell(pool, garment, "svc-wash").await;
+            assert_eq!((old.0, old.1), (None, 0), "{garment} is no longer pressed");
+        }
+        assert_eq!(shoes_before.1, 1);
+        assert_eq!(
+            rate_cell(pool, "g-shoes", "svc-wash").await.2,
+            shoes_before.2 + 1
+        );
+        // Garments without a wash price at all gain nothing: the coat is not washed.
+        assert_eq!(
+            rate_cell(pool, "g-coat", "svc-wash-only").await,
+            (None, 0, 1)
+        );
+        // Bedsheets and hoodies might be pressed, so they were left as they were.
+        assert_eq!(
+            rate_cell(pool, "g-bedsheet-single", "svc-wash").await.0,
+            Some(10000)
+        );
+        assert_eq!(
+            rate_cell(pool, "g-sweater", "svc-wash").await.0,
+            Some(10000)
+        );
+    });
+}
+
+#[test]
+fn a_v8_database_gets_ordered_services_and_keeps_every_past_order_link() {
+    tauri::async_runtime::block_on(async {
+        let temporary = TempDatabase::new();
+        create_schema_file(&temporary.path, 8).await;
+        let setup = connect_writer_pool(&temporary.path, false, 1)
+            .await
+            .unwrap();
+        seed_order_with_payments(&setup).await;
+        sqlx::query("UPDATE order_items SET garment_id = 'g-shirt', service_method_id = 'svc-wash' WHERE id = 'item-1'")
+            .execute(&setup)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE order_pieces SET garment_id = 'g-shirt', service_id = 'svc-wash'")
+            .execute(&setup)
+            .await
+            .unwrap();
+        let shirt_before = rate_cell(&setup, "g-shirt", "svc-wash").await;
+        setup.close().await;
+
+        let upgraded = open(&temporary.path).await;
+        assert_eq!(upgraded.info().error, None);
+        let pool = &upgraded.pools().unwrap().writer;
+        assert_eq!(user_version(pool).await, SCHEMA_VERSION);
+
+        // The same five services, in the counter's order.
+        let ordered: Vec<String> =
+            sqlx::query_scalar("SELECT name FROM service_methods ORDER BY sort_order")
+                .fetch_all(pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            ordered,
+            ["Iron", "Wash only", "Wash + Press", "Dry Clean", "Starch"]
+        );
+        // Rebuilding the table fired no ON DELETE SET NULL: the past order keeps its service.
+        let item: Option<String> =
+            sqlx::query_scalar("SELECT service_method_id FROM order_items WHERE id = 'item-1'")
+                .fetch_one(pool)
+                .await
+                .unwrap();
+        assert_eq!(item.as_deref(), Some("svc-wash"));
+        let pieces: Vec<Option<String>> =
+            sqlx::query_scalar("SELECT service_id FROM order_pieces ORDER BY id")
+                .fetch_all(pool)
+                .await
+                .unwrap();
+        assert_eq!(pieces, vec![Some("svc-wash".to_string()); 2]);
+        assert_eq!(rate_cell(pool, "g-shirt", "svc-wash").await, shirt_before);
+        let enforced: i64 = sqlx::query_scalar("PRAGMA foreign_keys")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        assert_eq!(enforced, 1);
+        assert!(sqlx::query("PRAGMA foreign_key_check")
+            .fetch_all(pool)
+            .await
+            .unwrap()
+            .is_empty());
+        // A plain new key is allowed now.
+        sqlx::query("INSERT INTO service_methods(id, service_key, name, sort_order) VALUES ('svc-steam', 'custom_steam', 'Steam press', 6)")
+            .execute(pool)
+            .await
+            .unwrap();
+    });
+}
+
+#[test]
+fn a_new_database_has_five_services_and_the_wash_rates_where_the_upgrade_puts_them() {
+    tauri::async_runtime::block_on(async {
+        let temporary = TempDatabase::new();
+        let fresh = open(&temporary.path).await;
+        assert_eq!(fresh.info().error, None);
+        let pool = &fresh.pools().unwrap().writer;
+        let names: Vec<String> = sqlx::query_scalar("SELECT name FROM service_methods ORDER BY id")
+            .fetch_all(pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            names,
+            ["Dry Clean", "Iron", "Wash + Press", "Starch", "Wash only"]
+        );
+        assert_eq!(
+            rate_cell(pool, "g-shoes", "svc-wash-only").await.0,
+            Some(15000)
+        );
+        assert_eq!(rate_cell(pool, "g-shirt", "svc-wash").await.0, Some(3000));
     });
 }
 

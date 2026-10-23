@@ -855,6 +855,7 @@ mod tests {
                 quantity: 1,
                 unit_price_override_minor: None,
             }],
+            manual_discount_minor: None,
         }
     }
 

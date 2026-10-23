@@ -5,7 +5,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { CounterBackups } from './CounterBackups';
 import type { CounterBackupSettings } from '@/lib/localFirst/counter';
 
-const api = vi.hoisted(() => ({ getCounterBackupSettings: vi.fn(), setCounterBackupMirror: vi.fn(), runCounterBackup: vi.fn(), restoreCounterBackup: vi.fn() }));
+const api = vi.hoisted(() => ({ getCounterBackupSettings: vi.fn(), setCounterBackupMirror: vi.fn(), runCounterBackup: vi.fn(), restoreCounterBackup: vi.fn(), clearCounterOrders: vi.fn(), CLEAR_ORDERS_CONFIRMATION: 'CLEAR' }));
 const dialog = vi.hoisted(() => ({ open: vi.fn(), confirm: vi.fn() }));
 vi.mock('@/lib/localFirst/counter', () => api);
 vi.mock('@tauri-apps/plugin-dialog', () => dialog);
@@ -144,5 +144,27 @@ describe('CounterBackups', () => {
       expect(onRestoreStaged).not.toHaveBeenCalled();
       expect((restoreButton() as HTMLButtonElement).disabled).toBe(false);
     });
+  });
+
+  it('refreshes the backup status after all orders are cleared', async () => {
+    api.clearCounterOrders.mockResolvedValue({ orders: 3, customers: 2, backupPath: 'C:\\Data\\backups\\b.db' });
+    const { onNotice } = setup();
+    await screen.findByText('C:\\Data\\backups');
+    fireEvent.click(screen.getByRole('button', { name: 'Clear all orders…' }));
+    fireEvent.change(screen.getByLabelText('Type CLEAR to confirm'), { target: { value: 'CLEAR' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Remove every order and customer' }));
+    await waitFor(() => expect(onNotice).toHaveBeenCalledWith(expect.stringContaining('Removed 3 orders and 2 customers')));
+    await waitFor(() => expect(api.getCounterBackupSettings).toHaveBeenCalledTimes(2));
+  });
+
+  it('reports a failed refresh after clearing', async () => {
+    api.clearCounterOrders.mockResolvedValue({ orders: 0, customers: 0, backupPath: 'b.db' });
+    const { onError } = setup();
+    await screen.findByText('C:\\Data\\backups');
+    api.getCounterBackupSettings.mockRejectedValue(new Error('gone'));
+    fireEvent.click(screen.getByRole('button', { name: 'Clear all orders…' }));
+    fireEvent.change(screen.getByLabelText('Type CLEAR to confirm'), { target: { value: 'CLEAR' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Remove every order and customer' }));
+    await waitFor(() => expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'gone' })));
   });
 });

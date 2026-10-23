@@ -23,82 +23,59 @@ describe('SalesChart', () => {
     expect(screen.getByText('No sales or payments in this period.')).toBeTruthy();
   });
 
-  it('announces billed, advance and balance totals and carries every number in a hidden table', () => {
+  it('announces the billed and collected totals and carries every number in a hidden table', () => {
     const points = [
       pointOf('2026-03-05', 10000, { advanceCollectedMinor: 6000, balanceCollectedMinor: 2000, balanceRefundedMinor: 500 }),
-      pointOf('2026-03-06', 30000, { advanceCollectedMinor: 15000, balanceCollectedMinor: 10000, advanceRefundedMinor: 1000 }),
+      pointOf('2026-03-06', 30000, { balanceCollectedMinor: 25000, advanceRefundedMinor: 1000 }),
       pointOf('2026-03-07', 0),
     ];
     render(<SalesChart points={points} bucket="day" title="Sales for the last 3 days" />);
     const chart = screen.getByRole('img');
     const label = chart.getAttribute('aria-label') ?? '';
-    expect(label).toContain('Sales for the last 3 days');
-    expect(label).toContain(`Billed ${money(40000)}, advance collected ${money(20000)} and balance received ${money(11500)} over 3 days`);
+    expect(label).toContain(`Sales for the last 3 days. Billed ${money(40000)} and collected ${money(31500)} over 3 days`);
     expect(label).toContain(`Highest billing ${money(30000)} on 6 Mar`);
     const table = screen.getByRole('table', { hidden: true });
     expect(within(table).getByText('Sales for the last 3 days')).toBeTruthy();
     const rows = within(table).getAllByRole('row', { hidden: true });
     expect(rows).toHaveLength(4);
-    expect(cellsOf(rows[0])).toEqual(['Period', 'Orders', 'Billed', 'Advance', 'Balance']);
-    expect(cellsOf(rows[1])).toEqual(['5 Mar', '1', money(10000), money(6000), money(1500)]);
-    expect(cellsOf(rows[2])).toEqual(['6 Mar', '1', money(30000), money(14000), money(10000)]);
-    expect(cellsOf(rows[3])).toEqual(['7 Mar', '0', money(0), money(0), money(0)]);
+    expect(cellsOf(rows[0])).toEqual(['Period', 'Orders', 'Billed', 'Collected']);
+    expect(cellsOf(rows[1])).toEqual(['5 Mar', '1', money(10000), money(7500)]);
+    expect(cellsOf(rows[2])).toEqual(['6 Mar', '1', money(30000), money(24000)]);
+    expect(cellsOf(rows[3])).toEqual(['7 Mar', '0', money(0), money(0)]);
   });
 
-  it('draws the billed bars, the advance dots and the balance squares with their hover titles', () => {
+  it('draws the billed bars and the collected line with its dots and hover titles', () => {
     const points = [
-      pointOf('2026-03-05', 10000, { advanceCollectedMinor: 6000, balanceCollectedMinor: 2000 }),
-      pointOf('2026-03-06', 30000, { advanceCollectedMinor: 15000, balanceCollectedMinor: 10000 }),
+      pointOf('2026-03-05', 10000, { balanceCollectedMinor: 8000 }),
+      pointOf('2026-03-06', 30000, { balanceCollectedMinor: 25000 }),
     ];
     render(<SalesChart points={points} bucket="day" title="Daily sales" />);
     const chart = screen.getByRole('img');
     expect(chart.querySelectorAll('rect.counter-chart-bar')).toHaveLength(2);
     expect(chart.querySelectorAll('circle')).toHaveLength(2);
-    expect(chart.querySelectorAll('rect:not(.counter-chart-bar)')).toHaveLength(2);
-    expect(chart.querySelector('rect.counter-chart-bar title')?.textContent)
-      .toBe(`5 Mar: billed ${money(10000)}, advance ${money(6000)}, balance ${money(2000)}`);
+    expect(chart.querySelectorAll('polyline')).toHaveLength(1);
+    expect(chart.querySelector('rect.counter-chart-bar title')?.textContent).toBe(`5 Mar: billed ${money(10000)}, collected ${money(8000)}`);
+    expect(chart.closest('figure')?.querySelector('figcaption')?.textContent).toBe('BilledCollected');
   });
 
-  it('draws advance solid and balance dashed, and the legend names all three series', () => {
-    const points = [pointOf('2026-03-05', 10000, { advanceCollectedMinor: 6000, balanceCollectedMinor: 2000 })];
-    render(<SalesChart points={points} bucket="day" title="Daily sales" />);
-    const chart = screen.getByRole('img');
-    const lines = chart.querySelectorAll('polyline');
-    expect(lines).toHaveLength(2);
-    expect(lines[0].getAttribute('stroke-dasharray')).toBeNull();
-    expect(lines[1].getAttribute('stroke-dasharray')).toBe('7 4');
-    const legend = chart.closest('figure')?.querySelector('figcaption') as HTMLElement;
-    expect(legend.textContent).toBe('BilledAdvanceBalance');
-    expect(legend.querySelector('svg line')?.getAttribute('stroke-dasharray')).toBe('7 4');
-    expect(legend.querySelector('svg')?.getAttribute('aria-hidden')).toBe('true');
-  });
-
-  it('draws a chart from advance alone and sizes the axis to it', () => {
-    const points = [pointOf('2026-03-05', 0, { advanceCollectedMinor: 7000 }), pointOf('2026-03-06', 0, { advanceCollectedMinor: 3000 })];
-    const { container } = render(<SalesChart points={points} bucket="day" title="Advance only" />);
-    const chart = screen.getByRole('img');
+  it('draws a chart from money collected alone and sizes the axis to it', () => {
+    const points = [pointOf('2026-03-05', 0, { balanceCollectedMinor: 7000 }), pointOf('2026-03-06', 0, { balanceCollectedMinor: 3000 })];
+    const { container } = render(<SalesChart points={points} bucket="day" title="Collected only" />);
     expect(screen.queryByText('No sales or payments in this period.')).toBeNull();
     expect([...container.querySelectorAll('svg text')].map(node => node.textContent)).toContain('₹100');
-    expect(chart.querySelector('rect.counter-chart-bar title')?.textContent)
-      .toBe(`5 Mar: billed ${money(0)}, advance ${money(7000)}, balance ${money(0)}`);
-    const rows = within(screen.getByRole('table', { hidden: true })).getAllByRole('row', { hidden: true });
-    expect(cellsOf(rows[1])).toEqual(['5 Mar', '0', money(0), money(7000), money(0)]);
-    expect(cellsOf(rows[2])).toEqual(['6 Mar', '0', money(0), money(3000), money(0)]);
   });
 
   it('keeps a negative net point on the baseline while the table shows the negative amount', () => {
-    // Refunds of 80 exceed the 60 collected in advance that day, so the net advance is -20.
+    // Refunds of 80 exceed the 60 collected that day, so the net is -20.
     const points = [pointOf('2026-03-05', 10000, { advanceCollectedMinor: 6000, advanceRefundedMinor: 8000 })];
     render(<SalesChart points={points} bucket="day" title="Refund day" />);
     const chart = screen.getByRole('img');
     // The plot area ends at PAD.top (16) + plotHeight (260 - 16 - 34 = 210) = 226.
     const baselineY = '226';
-    const advanceLine = chart.querySelectorAll('polyline')[0].getAttribute('points') ?? '';
-    expect(advanceLine.split(' ').map(pair => pair.split(',')[1])).toEqual([baselineY]);
+    expect((chart.querySelector('polyline')?.getAttribute('points') ?? '').split(',')[1]).toBe(baselineY);
     expect(chart.querySelector('circle')?.getAttribute('cy')).toBe(baselineY);
     const rows = within(screen.getByRole('table', { hidden: true })).getAllByRole('row', { hidden: true });
-    expect(cellsOf(rows[1])).toEqual(['5 Mar', '1', money(10000), money(-2000), money(0)]);
-    expect(screen.getByRole('table', { hidden: true }).textContent).toContain(money(-2000));
+    expect(cellsOf(rows[1])).toEqual(['5 Mar', '1', money(10000), money(-2000)]);
   });
 
   it('does not let a negative net value set the top of the axis', () => {
@@ -113,8 +90,8 @@ describe('SalesChart', () => {
     expect(labels).not.toContain('₹100');
   });
 
-  it('lets the balance line set the top of the axis when it is the biggest figure', () => {
-    const { container } = render(<SalesChart points={[pointOf('2026-03-05', 0, { balanceCollectedMinor: 120000 })]} bucket="day" title="Balance only" />);
+  it('lets the collected line set the top of the axis when it is the biggest figure', () => {
+    const { container } = render(<SalesChart points={[pointOf('2026-03-05', 0, { balanceCollectedMinor: 120000 })]} bucket="day" title="Collected only" />);
     expect([...container.querySelectorAll('svg text')].map(node => node.textContent)).toContain('₹2K');
   });
 

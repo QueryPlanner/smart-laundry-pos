@@ -29,6 +29,22 @@
     {"key":"blanket-double","file":"blanket-double-transparent.png","labelEn":"Blanket double"},
     {"key":"footmat","file":"footmat-transparent.png","labelEn":"Footmat (small and large)"},
     {"key":"curtain","file":"curtain-transparent.png","labelEn":"Curtain per kg"},
-    {"key":"lehenga","file":"lehenga-transparent.png","labelEn":"Lehenga 3 pc (normal, medium, heavy)"}
+    {"key":"lehenga","file":"lehenga-transparent.png","labelEn":"Lehenga 3 pc (normal, medium, heavy)"},
+    {"key":"churidar","file":"churidar-transparent.png","labelEn":"Churidar suit"},
+    {"key":"anarkali","file":"anarkali-transparent.png","labelEn":"Anarkali"},
+    {"key":"kurti","file":"kurti-transparent.png","labelEn":"Kurti"},
+    {"key":"palazzo","file":"palazzo-transparent.png","labelEn":"Palazzo"},
+    {"key":"sherwani","file":"sherwani-transparent.png","labelEn":"Sherwani"},
+    {"key":"nehru-jacket","file":"nehru-jacket-transparent.png","labelEn":"Nehru jacket"},
+    {"key":"suit","file":"suit-transparent.png","labelEn":"Suit (2 piece)"},
+    {"key":"gown","file":"gown-transparent.png","labelEn":"Gown"},
+    {"key":"uniform","file":"uniform-transparent.png","labelEn":"School uniform"},
+    {"key":"pillow-cover","file":"pillow-cover-transparent.png","labelEn":"Pillow covers"},
+    {"key":"sofa-cover","file":"sofa-cover-transparent.png","labelEn":"Sofa / cushion covers"},
+    {"key":"towel","file":"towel-transparent.png","labelEn":"Towels"},
+    {"key":"quilt","file":"quilt-transparent.png","labelEn":"Quilt / razai"},
+    {"key":"table-cloth","file":"table-cloth-transparent.png","labelEn":"Table cloth"},
+    {"key":"shawl","file":"shawl-transparent.png","labelEn":"Shawl"},
+    {"key":"baby-clothes","file":"baby-clothes-transparent.png","labelEn":"Baby clothes"}
   ]
 }

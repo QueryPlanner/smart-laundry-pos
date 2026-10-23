@@ -108,6 +108,7 @@ where
             counter_search_customers,
             counter_search_orders,
             counter_order_queue_counts,
+            counter_hand_over_items,
             counter_get_order,
             counter_record_payment,
             counter_update_order_status,
@@ -115,10 +116,17 @@ where
             counter_cancel_order,
             counter_set_rate,
             counter_add_garment,
+            counter_add_service,
+            counter_set_service_active,
             counter_trash_order,
             counter_request_order_trash,
             counter_list_trash_requests,
             counter_dismiss_trash_request,
+            counter_list_trashed_orders,
+            counter_restore_order,
+            counter_clear_all_orders,
+            counter_preview_draft_bill,
+            counter_preview_order_bill,
             counter_backup_settings,
             counter_set_backup_mirror,
             counter_backup_now,
@@ -253,6 +261,15 @@ async fn counter_search_orders(
     counter::search_orders(&state, &session, &query, offset, limit, filter.as_deref()).await
 }
 #[tauri::command]
+async fn counter_hand_over_items(
+    state: State<'_, DatabaseState>,
+    session: State<'_, CounterSession>,
+    order_id: String,
+    item_ids: Vec<String>,
+) -> Result<counter::SavedOrder, String> {
+    counter::hand_over_items(&state, &session, &order_id, &item_ids).await
+}
+#[tauri::command]
 async fn counter_order_queue_counts(
     state: State<'_, DatabaseState>,
     session: State<'_, CounterSession>,
@@ -331,8 +348,26 @@ async fn counter_add_garment(
     state: State<'_, DatabaseState>,
     session: State<'_, CounterSession>,
     name: String,
+    picture: Option<String>,
 ) -> Result<(), String> {
-    counter::add_garment(&state, &session, &name).await
+    counter::add_garment(&state, &session, &name, picture.as_deref()).await
+}
+#[tauri::command]
+async fn counter_add_service(
+    state: State<'_, DatabaseState>,
+    session: State<'_, CounterSession>,
+    name: String,
+) -> Result<(), String> {
+    counter::add_service(&state, &session, &name).await
+}
+#[tauri::command]
+async fn counter_set_service_active(
+    state: State<'_, DatabaseState>,
+    session: State<'_, CounterSession>,
+    service_id: String,
+    active: bool,
+) -> Result<(), String> {
+    counter::set_service_active(&state, &session, &service_id, active).await
 }
 #[tauri::command]
 async fn counter_trash_order(
@@ -365,6 +400,45 @@ async fn counter_dismiss_trash_request(
     order_id: String,
 ) -> Result<(), String> {
     counter::dismiss_trash_request(&state, &session, &order_id).await
+}
+#[tauri::command]
+async fn counter_list_trashed_orders(
+    state: State<'_, DatabaseState>,
+    session: State<'_, CounterSession>,
+) -> Result<Vec<counter::TrashedOrder>, String> {
+    counter::list_trashed_orders(&state, &session).await
+}
+#[tauri::command]
+async fn counter_restore_order(
+    state: State<'_, DatabaseState>,
+    session: State<'_, CounterSession>,
+    order_id: String,
+) -> Result<(), String> {
+    counter::restore_order(&state, &session, &order_id).await
+}
+#[tauri::command]
+async fn counter_clear_all_orders(
+    state: State<'_, DatabaseState>,
+    session: State<'_, CounterSession>,
+    confirmation: String,
+) -> Result<counter::ClearedOrders, String> {
+    counter::clear_all_orders(&state, &session, &confirmation).await
+}
+#[tauri::command]
+async fn counter_preview_draft_bill(
+    state: State<'_, DatabaseState>,
+    session: State<'_, CounterSession>,
+    input: counter::OrderInput,
+) -> Result<printing::BillPreview, String> {
+    counter::preview_draft_bill(&state, &session, &input).await
+}
+#[tauri::command]
+async fn counter_preview_order_bill(
+    state: State<'_, DatabaseState>,
+    session: State<'_, CounterSession>,
+    order_id: String,
+) -> Result<printing::BillPreview, String> {
+    counter::preview_order_bill(&state, &session, &order_id).await
 }
 #[tauri::command]
 async fn counter_backup_settings(

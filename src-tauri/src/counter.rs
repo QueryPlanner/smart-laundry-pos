@@ -424,6 +424,10 @@ pub struct LineInput {
 pub struct OrderInput {
     pub customer: CustomerInput,
     pub items: Vec<LineInput>,
+    /// An extra discount for this bill only, in paise, on top of any automatic discount. Any
+    /// signed-in user may give one, up to what the customer owes; it is audited. `None` gives none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manual_discount_minor: Option<i64>,
 }
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -466,7 +470,11 @@ pub struct Quote {
     pub subtotal_minor: i64,
     /// Automatic discount, in basis points (1/100 of a percent), resolved natively.
     pub discount_percent_bp: i64,
+    /// Everything taken off the subtotal: the automatic discount plus the extra one below.
     pub discount_minor: i64,
+    /// The part of `discount_minor` given by hand for this bill.
+    #[serde(default)]
+    pub manual_discount_minor: i64,
     pub total_minor: i64,
     pub piece_count: u32,
     pub promised_at: String,
@@ -531,8 +539,25 @@ pub struct SavedOrder {
     /// Money to hand back on a cancelled order (its voided payments). 0 for every other order.
     pub refund_due_minor: i64,
     pub payments: Vec<PaymentRow>,
+    /// The bill lines, each with how many of its pieces the customer has taken so far.
+    pub lines: Vec<OrderLine>,
     pub pieces: Vec<Piece>,
     pub print_jobs: Vec<PrintJob>,
+}
+/// One line of a saved bill, as the order page shows it and hands it over.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OrderLine {
+    pub item_id: String,
+    pub garment: String,
+    pub service: String,
+    pub quantity: i64,
+    pub unit_price_minor: i64,
+    pub line_total_minor: i64,
+    /// Pieces made for this line (one per garment).
+    pub piece_count: i64,
+    /// Pieces of this line already handed to the customer.
+    pub handed_over_count: i64,
 }
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -604,7 +629,12 @@ pub async fn catalogue(db: &DatabaseState, session: &CounterSession) -> Result<C
     let _ = actor(session)?;
     let p = db.writer_pool()?;
     let g=sqlx::query("SELECT id,garment_key AS key,name_en AS nameEn,name_mr AS nameMr,category,image_key AS imageKey,billing_unit AS billingUnit,active FROM garments ORDER BY sort_order").fetch_all(p).await.map_err(db_err)?;
-    let sv=sqlx::query("SELECT id,service_key AS key,name,active FROM service_methods ORDER BY CASE service_key WHEN 'iron' THEN 1 WHEN 'wash' THEN 2 WHEN 'dry_clean' THEN 3 ELSE 4 END").fetch_all(p).await.map_err(db_err)?;
+    let sv = sqlx::query(
+        "SELECT id,service_key AS key,name,active FROM service_methods ORDER BY sort_order,name",
+    )
+    .fetch_all(p)
+    .await
+    .map_err(db_err)?;
     let r=sqlx::query("SELECT garment_id AS garmentId,service_id AS serviceId,price_minor AS priceMinor,configured,available,version FROM garment_service_rates ORDER BY garment_id,service_id").fetch_all(p).await.map_err(db_err)?;
     Ok(Catalogue {
         garments: g.iter().map(row_value).collect(),
@@ -748,6 +778,16 @@ async fn resolve_discount(
     Ok(shop.unwrap_or(0))
 }
 
+/// The `orders.discount_value` of a new order: the percentage for an automatic discount, or the
+/// rupees taken off when part of it was given by hand (the order is then stored as a fixed discount).
+fn order_discount_value(quote: &Quote) -> f64 {
+    if quote.manual_discount_minor > 0 {
+        quote.discount_minor as f64 / 100.0
+    } else {
+        quote.discount_percent_bp as f64 / 100.0
+    }
+}
+
 /// Round-half-up percentage of a paise amount, so the same order always yields the same paise.
 fn discount_amount(subtotal_minor: i64, percent_bp: i64) -> Result<i64, String> {
     if !(0..=10_000).contains(&percent_bp) || subtotal_minor < 0 {
@@ -849,12 +889,21 @@ async fn quote_at(
         let mut conn = pool.acquire().await.map_err(db_err)?;
         resolve_discount(&mut conn, &input.customer).await?
     };
-    let discount = discount_amount(total, percent_bp)?;
+    let automatic = discount_amount(total, percent_bp)?;
+    let manual = input.manual_discount_minor.unwrap_or(0);
+    if manual < 0 {
+        return Err("The discount cannot be less than zero.".into());
+    }
+    if manual > total - automatic {
+        return Err("The extra discount cannot be more than the customer owes.".into());
+    }
+    let discount = automatic + manual;
     Ok(Quote {
         lines,
         subtotal_minor: total,
         discount_percent_bp: percent_bp,
         discount_minor: discount,
+        manual_discount_minor: manual,
         total_minor: total - discount,
         piece_count: count,
         promised_at: due_time(now),
@@ -923,13 +972,24 @@ pub async fn set_rate(
 /// Longest name an administrator may give a garment they add to the rate card.
 const MAX_GARMENT_NAME_CHARS: usize = 40;
 
-/// Adds a garment that is not in the default rate card (for example a leather jacket). It gets one
-/// unset, unavailable rate for every service, so it can be sold only for the services the
-/// administrator later prices on the rate card.
+/// A picture name: the file `public/garments/<key>-transparent.png`. Kept plain so it can only ever
+/// name a file in that folder.
+fn is_picture_key(key: &str) -> bool {
+    (1..=40).contains(&key.len())
+        && key
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
+/// Adds a garment that is not in the default rate card (for example a leather jacket), shown with
+/// the chosen picture (`None` shows the first letter of its name instead). It gets one unset,
+/// unavailable rate for every service, so it can be sold only for the services the administrator
+/// later prices on the rate card.
 pub async fn add_garment(
     db: &DatabaseState,
     session: &CounterSession,
     name: &str,
+    picture: Option<&str>,
 ) -> Result<(), String> {
     require_admin(session, "add a garment")?;
     let name = name.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -937,6 +997,9 @@ pub async fn add_garment(
         return Err(format!(
             "Give the garment a name of 1 to {MAX_GARMENT_NAME_CHARS} characters."
         ));
+    }
+    if picture.is_some_and(|key| !is_picture_key(key)) {
+        return Err("Choose one of the pictures shown.".into());
     }
     let mut tx = db.begin_counter_write().await?;
     let actor = require_admin_in_tx(&mut tx, session, "add a garment").await?;
@@ -951,8 +1014,8 @@ pub async fn add_garment(
     }
     let id = format!("g-custom-{}", Uuid::new_v4());
     let now = Utc::now().to_rfc3339();
-    sqlx::query("INSERT INTO garments(id,garment_key,name_en,name_mr,category,image_key,billing_unit,sort_order) VALUES(?1,?1,?2,'','custom',?1,'piece',(SELECT COALESCE(MAX(sort_order),0)+1 FROM garments))")
-        .bind(&id).bind(&name).execute(&mut *tx).await.map_err(db_err)?;
+    sqlx::query("INSERT INTO garments(id,garment_key,name_en,name_mr,category,image_key,billing_unit,sort_order) VALUES(?1,?1,?2,'','custom',?3,'piece',(SELECT COALESCE(MAX(sort_order),0)+1 FROM garments))")
+        .bind(&id).bind(&name).bind(picture.unwrap_or(id.as_str())).execute(&mut *tx).await.map_err(db_err)?;
     sqlx::query("INSERT INTO garment_service_rates(garment_id,service_id,price_minor,configured,available,version,updated_at,updated_by) SELECT ?1,id,NULL,0,0,1,?2,?3 FROM service_methods")
         .bind(&id).bind(&now).bind(&actor.id).execute(&mut *tx).await.map_err(db_err)?;
     audit_details(
@@ -961,6 +1024,120 @@ pub async fn add_garment(
         "garment_added",
         "garment",
         &id,
+        &now,
+        &serde_json::json!({ "name": name, "picture": picture }),
+    )
+    .await?;
+    tx.commit().await.map_err(db_err)
+}
+
+/// Longest name an administrator may give a service.
+const MAX_SERVICE_NAME_CHARS: usize = 30;
+
+/// Adds a service (for example "Steam press") as a new section of the counter. Every garment gets an
+/// unset, unavailable rate for it, so it shows only on the garments the administrator prices. A
+/// removed service with the same name is brought back instead, with its old prices.
+pub async fn add_service(
+    db: &DatabaseState,
+    session: &CounterSession,
+    name: &str,
+) -> Result<(), String> {
+    require_admin(session, "add a service")?;
+    let name = name.split_whitespace().collect::<Vec<_>>().join(" ");
+    if name.is_empty() || name.chars().count() > MAX_SERVICE_NAME_CHARS {
+        return Err(format!(
+            "Give the service a name of 1 to {MAX_SERVICE_NAME_CHARS} characters."
+        ));
+    }
+    let mut tx = db.begin_counter_write().await?;
+    let actor = require_admin_in_tx(&mut tx, session, "add a service").await?;
+    let now = Utc::now().to_rfc3339();
+    let existing = sqlx::query("SELECT id,active FROM service_methods WHERE LOWER(name)=LOWER(?)")
+        .bind(&name)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(db_err)?;
+    let id = if let Some(row) = existing {
+        if row.try_get::<i64, _>("active").map_err(db_err)? == 1 {
+            return Err("A service with this name already exists.".into());
+        }
+        let id: String = row.try_get("id").map_err(db_err)?;
+        sqlx::query("UPDATE service_methods SET active=1 WHERE id=?")
+            .bind(&id)
+            .execute(&mut *tx)
+            .await
+            .map_err(db_err)?;
+        id
+    } else {
+        let suffix = Uuid::new_v4().simple().to_string();
+        let id = format!("svc-custom-{suffix}");
+        sqlx::query("INSERT INTO service_methods(id,service_key,name,active,sort_order) VALUES(?1,?2,?3,1,(SELECT COALESCE(MAX(sort_order),0)+1 FROM service_methods))")
+            .bind(&id).bind(format!("custom_{suffix}")).bind(&name).execute(&mut *tx).await.map_err(db_err)?;
+        // Order lines still point at the older services table, so the service is listed there too.
+        sqlx::query("INSERT INTO services(id,name,category,price_per_piece,price_per_kg,created_at,updated_at,origin_device_id) VALUES(?1,?2,'laundry',NULL,NULL,?3,?3,'counter')")
+            .bind(&id).bind(&name).bind(&now).execute(&mut *tx).await.map_err(db_err)?;
+        sqlx::query("INSERT INTO garment_service_rates(garment_id,service_id,price_minor,configured,available,version,updated_at,updated_by) SELECT id,?1,NULL,0,0,1,?2,?3 FROM garments")
+            .bind(&id).bind(&now).bind(&actor.id).execute(&mut *tx).await.map_err(db_err)?;
+        id
+    };
+    audit_details(
+        &mut tx,
+        &actor.id,
+        "service_added",
+        "service",
+        &id,
+        &now,
+        &serde_json::json!({ "name": name }),
+    )
+    .await?;
+    tx.commit().await.map_err(db_err)
+}
+
+/// Removes a service from the counter (`active` false) or brings it back. Nothing is deleted: past
+/// orders keep their service and the prices stay for when it comes back. One service always stays.
+pub async fn set_service_active(
+    db: &DatabaseState,
+    session: &CounterSession,
+    service_id: &str,
+    active: bool,
+) -> Result<(), String> {
+    require_admin(session, "change the services")?;
+    let mut tx = db.begin_counter_write().await?;
+    let actor = require_admin_in_tx(&mut tx, session, "change the services").await?;
+    let name: String = sqlx::query_scalar("SELECT name FROM service_methods WHERE id=?")
+        .bind(service_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(db_err)?
+        .ok_or("Service not found.")?;
+    if !active {
+        let others: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM service_methods WHERE active=1 AND id<>?")
+                .bind(service_id)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(db_err)?;
+        if others == 0 {
+            return Err("Keep at least one service.".into());
+        }
+    }
+    sqlx::query("UPDATE service_methods SET active=? WHERE id=?")
+        .bind(active as i64)
+        .bind(service_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(db_err)?;
+    let now = Utc::now().to_rfc3339();
+    audit_details(
+        &mut tx,
+        &actor.id,
+        if active {
+            "service_restored"
+        } else {
+            "service_removed"
+        },
+        "service",
+        service_id,
         &now,
         &serde_json::json!({ "name": name }),
     )
@@ -1149,6 +1326,181 @@ pub async fn dismiss_trash_request(
     )
     .await?;
     tx.commit().await.map_err(db_err)
+}
+
+/// An order in the trash, as the Trash page lists it.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrashedOrder {
+    pub order_id: String,
+    pub order_number: String,
+    pub customer_name: String,
+    pub customer_phone: String,
+    pub status: String,
+    pub total_minor: i64,
+    pub received_at: String,
+    pub trashed_at: String,
+    /// Who moved it to the trash; empty when that account no longer exists.
+    pub trashed_by: String,
+    /// Why staff asked for it to be trashed, when they did.
+    pub reason: String,
+}
+
+/// Most orders the Trash page shows at once, newest first. The trash is small in practice; the
+/// cap only keeps one screen from loading an unbounded list.
+const MAX_TRASHED_ORDERS_LISTED: i64 = 200;
+
+/// Orders in the trash, newest first. Administrators only, like everything else about the trash.
+pub async fn list_trashed_orders(
+    db: &DatabaseState,
+    session: &CounterSession,
+) -> Result<Vec<TrashedOrder>, String> {
+    require_admin(session, "see the trash")?;
+    let rows = sqlx::query(
+        "SELECT o.id,o.order_number,o.customer_name,o.customer_phone,o.status,CAST(ROUND(o.total_amount*100) AS INTEGER) AS total_minor,\
+o.received_at,o.trashed_at,COALESCE(a.full_name,'') AS trashed_by,COALESCE(o.trash_request_reason,'') AS reason \
+FROM orders o LEFT JOIN counter_accounts a ON a.id=o.trashed_by \
+WHERE o.trashed_at IS NOT NULL ORDER BY o.trashed_at DESC,o.id LIMIT ?",
+    )
+    .bind(MAX_TRASHED_ORDERS_LISTED)
+    .fetch_all(db.writer_pool()?)
+    .await
+    .map_err(db_err)?;
+    rows.iter()
+        .map(|row| {
+            Ok(TrashedOrder {
+                order_id: row.try_get("id").map_err(db_err)?,
+                order_number: row.try_get("order_number").map_err(db_err)?,
+                customer_name: row.try_get("customer_name").map_err(db_err)?,
+                customer_phone: row.try_get("customer_phone").map_err(db_err)?,
+                status: row.try_get("status").map_err(db_err)?,
+                total_minor: row.try_get("total_minor").map_err(db_err)?,
+                received_at: row.try_get("received_at").map_err(db_err)?,
+                trashed_at: row.try_get("trashed_at").map_err(db_err)?,
+                trashed_by: row.try_get("trashed_by").map_err(db_err)?,
+                reason: row.try_get("reason").map_err(db_err)?,
+            })
+        })
+        .collect()
+}
+
+/// Takes an order out of the trash: lists, sales, the dashboard and customer totals count it again.
+/// Any trash request on it is cleared too, so it does not come back as a pending request.
+pub async fn restore_order(
+    db: &DatabaseState,
+    session: &CounterSession,
+    order_id: &str,
+) -> Result<(), String> {
+    require_admin(session, "restore an order from the trash")?;
+    let mut tx = db.begin_counter_write().await?;
+    let actor = require_admin_in_tx(&mut tx, session, "restore an order from the trash").await?;
+    let now = Utc::now().to_rfc3339();
+    let changed = sqlx::query("UPDATE orders SET trashed_at=NULL,trashed_by=NULL,trash_requested_at=NULL,trash_requested_by=NULL,trash_request_reason=NULL,updated_at=? WHERE id=? AND trashed_at IS NOT NULL")
+        .bind(&now)
+        .bind(order_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(db_err)?
+        .rows_affected();
+    if changed != 1 {
+        return Err("This order is not in the trash.".into());
+    }
+    audit(
+        &mut tx,
+        &actor.id,
+        "order_restored",
+        "order",
+        order_id,
+        &now,
+    )
+    .await?;
+    tx.commit().await.map_err(db_err)
+}
+
+/// The word the owner types to confirm that every order and customer is to be removed.
+pub const CLEAR_ORDERS_CONFIRMATION: &str = "CLEAR";
+
+/// What a clear removed, and the backup that still holds it.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClearedOrders {
+    pub orders: i64,
+    pub customers: i64,
+    pub backup_path: String,
+}
+
+/// The tables emptied by [`clear_all_orders`], children before parents so it does not depend on
+/// foreign-key cascades. Customer discount rules go with their customers; the shop-wide rule stays.
+const CLEARED_TABLES: &[&str] = &[
+    "DELETE FROM piece_matches",
+    "DELETE FROM order_pieces",
+    "DELETE FROM print_job_attempts",
+    "DELETE FROM print_jobs",
+    "DELETE FROM counter_payment_requests",
+    "DELETE FROM counter_collection_requests",
+    "DELETE FROM counter_order_requests",
+    "DELETE FROM payments",
+    "DELETE FROM order_status_history",
+    "DELETE FROM order_items",
+    "DELETE FROM orders",
+    "DELETE FROM order_day_sequences",
+    "DELETE FROM counter_discounts WHERE scope='customer'",
+    "DELETE FROM customers",
+];
+
+/// Starts the shop afresh: removes every order (trashed ones too), its payments, pieces and print
+/// jobs, and every customer, so today's bill numbers start again at 0001. The rate card, staff,
+/// shop settings, expenses, inventory and machines stay. A verified backup is written first and the
+/// clear is refused if it fails, so the removed records can always be brought back with Restore.
+/// Administrator only, and only with the confirmation word typed.
+pub async fn clear_all_orders(
+    db: &DatabaseState,
+    session: &CounterSession,
+    confirmation: &str,
+) -> Result<ClearedOrders, String> {
+    require_admin(session, "clear all orders")?;
+    if confirmation.trim() != CLEAR_ORDERS_CONFIRMATION {
+        return Err(format!(
+            "Type {CLEAR_ORDERS_CONFIRMATION} to confirm clearing every order."
+        ));
+    }
+    let backup_path = db
+        .backup_database()
+        .await
+        .map_err(|error| format!("Nothing was cleared, because the backup failed: {error}"))?;
+    let mut tx = db.begin_counter_write().await?;
+    let actor = require_admin_in_tx(&mut tx, session, "clear all orders").await?;
+    let orders: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM orders")
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(db_err)?;
+    let customers: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM customers")
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(db_err)?;
+    for statement in CLEARED_TABLES {
+        sqlx::query(statement)
+            .execute(&mut *tx)
+            .await
+            .map_err(db_err)?;
+    }
+    let now = Utc::now().to_rfc3339();
+    audit_details(
+        &mut tx,
+        &actor.id,
+        "orders_cleared",
+        "order",
+        "all",
+        &now,
+        &serde_json::json!({ "orders": orders, "customers": customers, "backup": backup_path }),
+    )
+    .await?;
+    tx.commit().await.map_err(db_err)?;
+    Ok(ClearedOrders {
+        orders,
+        customers,
+        backup_path,
+    })
 }
 
 #[derive(Debug, Serialize)]
@@ -1762,8 +2114,8 @@ async fn save_order_at(
         .await
         .map_err(db_err)?
         .unwrap_or_default();
-    sqlx::query("INSERT INTO orders(id,order_number,customer_id,customer_name,customer_phone,order_type,received_at,expected_ready_at,status,subtotal,discount_type,discount_value,discount_amount,total_amount,payment_status,created_by,created_at,updated_at,origin_device_id,idempotency_key) VALUES(?,?,?,?,?,'piece',?,?,'received',?,'percentage',?,?,?,?,?,?,?,?,?)")
- .bind(&oid).bind(&order_no).bind(customer_id).bind(input.order.customer.name.trim()).bind(&phone).bind(&received).bind(&due).bind(quote.subtotal_minor as f64/100.0).bind(quote.discount_percent_bp as f64/100.0).bind(quote.discount_minor as f64/100.0).bind(quote.total_minor as f64/100.0).bind(derive_payment_status(quote.total_minor, paid, false)).bind(&actor.id).bind(&received).bind(&received).bind(device).bind(&input.idempotency_key).execute(&mut *tx).await.map_err(db_err)?;
+    sqlx::query("INSERT INTO orders(id,order_number,customer_id,customer_name,customer_phone,order_type,received_at,expected_ready_at,status,subtotal,discount_type,discount_value,discount_amount,total_amount,payment_status,created_by,created_at,updated_at,origin_device_id,idempotency_key) VALUES(?,?,?,?,?,'piece',?,?,'received',?,?,?,?,?,?,?,?,?,?,?)")
+ .bind(&oid).bind(&order_no).bind(customer_id).bind(input.order.customer.name.trim()).bind(&phone).bind(&received).bind(&due).bind(quote.subtotal_minor as f64/100.0).bind(if quote.manual_discount_minor > 0 { "fixed" } else { "percentage" }).bind(order_discount_value(&quote)).bind(quote.discount_minor as f64/100.0).bind(quote.total_minor as f64/100.0).bind(derive_payment_status(quote.total_minor, paid, false)).bind(&actor.id).bind(&received).bind(&received).bind(device).bind(&input.idempotency_key).execute(&mut *tx).await.map_err(db_err)?;
     sqlx::query("INSERT INTO counter_order_requests(idempotency_key,order_id,payload_hash,created_at) VALUES(?,?,?,?)")
         .bind(&input.idempotency_key).bind(&oid).bind(&payload_hash).bind(&received).execute(&mut *tx).await.map_err(db_err)?;
     // One order item per quote line, in quote order.
@@ -1818,35 +2170,15 @@ async fn save_order_at(
     // The shop identity is copied into the document now, so a reprint matches this bill.
     let print_settings = crate::shop_settings::load_for_order(&mut tx).await?;
     let header = print_settings.bill_header();
-    let bill = crate::printing::BillDocument {
+    let bill = bill_document(
         header,
-        order_number: order_no.clone(),
-        created_at_ist: ist_time(now),
-        promised_at_ist: ist_time(
-            chrono::DateTime::parse_from_rfc3339(&due)
-                .map_err(|e| e.to_string())?
-                .with_timezone(&Utc),
-        ),
-        customer_name: input.order.customer.name.trim().into(),
-        customer_phone: phone.clone(),
-        items: quote
-            .lines
-            .iter()
-            .map(|x| crate::printing::BillItem {
-                garment: x.garment.clone(),
-                service: x.service.clone(),
-                quantity: x.quantity,
-                unit_price_minor: x.unit_price_minor,
-                line_total_minor: x.line_total_minor,
-            })
-            .collect(),
-        subtotal_minor: quote.subtotal_minor,
-        discount_percent_bp: quote.discount_percent_bp,
-        discount_minor: quote.discount_minor,
-        paid_minor: paid,
-        balance_minor: quote.total_minor - paid,
-        physical_piece_count: quote.piece_count,
-    };
+        &order_no,
+        now,
+        &quote,
+        input.order.customer.name.trim(),
+        &phone,
+        paid,
+    )?;
     let mut documents = vec![("bill", crate::printing::PrintDocument::Bill(bill))];
     if tagged_total > 0 {
         let tags = crate::printing::TagDocument {
@@ -1876,6 +2208,23 @@ async fn save_order_at(
       .bind(Uuid::new_v4().to_string()).bind(&oid).bind(kind).bind(serde_json::to_string(&doc).map_err(|e|e.to_string())?).bind(&received).bind(&received).execute(&mut *tx).await.map_err(db_err)?;
     }
     audit(&mut tx, &actor.id, "order_saved", "order", &oid, &received).await?;
+    // A discount given by hand leaves a trail: who gave how much, on what.
+    if quote.manual_discount_minor > 0 {
+        audit_details(
+            &mut tx,
+            &actor.id,
+            "order_manual_discount",
+            "order",
+            &oid,
+            &received,
+            &serde_json::json!({
+                "manualDiscountMinor": quote.manual_discount_minor,
+                "automaticDiscountMinor": quote.discount_minor - quote.manual_discount_minor,
+                "subtotalMinor": quote.subtotal_minor,
+            }),
+        )
+        .await?;
+    }
     // A price typed at the counter for this bill leaves a trail: who changed what, from and to.
     for line in quote
         .lines
@@ -1946,6 +2295,7 @@ pub async fn get_saved(db: &DatabaseState, id: &str) -> Result<Option<SavedOrder
     } else {
         0
     };
+    let lines = order_lines(p, &id).await?;
     let pieces = pieces_for(p, &id).await?;
     let jobs = jobs_for(p, Some(&id)).await?;
     Ok(Some(SavedOrder {
@@ -1963,9 +2313,39 @@ pub async fn get_saved(db: &DatabaseState, id: &str) -> Result<Option<SavedOrder
         balance_minor: total_minor - paid_minor,
         refund_due_minor,
         payments,
+        lines,
         pieces,
         print_jobs: jobs,
     }))
+}
+
+/// The lines of an order in the order they were entered, with their piece and hand-over counts.
+async fn order_lines(p: &SqlitePool, order: &str) -> Result<Vec<OrderLine>, String> {
+    let rows = sqlx::query(
+        "SELECT i.id,i.item_name,i.service_name,CAST(ROUND(i.quantity) AS INTEGER) AS quantity,\
+CAST(ROUND(i.rate*100) AS INTEGER) AS unit_minor,CAST(ROUND(i.line_total*100) AS INTEGER) AS total_minor,\
+(SELECT COUNT(*) FROM order_pieces op WHERE op.order_item_id=i.id) AS piece_count,\
+(SELECT COUNT(*) FROM order_pieces op JOIN piece_matches m ON m.piece_id=op.id AND m.stage='collection' WHERE op.order_item_id=i.id) AS handed_over \
+FROM order_items i WHERE i.order_id=? ORDER BY i.created_at,i.rowid",
+    )
+    .bind(order)
+    .fetch_all(p)
+    .await
+    .map_err(db_err)?;
+    rows.iter()
+        .map(|row| {
+            Ok(OrderLine {
+                item_id: row.try_get("id").map_err(db_err)?,
+                garment: row.try_get("item_name").map_err(db_err)?,
+                service: row.try_get("service_name").map_err(db_err)?,
+                quantity: row.try_get("quantity").map_err(db_err)?,
+                unit_price_minor: row.try_get("unit_minor").map_err(db_err)?,
+                line_total_minor: row.try_get("total_minor").map_err(db_err)?,
+                piece_count: row.try_get("piece_count").map_err(db_err)?,
+                handed_over_count: row.try_get("handed_over").map_err(db_err)?,
+            })
+        })
+        .collect()
 }
 
 /// Every payment on an order, oldest first, including voided ones. Each amount is rounded on its own.
@@ -2015,6 +2395,10 @@ pub struct OrderSummary {
     pub untagged_count: i64,
     /// Why the order matched the search text, or None when it matched the filter alone.
     pub match_reason: Option<String>,
+    /// The lines in short, such as "3 Shirt · Iron, 1 Saree · Dry Clean".
+    pub items_text: String,
+    /// Pieces already handed to the customer (some, but not all, means part collected).
+    pub handed_over_count: u32,
 }
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -2040,7 +2424,10 @@ CAST(strftime('%s',o.expected_ready_at) AS INTEGER) AS promised_epoch,\
 CAST(ROUND(o.total_amount*100) AS INTEGER) AS total_minor,\
 COALESCE((SELECT SUM(CAST(ROUND(p.amount*100) AS INTEGER)) FROM payments p WHERE p.order_id=o.id AND p.voided_at IS NULL),0) AS paid_minor,\
 (SELECT COUNT(*) FROM order_pieces op WHERE op.order_id=o.id) AS piece_count,\
-(SELECT COUNT(*) FROM order_pieces op WHERE op.order_id=o.id AND op.tagged=0) AS untagged_count \
+(SELECT COUNT(*) FROM order_pieces op WHERE op.order_id=o.id AND op.tagged=0) AS untagged_count,\
+(SELECT COUNT(*) FROM piece_matches pm WHERE pm.order_id=o.id AND pm.stage='collection') AS handed_over_count,\
+COALESCE((SELECT group_concat(t,', ') FROM (SELECT CAST(ROUND(i.quantity) AS INTEGER)||' '||i.item_name||' · '||i.service_name AS t \
+FROM order_items i WHERE i.order_id=o.id ORDER BY i.created_at,i.rowid)),'') AS items_text \
 FROM orders o WHERE o.trashed_at IS NULL";
 
 /// `ORDER_ROWS` plus the balance, the overdue flag and the search reason (alias `m` in the callers).
@@ -2070,18 +2457,32 @@ enum OrderFilter {
     Overdue,
     InProcess,
     Today,
+    /// Not yet fully handed over (and not cancelled), including part-collected orders.
+    Open,
+    /// Every piece handed over.
+    Collected,
+    /// Orders received on one shop (IST) day, from the filter text `day:YYYY-MM-DD`.
+    Day(chrono::NaiveDate),
 }
 
 impl OrderFilter {
     /// `None`, or a blank value, lists every order. Any other unknown value is refused.
     fn parse(text: Option<&str>) -> Result<Self, String> {
-        match text.map(str::trim).unwrap_or_default() {
+        let text = text.map(str::trim).unwrap_or_default();
+        if let Some(date) = text.strip_prefix("day:") {
+            return chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d")
+                .map(Self::Day)
+                .map_err(|_| "Choose a valid date.".to_string());
+        }
+        match text {
             "" | "all" => Ok(Self::All),
             "ready" => Ok(Self::Ready),
             "balance_due" => Ok(Self::BalanceDue),
             "overdue" => Ok(Self::Overdue),
             "in_process" => Ok(Self::InProcess),
             "today" => Ok(Self::Today),
+            "open" => Ok(Self::Open),
+            "collected" => Ok(Self::Collected),
             _ => Err("Unknown order filter.".into()),
         }
     }
@@ -2096,7 +2497,9 @@ impl OrderFilter {
             }
             Self::Overdue => "m.overdue=1".into(),
             Self::InProcess => format!("m.status IN ({IN_PROCESS_STATUSES})"),
-            Self::Today => "m.received_epoch>=?7 AND m.received_epoch<?8".into(),
+            Self::Open => "m.status NOT IN ('collected','cancelled')".into(),
+            Self::Collected => "m.status='collected'".into(),
+            Self::Today | Self::Day(_) => "m.received_epoch>=?7 AND m.received_epoch<?8".into(),
         }
     }
 
@@ -2108,7 +2511,9 @@ impl OrderFilter {
                 "m.promised_epoch IS NULL,m.promised_epoch,m.created_at DESC,m.id"
             }
             Self::BalanceDue => "m.balance_minor DESC,m.created_at DESC,m.id",
-            Self::All | Self::Today => "m.received_epoch DESC,m.created_at DESC,m.id",
+            Self::All | Self::Today | Self::Open | Self::Collected | Self::Day(_) => {
+                "m.received_epoch DESC,m.created_at DESC,m.id"
+            }
         }
     }
 }
@@ -2126,6 +2531,14 @@ struct ListScope {
 }
 
 impl ListScope {
+    /// The same scope with the day bounds moved to the given shop (IST) day.
+    fn on_day(mut self, date: chrono::NaiveDate) -> Self {
+        let midnight_utc = date.and_time(chrono::NaiveTime::MIN).and_utc().timestamp();
+        self.day_start = midnight_utc - IST_OFFSET_SECONDS;
+        self.day_end = self.day_start + 86_400;
+        self
+    }
+
     fn new(query: &str, now: chrono::DateTime<Utc>) -> Self {
         let q = query.trim();
         // A typed phone number ("98765 43210", "+91 98765 43210") also matches the stored digits.
@@ -2235,6 +2648,10 @@ async fn search_orders_at(
         return Ok(Vec::new());
     }
     let scope = ListScope::new(query, now);
+    let scope = match filter {
+        OrderFilter::Day(date) => scope.on_day(date),
+        _ => scope,
+    };
     // An exact tag id and today's bill rank first; everything else keeps the filter's order.
     let sql = format!(
         "SELECT m.* FROM ({list}) m WHERE ({pred}) AND (?1='' OR m.match_reason IS NOT NULL) \
@@ -2271,6 +2688,8 @@ fn order_summary(row: &sqlx::sqlite::SqliteRow) -> Result<OrderSummary, String> 
         overdue: overdue == 1,
         untagged_count: row.try_get("untagged_count").map_err(db_err)?,
         match_reason: row.try_get("match_reason").map_err(db_err)?,
+        items_text: row.try_get("items_text").map_err(db_err)?,
+        handed_over_count: row.try_get("handed_over_count").map_err(db_err)?,
     })
 }
 
@@ -2286,6 +2705,8 @@ pub struct QueueCounts {
     pub today: i64,
     pub all: i64,
     pub balance_due_minor: i64,
+    pub open: i64,
+    pub collected: i64,
 }
 
 pub async fn order_queue_counts(
@@ -2309,7 +2730,7 @@ async fn order_queue_counts_at(
         )
     };
     let sql = format!(
-        "SELECT {} AS c_ready,{} AS c_balance_due,{} AS c_overdue,{} AS c_in_process,{} AS c_today,{} AS c_all,\
+        "SELECT {} AS c_ready,{} AS c_balance_due,{} AS c_overdue,{} AS c_in_process,{} AS c_today,{} AS c_all,{} AS c_open,{} AS c_collected,\
 COALESCE(SUM(CASE WHEN {} THEN m.balance_minor ELSE 0 END),0) AS c_balance_minor FROM ({}) m",
         count(OrderFilter::Ready),
         count(OrderFilter::BalanceDue),
@@ -2317,6 +2738,8 @@ COALESCE(SUM(CASE WHEN {} THEN m.balance_minor ELSE 0 END),0) AS c_balance_minor
         count(OrderFilter::InProcess),
         count(OrderFilter::Today),
         count(OrderFilter::All),
+        count(OrderFilter::Open),
+        count(OrderFilter::Collected),
         OrderFilter::BalanceDue.predicate(),
         order_list_sql(),
     );
@@ -2333,6 +2756,8 @@ COALESCE(SUM(CASE WHEN {} THEN m.balance_minor ELSE 0 END),0) AS c_balance_minor
         today: row.try_get("c_today").map_err(db_err)?,
         all: row.try_get("c_all").map_err(db_err)?,
         balance_due_minor: row.try_get("c_balance_minor").map_err(db_err)?,
+        open: row.try_get("c_open").map_err(db_err)?,
+        collected: row.try_get("c_collected").map_err(db_err)?,
     })
 }
 
@@ -2743,6 +3168,117 @@ pub async fn collect_order(
     .await
     .map_err(db_err)?;
     audit(&mut tx, &a.id, "order_collected", "order", order_id, &now).await?;
+    tx.commit().await.map_err(db_err)?;
+    get_saved(db, order_id)
+        .await?
+        .ok_or("Order not found.".into())
+}
+
+/// Hands the pieces of the chosen lines to the customer. Any part of an order can go at any time, paid
+/// or not; the hand-over that leaves nothing behind marks the order collected and needs the whole bill
+/// paid first. Handing over a line that is already with the customer changes nothing, so a repeated
+/// tap is harmless and needs no request key.
+pub async fn hand_over_items(
+    db: &DatabaseState,
+    session: &CounterSession,
+    order_id: &str,
+    item_ids: &[String],
+) -> Result<SavedOrder, String> {
+    let a = actor(session)?;
+    if item_ids.is_empty() {
+        return Err("Choose what the customer is taking.".into());
+    }
+    let mut tx = db.begin_counter_write().await?;
+    let row =
+        sqlx::query("SELECT status,total_amount FROM orders WHERE id=? AND trashed_at IS NULL")
+            .bind(order_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(db_err)?
+            .ok_or("Order not found.".to_string())?;
+    let status: String = row.try_get("status").map_err(db_err)?;
+    if status == "cancelled" {
+        return Err("This order was cancelled. Nothing can be handed over.".into());
+    }
+    let wanted: std::collections::HashSet<&str> = item_ids.iter().map(String::as_str).collect();
+    let lines: Vec<String> = sqlx::query_scalar("SELECT id FROM order_items WHERE order_id=?")
+        .bind(order_id)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(db_err)?;
+    if wanted.iter().any(|id| !lines.iter().any(|line| line == id)) {
+        return Err("That line is not on this bill.".into());
+    }
+    if status == "collected" {
+        tx.rollback().await.map_err(db_err)?;
+        return get_saved(db, order_id)
+            .await?
+            .ok_or("Order not found.".into());
+    }
+    // Pieces still at the shop, and which of them go now.
+    let waiting = sqlx::query(
+        "SELECT op.id,op.order_item_id FROM order_pieces op WHERE op.order_id=? \
+         AND NOT EXISTS(SELECT 1 FROM piece_matches m WHERE m.piece_id=op.id AND m.stage='collection')",
+    )
+    .bind(order_id)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(db_err)?;
+    let mut going = Vec::new();
+    for piece in &waiting {
+        let item: String = piece.try_get("order_item_id").map_err(db_err)?;
+        if wanted.contains(item.as_str()) {
+            going.push(piece.try_get::<String, _>("id").map_err(db_err)?);
+        }
+    }
+    let now = Utc::now().to_rfc3339();
+    let last = going.len() == waiting.len();
+    if last {
+        let total: f64 = row.try_get("total_amount").map_err(db_err)?;
+        let balance = (total * 100.0).round() as i64 - paid_amount_minor(&mut tx, order_id).await?;
+        if balance > 0 {
+            return Err(format!(
+                "This order still has {} to pay. Take the payment before the last items go.",
+                crate::print_layout::format_money(balance)
+            ));
+        }
+    }
+    for piece in &going {
+        sqlx::query("INSERT OR IGNORE INTO piece_matches(id,order_id,piece_id,stage,matched_by,matched_at) VALUES(?,?,?,'collection',?,?)")
+            .bind(Uuid::new_v4().to_string()).bind(order_id).bind(piece).bind(&a.id).bind(&now)
+            .execute(&mut *tx).await.map_err(db_err)?;
+    }
+    if last {
+        sqlx::query("UPDATE orders SET status='collected',updated_at=? WHERE id=?")
+            .bind(&now)
+            .bind(order_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(db_err)?;
+        // When it was collected, read by the order page and the reports.
+        sqlx::query(
+            "INSERT OR IGNORE INTO counter_collection_requests(request_id,order_id,created_at) VALUES(?,?,?)",
+        )
+        .bind(Uuid::new_v4().to_string())
+        .bind(order_id)
+        .bind(&now)
+        .execute(&mut *tx)
+        .await
+        .map_err(db_err)?;
+    }
+    if !going.is_empty() {
+        let details = serde_json::json!({ "pieces": going.len(), "collected": last });
+        audit_details(
+            &mut tx,
+            &a.id,
+            "items_handed_over",
+            "order",
+            order_id,
+            &now,
+            &details,
+        )
+        .await?;
+    }
     tx.commit().await.map_err(db_err)?;
     get_saved(db, order_id)
         .await?
@@ -3225,6 +3761,108 @@ pub async fn retry_job(
         .find(|job| job.id == job_id)
         .ok_or("Print job not found.".into())
 }
+/// The bill as it prints: the shop header, the customer, one row per line of the quote, and the money.
+/// Used both for a saved order and for the preview of an order that is still being taken.
+fn bill_document(
+    header: crate::printing::BillHeader,
+    order_number: &str,
+    now: chrono::DateTime<Utc>,
+    quote: &Quote,
+    customer_name: &str,
+    customer_phone: &str,
+    paid_minor: i64,
+) -> Result<crate::printing::BillDocument, String> {
+    Ok(crate::printing::BillDocument {
+        header,
+        order_number: order_number.into(),
+        created_at_ist: ist_time(now),
+        promised_at_ist: ist_time(
+            chrono::DateTime::parse_from_rfc3339(&quote.promised_at)
+                .map_err(|e| e.to_string())?
+                .with_timezone(&Utc),
+        ),
+        customer_name: customer_name.into(),
+        customer_phone: customer_phone.into(),
+        items: quote
+            .lines
+            .iter()
+            .map(|x| crate::printing::BillItem {
+                garment: x.garment.clone(),
+                service: x.service.clone(),
+                quantity: x.quantity,
+                unit_price_minor: x.unit_price_minor,
+                line_total_minor: x.line_total_minor,
+            })
+            .collect(),
+        subtotal_minor: quote.subtotal_minor,
+        // A discount partly given by hand is not a percentage of the subtotal, so the bill says just
+        // "Discount" for it.
+        discount_percent_bp: if quote.manual_discount_minor > 0 {
+            0
+        } else {
+            quote.discount_percent_bp
+        },
+        discount_minor: quote.discount_minor,
+        paid_minor,
+        balance_minor: quote.total_minor - paid_minor,
+        physical_piece_count: quote.piece_count,
+    })
+}
+
+/// The bill of an order that has not been saved yet, laid out as it would print. Nothing is stored:
+/// the order number is a placeholder and nothing has been paid yet.
+pub async fn preview_draft_bill(
+    db: &DatabaseState,
+    session: &CounterSession,
+    input: &OrderInput,
+) -> Result<crate::printing::BillPreview, String> {
+    let _ = actor(session)?;
+    let pool = db.writer_pool()?;
+    let now = Utc::now();
+    let quote = quote_at(pool, input, now).await?;
+    let phone = normalize_phone(&input.customer.phone)?;
+    let mut tx = pool.begin().await.map_err(db_err)?;
+    let header = crate::shop_settings::load_for_order(&mut tx)
+        .await?
+        .bill_header();
+    tx.rollback().await.map_err(db_err)?;
+    let bill = bill_document(
+        header,
+        "NOT SAVED YET",
+        now,
+        &quote,
+        input.customer.name.trim(),
+        &phone,
+        0,
+    )?;
+    crate::printing::preview_bill(&bill).map_err(|e| e.to_string())
+}
+
+/// The bill of a saved order as a reprint would print it now: the saved document, with the money
+/// received so far.
+pub async fn preview_order_bill(
+    db: &DatabaseState,
+    session: &CounterSession,
+    order_id: &str,
+) -> Result<crate::printing::BillPreview, String> {
+    let _ = actor(session)?;
+    let p = db.writer_pool()?;
+    let payload: String = sqlx::query_scalar("SELECT payload_json FROM print_jobs WHERE order_id=? AND kind='bill' AND source_job_id IS NULL ORDER BY created_at DESC LIMIT 1")
+        .bind(order_id)
+        .fetch_optional(p)
+        .await
+        .map_err(db_err)?
+        .ok_or("Saved print document not found.")?;
+    let mut document: crate::printing::PrintDocument = serde_json::from_str(&payload)
+        .map_err(|e| format!("Saved print document is invalid: {e}"))?;
+    let crate::printing::PrintDocument::Bill(bill) = &mut document else {
+        return Err("Saved bill document has the wrong format.".into());
+    };
+    let (paid_minor, total_minor) = live_payment_totals(p, order_id).await?;
+    bill.paid_minor = paid_minor;
+    bill.balance_minor = total_minor - paid_minor;
+    crate::printing::preview_bill(bill).map_err(|e| e.to_string())
+}
 /// Money received on an order right now (voided payments excluded) and the order total, in paise.
 /// Each payment is rounded on its own so the total is never a float sum.
 async fn live_payment_totals(p: &SqlitePool, order_id: &str) -> Result<(i64, i64), String> {
@@ -3437,6 +4075,7 @@ mod counter_tests {
                 quantity,
                 unit_price_override_minor: None,
             }],
+            manual_discount_minor: None,
         }
     }
     #[test]
@@ -3593,7 +4232,7 @@ mod counter_tests {
                 ("g-heavy-saree", "svc-dry-clean", 28000),
                 ("g-coat", "svc-iron", 5000),
                 ("g-lehenga-heavy", "svc-dry-clean", 70000),
-                ("g-footmat-large", "svc-wash", 10000),
+                ("g-footmat-large", "svc-wash-only", 10000),
                 ("g-dhoti", "svc-dry-clean", 12000),
             ] {
                 let mut item = order_input(1);
@@ -3615,7 +4254,9 @@ mod counter_tests {
                     .unwrap_err()
                     .contains("unavailable"));
             }
-            for service in ["svc-iron", "svc-wash-iron", "svc-dry-clean"] {
+            // Shoes are washed only: not pressed, starched or dry cleaned, and "Wash + Press" is not
+            // offered for them either.
+            for service in ["svc-iron", "svc-wash-iron", "svc-dry-clean", "svc-wash"] {
                 let mut shoes = order_input(1);
                 shoes.items[0].garment_id = "g-shoes".into();
                 shoes.items[0].service_id = service.into();
@@ -3626,7 +4267,7 @@ mod counter_tests {
             }
             let mut shoes = order_input(1);
             shoes.items[0].garment_id = "g-shoes".into();
-            shoes.items[0].service_id = "svc-wash".into();
+            shoes.items[0].service_id = "svc-wash-only".into();
             assert_eq!(quote(&db, &admin, &shoes).await.unwrap().total_minor, 15000);
             let cat = catalogue(&db, &admin).await.unwrap();
             let names: Vec<_> = cat
@@ -3634,7 +4275,10 @@ mod counter_tests {
                 .iter()
                 .map(|s| s["name"].as_str().unwrap().to_string())
                 .collect();
-            assert_eq!(names, ["Iron", "Wash", "Dry Clean", "Starch"]);
+            assert_eq!(
+                names,
+                ["Iron", "Wash only", "Wash + Press", "Dry Clean", "Starch"]
+            );
             cleanup(db, path).await;
         });
     }
@@ -3872,6 +4516,149 @@ mod counter_tests {
     }
 
     #[test]
+    fn an_admin_adds_removes_and_restores_a_service() {
+        tauri::async_runtime::block_on(async {
+            let path = fixture_path();
+            let db = DatabaseState::open(path.clone()).await;
+            let admin = admin_fixture(&db).await;
+            let staff = staff_fixture(&db).await;
+            let names = |cat: &Catalogue| {
+                cat.services
+                    .iter()
+                    .filter(|s| s["active"] == 1)
+                    .map(|s| s["name"].as_str().unwrap().to_string())
+                    .collect::<Vec<_>>()
+            };
+
+            // Staff cannot change services; names are checked.
+            assert!(add_service(&db, &staff, "Steam press")
+                .await
+                .unwrap_err()
+                .contains("Administrator access"));
+            assert!(add_service(&db, &admin, "  ").await.is_err());
+            assert!(add_service(&db, &admin, &"x".repeat(31)).await.is_err());
+            assert!(add_service(&db, &admin, "wash only")
+                .await
+                .unwrap_err()
+                .contains("already exists"));
+
+            // A new service comes last, with an unset, unavailable rate for every garment.
+            add_service(&db, &admin, "  Steam   press ").await.unwrap();
+            let cat = catalogue(&db, &admin).await.unwrap();
+            assert_eq!(
+                names(&cat),
+                [
+                    "Iron",
+                    "Wash only",
+                    "Wash + Press",
+                    "Dry Clean",
+                    "Starch",
+                    "Steam press"
+                ]
+            );
+            let steam = cat.services.last().unwrap()["id"]
+                .as_str()
+                .unwrap()
+                .to_string();
+            let rates: Vec<_> = cat
+                .rates
+                .iter()
+                .filter(|r| r["serviceId"] == steam.as_str())
+                .collect();
+            assert_eq!(rates.len(), cat.garments.len());
+            assert!(rates
+                .iter()
+                .all(|r| r["configured"] == 0 && r["available"] == 0));
+
+            // Once priced it can be sold, and the order keeps it after the service is removed.
+            set_rate(&db, &admin, "g-shirt", &steam, Some(2500), true)
+                .await
+                .unwrap();
+            let mut order = order_input(1);
+            order.items[0].service_id = steam.clone();
+            let saved = save_with_advance(&db, &staff, order.clone(), "steam-order", None)
+                .await
+                .unwrap();
+            assert_eq!(saved.lines[0].service, "Steam press");
+            assert!(set_service_active(&db, &staff, &steam, false)
+                .await
+                .is_err());
+            set_service_active(&db, &admin, &steam, false)
+                .await
+                .unwrap();
+            assert!(
+                !names(&catalogue(&db, &admin).await.unwrap()).contains(&"Steam press".to_string())
+            );
+            assert!(
+                quote(&db, &staff, &order).await.is_err(),
+                "a removed service cannot be sold"
+            );
+            let kept = get_saved(&db, &saved.order_id).await.unwrap().unwrap();
+            assert_eq!(kept.lines[0].service, "Steam press");
+
+            // Adding the same name again brings it back with its price.
+            add_service(&db, &admin, "steam press").await.unwrap();
+            let cat = catalogue(&db, &admin).await.unwrap();
+            assert_eq!(
+                cat.services
+                    .iter()
+                    .filter(|s| s["name"] == "Steam press")
+                    .count(),
+                1
+            );
+            assert!(quote(&db, &staff, &order).await.is_ok());
+            set_service_active(&db, &admin, &steam, false)
+                .await
+                .unwrap();
+            set_service_active(&db, &admin, &steam, true).await.unwrap();
+            assert!(
+                names(&catalogue(&db, &admin).await.unwrap()).contains(&"Steam press".to_string())
+            );
+
+            // An unknown service, and removing the last one, are refused.
+            assert_eq!(
+                set_service_active(&db, &admin, "nope", false)
+                    .await
+                    .unwrap_err(),
+                "Service not found."
+            );
+            for id in [
+                "svc-iron",
+                "svc-wash-only",
+                "svc-wash",
+                "svc-dry-clean",
+                "svc-wash-iron",
+            ] {
+                set_service_active(&db, &admin, id, false).await.unwrap();
+            }
+            assert_eq!(
+                set_service_active(&db, &admin, &steam, false)
+                    .await
+                    .unwrap_err(),
+                "Keep at least one service."
+            );
+            let audits: Vec<String> = sqlx::query_scalar(
+                "SELECT action FROM counter_audit WHERE entity_type='service' AND entity_id=? ORDER BY rowid",
+            )
+            .bind(&steam)
+            .fetch_all(db.writer_pool().unwrap())
+            .await
+            .unwrap();
+            assert_eq!(
+                audits,
+                [
+                    "service_added",
+                    "service_removed",
+                    "service_added",
+                    "service_removed",
+                    "service_restored"
+                ]
+            );
+            cleanup(db, path).await;
+        });
+    }
+
+    #[test]
     fn an_admin_adds_a_garment_that_is_sellable_only_for_priced_services() {
         tauri::async_runtime::block_on(async {
             let path = fixture_path();
@@ -3880,16 +4667,26 @@ mod counter_tests {
             let staff = staff_fixture(&db).await;
             let before = catalogue(&db, &admin).await.unwrap().garments.len();
 
-            assert!(add_garment(&db, &staff, "Leather jacket")
+            assert!(add_garment(&db, &staff, "Leather jacket", None)
                 .await
                 .unwrap_err()
                 .contains("Administrator access"));
-            assert!(add_garment(&db, &admin, "   ").await.is_err());
-            assert!(add_garment(&db, &admin, &"x".repeat(41)).await.is_err());
-            add_garment(&db, &admin, "  Leather   jacket ")
+            assert!(add_garment(&db, &admin, "   ", None).await.is_err());
+            assert!(add_garment(&db, &admin, &"x".repeat(41), None)
+                .await
+                .is_err());
+            for bad in ["", "../etc", "Saree", "a b", &"x".repeat(41)] {
+                assert_eq!(
+                    add_garment(&db, &admin, "Odd picture", Some(bad))
+                        .await
+                        .unwrap_err(),
+                    "Choose one of the pictures shown."
+                );
+            }
+            add_garment(&db, &admin, "  Leather   jacket ", None)
                 .await
                 .unwrap();
-            assert!(add_garment(&db, &admin, "leather JACKET")
+            assert!(add_garment(&db, &admin, "leather JACKET", Some("jacket"))
                 .await
                 .unwrap_err()
                 .contains("already exists"));
@@ -3899,6 +4696,13 @@ mod counter_tests {
             let jacket = cat.garments.last().unwrap();
             assert_eq!(jacket["nameEn"], "Leather jacket");
             let id = jacket["id"].as_str().unwrap().to_string();
+            // No picture chosen: the key names no file, so the counter shows the first letter.
+            assert_eq!(jacket["imageKey"], id.as_str());
+            add_garment(&db, &admin, "Churidar suit", Some("churidar"))
+                .await
+                .unwrap();
+            let cat = catalogue(&db, &admin).await.unwrap();
+            assert_eq!(cat.garments.last().unwrap()["imageKey"], "churidar");
             let rates: Vec<_> = cat
                 .rates
                 .iter()
@@ -3921,6 +4725,7 @@ mod counter_tests {
                     quantity: 1,
                     unit_price_override_minor: None,
                 }],
+                manual_discount_minor: None,
             };
             assert!(quote(&db, &staff, &order("svc-wash")).await.is_err());
             set_rate(&db, &admin, &id, "svc-wash", Some(30000), true)
@@ -4048,6 +4853,549 @@ mod counter_tests {
         });
     }
 
+    /// Every line of text on every page of a preview, in page order.
+    fn preview_text(preview: &crate::printing::BillPreview) -> Vec<String> {
+        preview
+            .pages
+            .iter()
+            .flat_map(|page| page.lines.iter().map(|line| line.text.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn the_bill_of_an_order_being_taken_can_be_previewed_without_saving_anything() {
+        tauri::async_runtime::block_on(async {
+            let path = fixture_path();
+            let db = DatabaseState::open(path.clone()).await;
+            let _admin = admin_fixture(&db).await;
+            let staff = staff_fixture(&db).await;
+            let before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM orders")
+                .fetch_one(db.writer_pool().unwrap())
+                .await
+                .unwrap();
+
+            let preview = preview_draft_bill(&db, &staff, &order_input(2))
+                .await
+                .unwrap();
+            // A5 landscape, one page, with the customer, the placeholder bill number and nothing paid.
+            assert!(
+                (preview.width_pt - 595.28).abs() < 0.1 && (preview.height_pt - 419.53).abs() < 0.1
+            );
+            assert_eq!(preview.pages.len(), 1);
+            let text = preview_text(&preview).join("\n");
+            assert!(
+                text.contains("Fixture Customer") && text.contains("9990000000"),
+                "{text}"
+            );
+            assert!(text.contains("NOT SAVED YET"), "{text}");
+            assert!(
+                text.contains("Paid so far") && text.contains("\u{20b9}0.00"),
+                "{text}"
+            );
+            assert!(!preview.pages[0].rules.is_empty());
+            let line = &preview.pages[0].lines[0];
+            assert!(line.size_pt > 0.0 && line.x_pt >= 0.0 && line.y_pt >= 0.0);
+
+            // The same checks as a real quote: no customer name, no lines, an unknown rate.
+            let mut nameless = order_input(1);
+            nameless.customer.name = " ".into();
+            assert!(preview_draft_bill(&db, &staff, &nameless).await.is_err());
+            let mut empty = order_input(1);
+            empty.items.clear();
+            assert!(preview_draft_bill(&db, &staff, &empty).await.is_err());
+
+            // Previewing needs a signed-in user and stores nothing.
+            assert!(
+                preview_draft_bill(&db, &CounterSession::default(), &order_input(1))
+                    .await
+                    .is_err()
+            );
+            let after: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM orders")
+                .fetch_one(db.writer_pool().unwrap())
+                .await
+                .unwrap();
+            assert_eq!(before, after);
+            let jobs: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM print_jobs")
+                .fetch_one(db.writer_pool().unwrap())
+                .await
+                .unwrap();
+            assert_eq!(jobs, 0);
+            cleanup(db, path).await;
+        });
+    }
+
+    #[test]
+    fn the_bill_of_a_saved_order_is_previewed_with_the_money_received_so_far() {
+        tauri::async_runtime::block_on(async {
+            let path = fixture_path();
+            let db = DatabaseState::open(path.clone()).await;
+            let _admin = admin_fixture(&db).await;
+            let staff = staff_fixture(&db).await;
+            let saved = save_with_advance(&db, &staff, order_input(2), "preview-1", Some(1000))
+                .await
+                .unwrap();
+
+            let first = preview_order_bill(&db, &staff, &saved.order_id)
+                .await
+                .unwrap();
+            let text = preview_text(&first).join("\n");
+            assert!(text.contains(&saved.order_number), "{text}");
+            assert!(text.contains("Paid so far"), "{text}");
+
+            // After the balance is paid the same preview says Paid, as a reprint would.
+            record_payment(
+                &db,
+                &staff,
+                &saved.order_id,
+                RecordPaymentInput {
+                    amount_minor: saved.total_minor - 1000,
+                    method: "cash".into(),
+                    reference: None,
+                    idempotency_key: "preview-balance".into(),
+                },
+            )
+            .await
+            .unwrap();
+            let settled = preview_order_bill(&db, &staff, &saved.order_id)
+                .await
+                .unwrap();
+            let text = preview_text(&settled).join("\n");
+            assert!(
+                !text.contains("Paid so far") && text.contains("Paid"),
+                "{text}"
+            );
+
+            // An order with no saved bill, a missing order and a signed-out user are all refused.
+            assert!(preview_order_bill(&db, &staff, "missing")
+                .await
+                .unwrap_err()
+                .contains("not found"));
+            assert!(
+                preview_order_bill(&db, &CounterSession::default(), &saved.order_id)
+                    .await
+                    .is_err()
+            );
+            sqlx::query(
+                "UPDATE print_jobs SET payload_json='{broken' WHERE order_id=? AND kind='bill'",
+            )
+            .bind(&saved.order_id)
+            .execute(db.writer_pool().unwrap())
+            .await
+            .unwrap();
+            assert!(preview_order_bill(&db, &staff, &saved.order_id)
+                .await
+                .unwrap_err()
+                .contains("invalid"));
+            cleanup(db, path).await;
+        });
+    }
+
+    #[test]
+    fn an_admin_lists_the_trash_and_restores_an_order_from_it() {
+        tauri::async_runtime::block_on(async {
+            let path = fixture_path();
+            let db = DatabaseState::open(path.clone()).await;
+            let admin = admin_fixture(&db).await;
+            let staff = staff_fixture(&db).await;
+            let first = save_with(&db, &staff, order_input(1), "first")
+                .await
+                .unwrap();
+            let second = save_with(&db, &staff, order_input(2), "second")
+                .await
+                .unwrap();
+
+            // Only an administrator sees or empties the trash; an empty trash is an empty list.
+            assert!(list_trashed_orders(&db, &staff)
+                .await
+                .unwrap_err()
+                .contains("Administrator access"));
+            assert!(restore_order(&db, &staff, &first.order_id)
+                .await
+                .unwrap_err()
+                .contains("Administrator access"));
+            assert!(list_trashed_orders(&db, &admin).await.unwrap().is_empty());
+
+            // An order that is not in the trash, or does not exist, cannot be restored.
+            assert!(restore_order(&db, &admin, &first.order_id)
+                .await
+                .unwrap_err()
+                .contains("not in the trash"));
+            assert!(restore_order(&db, &admin, "missing")
+                .await
+                .unwrap_err()
+                .contains("not in the trash"));
+
+            // Trashing lists it with who did it and, for a staff request, why.
+            request_order_trash(&db, &staff, &first.order_id, "Added twice")
+                .await
+                .unwrap();
+            trash_order(&db, &admin, &first.order_id).await.unwrap();
+            trash_order(&db, &admin, &second.order_id).await.unwrap();
+            let trashed = list_trashed_orders(&db, &admin).await.unwrap();
+            assert_eq!(trashed.len(), 2);
+            let listed = trashed
+                .iter()
+                .find(|t| t.order_id == first.order_id)
+                .unwrap();
+            assert_eq!(listed.order_number, first.order_number);
+            assert_eq!(listed.total_minor, first.total_minor);
+            assert_eq!(
+                (listed.trashed_by.as_str(), listed.reason.as_str()),
+                ("fixture-admin", "Added twice")
+            );
+            let plain = trashed
+                .iter()
+                .find(|t| t.order_id == second.order_id)
+                .unwrap();
+            assert_eq!(plain.reason, "");
+            assert!(
+                listed.trashed_at.len() > 10
+                    && !listed.received_at.is_empty()
+                    && !listed.customer_name.is_empty()
+            );
+            assert!(!listed.customer_phone.is_empty() && !listed.status.is_empty());
+
+            // Restoring brings it back into the lists and clears the old request.
+            restore_order(&db, &admin, &first.order_id).await.unwrap();
+            assert!(restore_order(&db, &admin, &first.order_id)
+                .await
+                .unwrap_err()
+                .contains("not in the trash"));
+            let remaining = list_trashed_orders(&db, &admin).await.unwrap();
+            assert_eq!(
+                remaining
+                    .iter()
+                    .map(|t| t.order_id.as_str())
+                    .collect::<Vec<_>>(),
+                vec![second.order_id.as_str()]
+            );
+            let listed_orders = search_orders(&db, &admin, "", 0, 50, None).await.unwrap();
+            assert_eq!(
+                listed_orders
+                    .iter()
+                    .map(|o| o.id.as_str())
+                    .collect::<Vec<_>>(),
+                vec![first.order_id.as_str()]
+            );
+            assert!(list_trash_requests(&db, &admin).await.unwrap().is_empty());
+            let columns: (Option<String>, Option<String>) =
+                sqlx::query_as("SELECT trashed_by,trash_request_reason FROM orders WHERE id=?")
+                    .bind(&first.order_id)
+                    .fetch_one(db.writer_pool().unwrap())
+                    .await
+                    .unwrap();
+            assert_eq!(columns, (None, None));
+
+            // It can be trashed again, and the restore was audited.
+            trash_order(&db, &admin, &first.order_id).await.unwrap();
+            let audited: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM counter_audit WHERE action='order_restored' AND entity_id=?",
+            )
+            .bind(&first.order_id)
+            .fetch_one(db.writer_pool().unwrap())
+            .await
+            .unwrap();
+            assert_eq!(audited, 1);
+            cleanup(db, path).await;
+        });
+    }
+
+    #[test]
+    fn part_of_an_order_can_be_handed_over_and_the_last_part_needs_the_bill_paid() {
+        tauri::async_runtime::block_on(async {
+            let path = fixture_path();
+            let db = DatabaseState::open(path.clone()).await;
+            let _admin = admin_fixture(&db).await;
+            let staff = staff_fixture(&db).await;
+            let mut order = order_input(3);
+            order.items.push(LineInput {
+                garment_id: "g-shirt".into(),
+                service_id: "svc-iron".into(),
+                quantity: 2,
+                unit_price_override_minor: None,
+            });
+            let saved = save_with_advance(&db, &staff, order, "part-handover", None)
+                .await
+                .unwrap();
+            // The saved order lists its lines with prices and nothing handed over yet.
+            assert_eq!(saved.lines.len(), 2);
+            let (wash, iron) = (&saved.lines[0], &saved.lines[1]);
+            assert_eq!(
+                (wash.quantity, wash.piece_count, wash.handed_over_count),
+                (3, 3, 0)
+            );
+            assert_eq!(wash.line_total_minor, wash.unit_price_minor * 3);
+            assert_eq!((iron.quantity, iron.service.as_str()), (2, "Iron"));
+            assert_eq!(
+                wash.line_total_minor + iron.line_total_minor,
+                saved.total_minor
+            );
+            let listed = search_orders(&db, &staff, "", 0, 50, Some("open"))
+                .await
+                .unwrap();
+            assert_eq!(listed.len(), 1);
+            assert_eq!(
+                listed[0].items_text,
+                format!(
+                    "3 {} · {}, 2 {} · Iron",
+                    wash.garment, wash.service, iron.garment
+                )
+            );
+            assert_eq!(listed[0].handed_over_count, 0);
+
+            // Nothing chosen, a line from nowhere and a signed-out user are refused.
+            assert!(hand_over_items(&db, &staff, &saved.order_id, &[])
+                .await
+                .is_err());
+            assert_eq!(
+                hand_over_items(&db, &staff, &saved.order_id, &["nope".into()])
+                    .await
+                    .unwrap_err(),
+                "That line is not on this bill."
+            );
+            assert!(hand_over_items(
+                &db,
+                &CounterSession::default(),
+                &saved.order_id,
+                std::slice::from_ref(&wash.item_id)
+            )
+            .await
+            .is_err());
+
+            // The washed shirts go now, unpaid; the order stays open and counts as part collected.
+            let part = hand_over_items(
+                &db,
+                &staff,
+                &saved.order_id,
+                std::slice::from_ref(&wash.item_id),
+            )
+            .await
+            .unwrap();
+            assert_eq!(part.status, "received");
+            assert_eq!(part.lines[0].handed_over_count, 3);
+            assert_eq!(part.lines[1].handed_over_count, 0);
+            assert!(part.collected_at.is_none());
+            // A repeated tap changes nothing.
+            let again = hand_over_items(
+                &db,
+                &staff,
+                &saved.order_id,
+                std::slice::from_ref(&wash.item_id),
+            )
+            .await
+            .unwrap();
+            assert_eq!(again.lines[0].handed_over_count, 3);
+            let listed = search_orders(&db, &staff, "", 0, 50, Some("open"))
+                .await
+                .unwrap();
+            assert_eq!(listed[0].handed_over_count, 3);
+
+            // The last line cannot go while money is owed.
+            let owed = hand_over_items(
+                &db,
+                &staff,
+                &saved.order_id,
+                std::slice::from_ref(&iron.item_id),
+            )
+            .await
+            .unwrap_err();
+            assert!(
+                owed.contains("still has") && owed.contains("to pay"),
+                "{owed}"
+            );
+            record_payment(
+                &db,
+                &staff,
+                &saved.order_id,
+                RecordPaymentInput {
+                    amount_minor: saved.total_minor,
+                    method: "upi".into(),
+                    reference: None,
+                    idempotency_key: "part-handover-pay".into(),
+                },
+            )
+            .await
+            .unwrap();
+            let done = hand_over_items(
+                &db,
+                &staff,
+                &saved.order_id,
+                std::slice::from_ref(&iron.item_id),
+            )
+            .await
+            .unwrap();
+            assert_eq!(done.status, "collected");
+            assert!(done.collected_at.is_some());
+            assert!(done
+                .lines
+                .iter()
+                .all(|line| line.handed_over_count == line.piece_count));
+            // Collected is final: asking again returns the order as it is.
+            assert_eq!(
+                hand_over_items(
+                    &db,
+                    &staff,
+                    &saved.order_id,
+                    std::slice::from_ref(&iron.item_id)
+                )
+                .await
+                .unwrap()
+                .status,
+                "collected"
+            );
+            let counts = order_queue_counts(&db, &staff).await.unwrap();
+            assert_eq!((counts.open, counts.collected), (0, 1));
+            assert_eq!(
+                search_orders(&db, &staff, "", 0, 50, Some("collected"))
+                    .await
+                    .unwrap()
+                    .len(),
+                1
+            );
+            let audits: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM counter_audit WHERE action='items_handed_over' AND entity_id=?",
+            )
+            .bind(&saved.order_id)
+            .fetch_one(db.writer_pool().unwrap())
+            .await
+            .unwrap();
+            assert_eq!(audits, 2, "one for each hand-over that moved pieces");
+
+            // A cancelled order hands nothing over.
+            let other = save_with_advance(&db, &staff, order_input(1), "part-handover-2", None)
+                .await
+                .unwrap();
+            sqlx::query("UPDATE orders SET status='cancelled' WHERE id=?")
+                .bind(&other.order_id)
+                .execute(db.writer_pool().unwrap())
+                .await
+                .unwrap();
+            assert!(hand_over_items(
+                &db,
+                &staff,
+                &other.order_id,
+                std::slice::from_ref(&other.lines[0].item_id)
+            )
+            .await
+            .unwrap_err()
+            .contains("cancelled"));
+            assert_eq!(
+                hand_over_items(
+                    &db,
+                    &staff,
+                    "missing",
+                    std::slice::from_ref(&other.lines[0].item_id)
+                )
+                .await
+                .unwrap_err(),
+                "Order not found."
+            );
+            cleanup(db, path).await;
+        });
+    }
+
+    #[test]
+    fn clearing_all_orders_backs_up_first_and_keeps_the_shop_setup() {
+        tauri::async_runtime::block_on(async {
+            let path = fixture_path();
+            let db = DatabaseState::open(path.clone()).await;
+            let admin = admin_fixture(&db).await;
+            let staff = staff_fixture(&db).await;
+            let first = save_with(&db, &staff, order_input(1), "first")
+                .await
+                .unwrap();
+            let second = save_with(&db, &staff, order_input(2), "second")
+                .await
+                .unwrap();
+            trash_order(&db, &admin, &second.order_id).await.unwrap();
+            let pool = db.writer_pool().unwrap().clone();
+            let customer_id: String = sqlx::query_scalar("SELECT id FROM customers LIMIT 1")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            set_discount(&db, &admin, None, 500, true, "Shop")
+                .await
+                .unwrap();
+            set_discount(&db, &admin, Some(&customer_id), 1000, true, "Regular")
+                .await
+                .unwrap();
+            let count = |sql: &'static str| {
+                let pool = pool.clone();
+                async move {
+                    sqlx::query_scalar::<_, i64>(sql)
+                        .fetch_one(&pool)
+                        .await
+                        .unwrap()
+                }
+            };
+            let rates_before = count("SELECT COUNT(*) FROM garment_service_rates").await;
+
+            // Staff cannot clear, and nothing happens without the confirmation word.
+            assert!(clear_all_orders(&db, &staff, CLEAR_ORDERS_CONFIRMATION)
+                .await
+                .unwrap_err()
+                .contains("Administrator access"));
+            assert!(clear_all_orders(&db, &admin, "clear please")
+                .await
+                .unwrap_err()
+                .contains("Type CLEAR"));
+            assert_eq!(count("SELECT COUNT(*) FROM orders").await, 2);
+
+            let cleared = clear_all_orders(&db, &admin, " CLEAR ").await.unwrap();
+            assert_eq!((cleared.orders, cleared.customers), (2, 1));
+            // The backup holds what was removed.
+            let backup = sqlx::sqlite::SqlitePoolOptions::new()
+                .connect_with(
+                    sqlx::sqlite::SqliteConnectOptions::new()
+                        .filename(&cleared.backup_path)
+                        .read_only(true),
+                )
+                .await
+                .unwrap();
+            let backed_up: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM orders")
+                .fetch_one(&backup)
+                .await
+                .unwrap();
+            assert_eq!(backed_up, 2);
+            backup.close().await;
+
+            for table in [
+                "SELECT COUNT(*) FROM orders",
+                "SELECT COUNT(*) FROM order_items",
+                "SELECT COUNT(*) FROM order_pieces",
+                "SELECT COUNT(*) FROM payments",
+                "SELECT COUNT(*) FROM print_jobs",
+                "SELECT COUNT(*) FROM customers",
+                "SELECT COUNT(*) FROM order_day_sequences",
+                "SELECT COUNT(*) FROM counter_discounts WHERE scope='customer'",
+            ] {
+                assert_eq!(count(table).await, 0, "{table}");
+            }
+            // The rate card, the shop-wide discount and the staff stay; the clear is audited.
+            assert_eq!(
+                count("SELECT COUNT(*) FROM garment_service_rates").await,
+                rates_before
+            );
+            assert_eq!(
+                count("SELECT COUNT(*) FROM counter_discounts WHERE scope='all'").await,
+                1
+            );
+            assert_eq!(count("SELECT COUNT(*) FROM counter_accounts").await, 2);
+            assert_eq!(
+                count("SELECT COUNT(*) FROM counter_audit WHERE action='orders_cleared'").await,
+                1
+            );
+            assert!(get_saved(&db, &first.order_id).await.unwrap().is_none());
+
+            // The next bill of the day starts again at 0001.
+            let next = save_with(&db, &staff, order_input(1), "after-clear")
+                .await
+                .unwrap();
+            assert!(next.order_number.ends_with("0001"), "{}", next.order_number);
+            cleanup(db, path).await;
+        });
+    }
+
     #[test]
     fn a_trashed_order_is_kept_but_leaves_lists_sales_and_customer_totals() {
         tauri::async_runtime::block_on(async {
@@ -4119,6 +5467,176 @@ mod counter_tests {
             .await
             .unwrap();
             assert_eq!(audited, 1);
+            cleanup(db, path).await;
+        });
+    }
+
+    #[test]
+    fn staff_can_take_an_extra_amount_off_one_bill_and_it_is_checked_stored_audited_and_printed() {
+        tauri::async_runtime::block_on(async {
+            let path = fixture_path();
+            let db = DatabaseState::open(path.clone()).await;
+            let admin = admin_fixture(&db).await;
+            let staff = staff_fixture(&db).await;
+            let with = |manual: Option<i64>| {
+                let mut order = order_input(2);
+                order.manual_discount_minor = manual;
+                order
+            };
+
+            // Without one nothing changes, and the amount only subtracts from the subtotal (6000).
+            let plain = quote(&db, &staff, &with(None)).await.unwrap();
+            assert_eq!(
+                (
+                    plain.subtotal_minor,
+                    plain.manual_discount_minor,
+                    plain.total_minor
+                ),
+                (6000, 0, 6000)
+            );
+            let extra = quote(&db, &staff, &with(Some(500))).await.unwrap();
+            assert_eq!(
+                (
+                    extra.subtotal_minor,
+                    extra.discount_percent_bp,
+                    extra.discount_minor,
+                    extra.manual_discount_minor,
+                    extra.total_minor
+                ),
+                (6000, 0, 500, 500, 5500)
+            );
+            // It adds to an automatic discount (10% of 6000 is 600), and may take the rest to zero.
+            set_discount(&db, &admin, None, 1000, true, "Shop")
+                .await
+                .unwrap();
+            let both = quote(&db, &staff, &with(Some(500))).await.unwrap();
+            assert_eq!(
+                (
+                    both.discount_percent_bp,
+                    both.discount_minor,
+                    both.manual_discount_minor,
+                    both.total_minor
+                ),
+                (1000, 1100, 500, 4900)
+            );
+            let everything = quote(&db, &staff, &with(Some(5400))).await.unwrap();
+            assert_eq!(everything.total_minor, 0);
+            // Not below zero, and not a negative one.
+            assert!(quote(&db, &staff, &with(Some(5401)))
+                .await
+                .unwrap_err()
+                .contains("more than the customer owes"));
+            assert!(quote(&db, &staff, &with(Some(-1)))
+                .await
+                .unwrap_err()
+                .contains("less than zero"));
+            set_discount(&db, &admin, None, 1000, false, "Shop")
+                .await
+                .unwrap();
+
+            // The reviewed quote must be for this very discount.
+            let reviewed_without = quote(&db, &staff, &with(None)).await.unwrap();
+            let mismatch = save_order(
+                &db,
+                &staff,
+                SaveInput {
+                    order: with(Some(500)),
+                    reviewed_quote: reviewed_without,
+                    idempotency_key: "mismatch".into(),
+                    payment: None,
+                },
+            )
+            .await;
+            assert!(mismatch.unwrap_err().contains("Review the refreshed quote"));
+
+            // Saved: the total, the stored discount (fixed rupees), the bill, and an audit entry.
+            let saved = save_with(&db, &staff, with(Some(500)), "extra-discount")
+                .await
+                .unwrap();
+            assert_eq!(saved.total_minor, 5500);
+            let stored: (String, f64, f64, f64) = sqlx::query_as("SELECT discount_type,discount_value,discount_amount,total_amount FROM orders WHERE id=?")
+                .bind(&saved.order_id)
+                .fetch_one(db.writer_pool().unwrap())
+                .await
+                .unwrap();
+            assert_eq!(stored, ("fixed".to_string(), 5.0, 5.0, 55.0));
+            let payload: String = sqlx::query_scalar(
+                "SELECT payload_json FROM print_jobs WHERE order_id=? AND kind='bill'",
+            )
+            .bind(&saved.order_id)
+            .fetch_one(db.writer_pool().unwrap())
+            .await
+            .unwrap();
+            let crate::printing::PrintDocument::Bill(bill) =
+                serde_json::from_str(&payload).unwrap()
+            else {
+                panic!("a bill document");
+            };
+            assert_eq!((bill.discount_minor, bill.discount_percent_bp), (500, 0));
+            let audit: (String, String) = sqlx::query_as("SELECT actor_id,details_json FROM counter_audit WHERE action='order_manual_discount' AND entity_id=?")
+                .bind(&saved.order_id)
+                .fetch_one(db.writer_pool().unwrap())
+                .await
+                .unwrap();
+            assert_eq!(audit.0, "fixture-staff");
+            let details: serde_json::Value = serde_json::from_str(&audit.1).unwrap();
+            assert_eq!(
+                (
+                    details["manualDiscountMinor"].as_i64(),
+                    details["automaticDiscountMinor"].as_i64(),
+                    details["subtotalMinor"].as_i64()
+                ),
+                (Some(500), Some(0), Some(6000))
+            );
+
+            // The printed bill says plain "Discount" for it, with no percentage.
+            let preview = preview_order_bill(&db, &staff, &saved.order_id)
+                .await
+                .unwrap();
+            let text = preview_text(&preview);
+            assert!(
+                text.iter().any(|line| line == "Discount: -\u{20b9}5.00"),
+                "{text:?}"
+            );
+            assert!(
+                !text.iter().any(|line| line.starts_with("Discount (")),
+                "{text:?}"
+            );
+
+            // An order with no extra discount leaves no such audit entry and keeps its percentage label.
+            set_discount(&db, &admin, None, 1000, true, "Shop")
+                .await
+                .unwrap();
+            let automatic = save_with(&db, &staff, with(None), "automatic-only")
+                .await
+                .unwrap();
+            let none: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM counter_audit WHERE action='order_manual_discount' AND entity_id=?")
+                .bind(&automatic.order_id)
+                .fetch_one(db.writer_pool().unwrap())
+                .await
+                .unwrap();
+            assert_eq!(none, 0);
+            let preview = preview_order_bill(&db, &staff, &automatic.order_id)
+                .await
+                .unwrap();
+            assert!(preview_text(&preview)
+                .iter()
+                .any(|line| line.starts_with("Discount (10%)")));
+            let stored: (String, f64) =
+                sqlx::query_as("SELECT discount_type,discount_value FROM orders WHERE id=?")
+                    .bind(&automatic.order_id)
+                    .fetch_one(db.writer_pool().unwrap())
+                    .await
+                    .unwrap();
+            assert_eq!(stored, ("percentage".to_string(), 10.0));
+
+            // The preview of an order still being taken shows the extra discount too.
+            let draft = preview_draft_bill(&db, &staff, &with(Some(300)))
+                .await
+                .unwrap();
+            assert!(preview_text(&draft)
+                .iter()
+                .any(|line| line.starts_with("Discount")));
             cleanup(db, path).await;
         });
     }
@@ -4508,6 +6026,7 @@ mod counter_tests {
                         unit_price_override_minor: None,
                     })
                     .collect(),
+                manual_discount_minor: None,
             };
             let total = quote(&db, &staff, &order).await.unwrap().total_minor;
             let saved = save_at(
@@ -4657,7 +6176,7 @@ mod counter_tests {
             let mut order = order_input(2);
             order.items.push(LineInput {
                 garment_id: "g-shoes".into(),
-                service_id: "svc-wash".into(),
+                service_id: "svc-wash-only".into(),
                 quantity: 3,
                 unit_price_override_minor: None,
             });
@@ -5335,6 +6854,7 @@ mod counter_tests {
                 quantity,
                 unit_price_override_minor: None,
             }],
+            manual_discount_minor: None,
         }
     }
 
@@ -5553,6 +7073,8 @@ mod counter_tests {
                     today: 6,
                     all: 8,
                     balance_due_minor: 3000 + 1000 + 3000 + 1000,
+                    open: 6,
+                    collected: 1,
                 }
             );
             cleanup(db, path).await;
@@ -5634,6 +7156,83 @@ mod counter_tests {
                 .await,
                 sorted_ids(&[&yesterday, &today])
             );
+            cleanup(db, path).await;
+        });
+    }
+
+    #[test]
+    fn a_chosen_day_lists_the_orders_received_that_shop_day_newest_first() {
+        tauri::async_runtime::block_on(async {
+            let path = fixture_path();
+            let db = DatabaseState::open(path.clone()).await;
+            let _admin = admin_fixture(&db).await;
+            let staff = staff_fixture(&db).await;
+            let now = ist_instant("2026-10-20T11:30:00+05:30");
+            let mut saved = Vec::new();
+            // The 16th ends at 23:59:59 IST and the 17th begins at 00:00:00 IST.
+            for (name, phone, at) in [
+                ("Late16", "9000000031", "2026-10-16T23:59:59+05:30"),
+                ("Early17", "9000000032", "2026-10-17T00:00:00+05:30"),
+                ("Noon17", "9000000033", "2026-10-17T12:00:00+05:30"),
+                ("Early18", "9000000034", "2026-10-18T00:00:00+05:30"),
+            ] {
+                let order = save_at(
+                    &db,
+                    &staff,
+                    customer_order(name, phone, "svc-wash", 1),
+                    name,
+                    ist_instant(at),
+                    None,
+                )
+                .await
+                .unwrap();
+                saved.push(order);
+            }
+
+            // Newest received first within the day, and nothing from the days either side.
+            assert_eq!(
+                listed_in_order(&db, &staff, "", Some("day:2026-10-17"), now).await,
+                vec![saved[2].order_id.clone(), saved[1].order_id.clone()]
+            );
+            assert_eq!(
+                listed_in_order(&db, &staff, "", Some("day:2026-10-16"), now).await,
+                vec![saved[0].order_id.clone()]
+            );
+            // The chosen day does not depend on today's date; a day with no orders is an empty list.
+            assert!(
+                listed_in_order(&db, &staff, "", Some("day:2026-10-19"), now)
+                    .await
+                    .is_empty()
+            );
+            assert!(
+                listed_in_order(&db, &staff, "", Some("day:2030-01-01"), now)
+                    .await
+                    .is_empty()
+            );
+            // A search narrows the day.
+            assert_eq!(
+                listed_in_order(&db, &staff, "Noon", Some("day:2026-10-17"), now).await,
+                vec![saved[2].order_id.clone()]
+            );
+            assert!(
+                listed_in_order(&db, &staff, "Late16", Some("day:2026-10-17"), now)
+                    .await
+                    .is_empty()
+            );
+            // Today still means today.
+            assert!(listed_in_order(&db, &staff, "", Some("today"), now)
+                .await
+                .is_empty());
+
+            // A date that is not a date is refused, including an impossible one.
+            for bad in ["day:", "day:tomorrow", "day:2026-02-30", "day:17-10-2026"] {
+                assert_eq!(
+                    search_orders_at(&db, &staff, "", 0, 50, Some(bad), now)
+                        .await
+                        .unwrap_err(),
+                    "Choose a valid date."
+                );
+            }
             cleanup(db, path).await;
         });
     }

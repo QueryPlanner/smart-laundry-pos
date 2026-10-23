@@ -36,6 +36,7 @@ vi.mock('./ExpensesPage', () => ({ ExpensesPage: stand('Expenses') }));
 vi.mock('./InventoryPage', () => ({ InventoryPage: stand('Inventory') }));
 vi.mock('./MachinesPage', () => ({ MachinesPage: stand('Machines') }));
 vi.mock('./ShopSettingsPage', () => ({ ShopSettingsPage: stand('Settings') }));
+vi.mock('./TrashPage', () => ({ TrashPage: stand('Trash') }));
 
 const staff: CounterAccount = { id: 'staff-1', fullName: 'Asha Patil', role: 'staff', active: true };
 const admin: CounterAccount = { id: 'admin-1', fullName: 'Mira Shah', role: 'admin', active: true };
@@ -46,7 +47,7 @@ const catalogue: CounterCatalogue = {
 };
 const order = (): CounterSavedOrder => ({
   orderId: 'o-7', orderNumber: 'SL-7', customerName: 'Rita Joshi', customerPhone: '9876543210', paymentStatus: 'unpaid', collectedAt: null, refundDueMinor: 0, payments: [], receivedAt: '2026-10-15T06:00:00Z', promisedAt: '2026-10-17T11:30:00Z', status: 'ready',
-  totalMinor: 4000, paidMinor: 0, balanceMinor: 4000, pieces: [], printJobs: [],
+  totalMinor: 4000, paidMinor: 0, balanceMinor: 4000, lines: [], payments: [], pieces: [], printJobs: [],
 } as unknown as CounterSavedOrder);
 
 const signedInAs = async (account: CounterAccount) => {
@@ -82,7 +83,7 @@ describe('navigation registry', () => {
   it('lists the groups in the order the shell shows them', () => {
     expect(NAV_GROUPS.map(group => group.label)).toEqual(['Counter', 'Insights', 'Shop', 'Admin']);
     expect(NAV_GROUPS.flatMap(group => group.sections.map(section => section.label))).toEqual([
-      'New order', 'Orders / Pickup', 'Print queue', 'Dashboard', 'Sales', 'Customers', 'Expenses', 'Inventory', 'Machines', 'Admin', 'Shop settings',
+      'New order', 'Orders / Pickup', 'Print queue', 'Dashboard', 'Sales', 'Customers', 'Expenses', 'Inventory', 'Machines', 'Admin', 'Shop settings', 'Trash',
     ]);
   });
 
@@ -91,6 +92,8 @@ describe('navigation registry', () => {
     expect(visibleNavGroups('admin').map(group => group.label)).toEqual(['Counter', 'Insights', 'Shop', 'Admin']);
     expect(canOpen('admin', 'staff')).toBe(false);
     expect(canOpen('settings', 'staff')).toBe(false);
+    expect(canOpen('trash', 'staff')).toBe(false);
+    expect(canOpen('trash', 'admin')).toBe(true);
     expect(canOpen('sales', 'staff')).toBe(true);
     expect(canOpen('settings', 'admin')).toBe(true);
   });
@@ -102,12 +105,13 @@ describe('role-filtered navigation', () => {
     expect(labels()).toEqual(['New order', 'Orders / Pickup', 'Print queue', 'Dashboard', 'Sales', 'Customers', 'Expenses', 'Inventory', 'Machines']);
     expect(screen.queryByRole('button', { name: 'Admin' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Shop settings' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Trash' })).toBeNull();
     expect(screen.queryByRole('group', { name: 'Admin' })).toBeNull();
   });
 
   it('shows administrators every section in four labelled groups', async () => {
     await signedInAs(admin);
-    expect(labels()).toHaveLength(11);
+    expect(labels()).toHaveLength(12);
     expect(navigation().getByRole('button', { name: 'Admin' })).toBeTruthy();
     expect(navigation().getByRole('button', { name: 'Shop settings' })).toBeTruthy();
     for (const group of ['Counter', 'Insights', 'Shop', 'Admin']) expect(navigation().getByRole('group', { name: group })).toBeTruthy();
@@ -145,6 +149,13 @@ describe('section pages', () => {
     expect(await screen.findByRole('heading', { name: heading })).toBeTruthy();
     expect(navigation().getByRole('button', { name }).getAttribute('aria-current')).toBe('page');
     expect(screen.queryByLabelText('Garments')).toBeNull();
+  });
+
+  it('opens the Trash for administrators, with the signed-in account', async () => {
+    await signedInAs(admin);
+    go('Trash');
+    expect(await screen.findByRole('heading', { name: 'Trash page' })).toBeTruthy();
+    expect(screen.getByText('Trash for Mira Shah')).toBeTruthy();
   });
 
   it('opens Shop settings and Admin for administrators', async () => {
@@ -190,7 +201,7 @@ describe('opening an order from another section', () => {
     expect(navigation().getByRole('button', { name: 'Orders / Pickup' }).getAttribute('aria-current')).toBe('page');
     expect(screen.queryByRole('heading', { name: 'Customers page' })).toBeNull();
     // The order says who it belongs to, and Back goes to the section it was opened from.
-    expect(screen.getByText('Rita Joshi · 9876543210')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Rita Joshi' })).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: '← Customers' }));
     expect(await screen.findByRole('heading', { name: 'Customers page' })).toBeTruthy();
   });
@@ -211,11 +222,6 @@ describe('opening an order from another section', () => {
     await screen.findByRole('heading', { name: 'SL-7' });
     expect(labels()).not.toContain('Print progress');
     expect(labels()).not.toContain('Packing / pickup');
-    fireEvent.click(screen.getByRole('button', { name: 'Hand over to customer →' }));
-    await screen.findByRole('button', { name: '← Order' });
-    expect(navigation().getByRole('button', { name: 'Orders / Pickup' }).getAttribute('aria-current')).toBe('page');
-    fireEvent.click(screen.getByRole('button', { name: '← Order' }));
-    fireEvent.click(await screen.findByRole('button', { name: 'More actions' }));
     fireEvent.click(screen.getByRole('button', { name: 'Print status' }));
     await screen.findByRole('heading', { name: 'SL-7 · Print progress' });
     expect(navigation().getByRole('button', { name: 'Orders / Pickup' }).getAttribute('aria-current')).toBe('page');
@@ -233,61 +239,50 @@ describe('opening an order from another section', () => {
   });
 });
 
-describe('the unsaved-order guard on every section', () => {
+describe('the order being taken is kept while other pages are open', () => {
   const destinations = ['Orders / Pickup', 'Print queue', 'Dashboard', 'Sales', 'Customers', 'Expenses', 'Inventory', 'Machines'];
+  const name = () => (screen.getByLabelText('Name') as HTMLInputElement).value;
+  const newOrderBadge = () => navigation().getByRole('button', { name: 'New order' }).querySelector('.counter-draft-dot');
 
-  it.each(destinations)('asks before %s replaces an order being taken, and Keep editing stays put', async name => {
+  it.each(destinations)('goes to %s at once and finds the draft unchanged on returning', async destination => {
     await signedInAs(staff);
     startDraft();
-    go(name);
-    expect(draftDialog()?.textContent).toContain('You have an unsaved order. Discard it?');
-    fireEvent.click(screen.getByRole('button', { name: 'Keep editing' }));
+    go(destination);
     expect(draftDialog()).toBeNull();
-    expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('Rita Joshi');
-  });
-
-  it.each(['Dashboard', 'Sales', 'Customers', 'Expenses', 'Machines'])('goes to %s after the draft is discarded', async name => {
-    await signedInAs(staff);
-    startDraft();
-    go(name);
-    fireEvent.click(screen.getByRole('button', { name: 'Discard order' }));
-    expect(await screen.findByRole('heading', { name: `${name} page` })).toBeTruthy();
-    expect(draftDialog()).toBeNull();
+    expect(newOrderBadge()?.textContent).toBe('in progress');
     go('New order');
-    expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('');
+    expect(await screen.findByLabelText('Garments')).toBeTruthy();
+    expect(name()).toBe('Rita Joshi');
+    expect(newOrderBadge()).toBeNull();
   });
 
-  it('guards the administrator sections too', async () => {
+  it('keeps it across the administrator sections too', async () => {
     await signedInAs(admin);
     startDraft();
     go('Shop settings');
-    expect(draftDialog()).not.toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: 'Keep editing' }));
     go('Admin');
-    expect(draftDialog()).not.toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: 'Discard order' }));
     expect(await screen.findByText('Rates, staff & printers')).toBeTruthy();
+    go('New order');
+    expect(name()).toBe('Rita Joshi');
   });
 
-  it('moves on at once when there is no draft, and does nothing for New order while already on it', async () => {
+  it('shows no badge without a draft, and does nothing for New order while already on it', async () => {
     await signedInAs(staff);
     go('New order');
-    expect(draftDialog()).toBeNull();
     go('Sales');
-    expect(draftDialog()).toBeNull();
     expect(await screen.findByRole('heading', { name: 'Sales page' })).toBeTruthy();
+    expect(newOrderBadge()).toBeNull();
     go('New order');
     expect(await screen.findByLabelText('Garments')).toBeTruthy();
   });
 
-  it('still guards Lock, and a failed lock keeps the draft', async () => {
+  it('keeps the draft across Lock and the next sign-in, and when locking fails', async () => {
     await signedInAs(staff);
     startDraft();
-    api.lockCounter.mockRejectedValue(new Error('session store unavailable'));
+    api.lockCounter.mockRejectedValueOnce(new Error('session store unavailable'));
     fireEvent.click(screen.getByRole('button', { name: /Lock/ }));
-    fireEvent.click(screen.getByRole('button', { name: 'Discard order' }));
     expect((await screen.findByRole('alert')).textContent).toContain('could not be locked');
-    expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('Rita Joshi');
+    expect(name()).toBe('Rita Joshi');
   });
 
   it('refreshes the print jobs when the queue opens', async () => {
@@ -307,13 +302,101 @@ describe('narrow screens', () => {
     expect(bar.querySelectorAll('.counter-nav-group')).toHaveLength(4);
   });
 
-  it('styles that bar to wrap onto further rows, with buttons that never shrink', () => {
-    const bar = /\.counter-nav\{[^}]*\}/.exec(css)?.[0] ?? '';
-    expect(bar).toContain('display:flex');
-    expect(bar).toContain('flex-wrap:wrap');
-    expect(bar).not.toContain('overflow-x');
-    expect(css).toMatch(/\.counter-nav-group\{[^}]*flex-wrap:wrap/);
+  const lastRule = (selector: string) => [...css.matchAll(new RegExp(`${selector.replace(/[.]/g, '\\.')}\\{[^}]*\\}`, 'g'))].at(-1)?.[0] ?? '';
+
+  it('freezes the title row and the menu together at the top of the screen', async () => {
+    await signedInAs(staff);
+    const frozen = screen.getByRole('banner').parentElement as HTMLElement;
+    expect(frozen.className).toBe('counter-sticky-head');
+    expect(frozen.contains(screen.getByRole('navigation', { name: 'Workspace sections' }))).toBe(true);
+    expect(lastRule('.counter-sticky-head')).toContain('position:sticky');
+    expect(lastRule('.counter-sticky-head')).toContain('top:0');
+    // The title row sits inside the frozen block, so it must not be sticky on its own.
+    expect(lastRule('.counter-topbar')).toContain('position:static');
+  });
+
+  it('lets the menu wrap onto a second row instead of hiding items, with buttons that never shrink', () => {
+    expect(lastRule('.counter-nav')).toContain('flex-wrap:wrap');
+    expect(lastRule('.counter-nav')).not.toContain('overflow-x');
+    expect(css).toContain('.counter-nav-group{flex-wrap:wrap}');
     expect(css).toMatch(/\.counter-nav button\{[^}]*flex:none;white-space:nowrap/);
+  });
+
+  it('drops the group captions on mid-size screens, and on phones, to keep the menu short', () => {
+    expect(css).toMatch(/@media\(max-width:1500px\) and \(min-width:621px\)\{\.counter-nav-label\{display:none\}/);
     expect(css).toMatch(/@media\(max-width:620px\)\{[^@]*\.counter-nav-label\{display:none\}/);
+  });
+});
+
+describe('the Back button', () => {
+  const back = () => screen.queryByRole('button', { name: 'Back' });
+
+  it('is not shown before anything has been visited', async () => {
+    await signedInAs(staff);
+    expect(back()).toBeNull();
+  });
+
+  it('returns to the previous screen, one step at a time, and disappears at the start', async () => {
+    await signedInAs(staff);
+    go('Customers');
+    go('Sales');
+    fireEvent.click(back() as HTMLElement);
+    expect(await screen.findByRole('heading', { name: 'Customers page' })).toBeTruthy();
+    expect(navigation().getByRole('button', { name: 'Customers' }).getAttribute('aria-current')).toBe('page');
+    fireEvent.click(back() as HTMLElement);
+    expect(await screen.findByLabelText('Garments')).toBeTruthy();
+    expect(back()).toBeNull();
+  });
+
+  it('goes back from an opened order to the section it was opened from', async () => {
+    await signedInAs(staff);
+    go('Machines');
+    fireEvent.click(await screen.findByRole('button', { name: 'Open order from Machines' }));
+    await screen.findByRole('heading', { name: 'SL-7' });
+    fireEvent.click(back() as HTMLElement);
+    expect(await screen.findByRole('heading', { name: 'Machines page' })).toBeTruthy();
+  });
+
+  it('skips an order page whose order is no longer open', async () => {
+    await signedInAs(staff);
+    go('Machines');
+    fireEvent.click(await screen.findByRole('button', { name: 'Open order from Machines' }));
+    await screen.findByRole('heading', { name: 'SL-7' });
+    // A new order closes the open one, so Back must not return to its page.
+    go('New order');
+    await screen.findByLabelText('Garments');
+    fireEvent.click(back() as HTMLElement);
+    expect(await screen.findByRole('heading', { name: 'Machines page' })).toBeTruthy();
+  });
+
+  it('goes back from an order being taken without asking, and keeps it', async () => {
+    await signedInAs(staff);
+    go('Customers');
+    go('New order');
+    await screen.findByLabelText('Garments');
+    startDraft();
+    fireEvent.click(back() as HTMLElement);
+    expect(draftDialog()).toBeNull();
+    expect(await screen.findByRole('heading', { name: 'Customers page' })).toBeTruthy();
+    go('New order');
+    expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('Rita Joshi');
+  });
+
+  it('reloads the print queue when Back returns to it', async () => {
+    await signedInAs(staff);
+    go('Print queue');
+    go('Sales');
+    api.listPrintJobs.mockClear();
+    fireEvent.click(back() as HTMLElement);
+    await waitFor(() => expect(api.listPrintJobs).toHaveBeenCalledWith(undefined));
+  });
+
+  it('starts over for the next person after Lock', async () => {
+    await signedInAs(staff);
+    go('Sales');
+    expect(back()).not.toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: /Lock/ }));
+    await waitFor(() => expect(api.lockCounter).toHaveBeenCalled());
+    expect(back()).toBeNull();
   });
 });

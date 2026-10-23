@@ -11,8 +11,7 @@ import type { SalesBucket } from '@/lib/localFirst/insights';
 const api = vi.hoisted(() => ({
   getSalesSummary: vi.fn(), getSalesSeries: vi.fn(), listSalesOrders: vi.fn(), listSalesTransactions: vi.fn(), listSalesStaff: vi.fn(),
 }));
-// Only the loaders are faked; the pure netByKind helper keeps its real behaviour.
-vi.mock('@/lib/localFirst/insights', async () => ({ ...(await vi.importActual<object>('@/lib/localFirst/insights')), ...api }));
+vi.mock('@/lib/localFirst/insights', () => api);
 
 const staff: CounterAccount = { id: 's1', fullName: 'Clerk', role: 'staff', active: true };
 const KEY: Record<SalesBucket, string> = { hour: '2026-03-15T09:00', day: '2026-03-15', month: '2026-03' };
@@ -79,40 +78,20 @@ describe('SalesPage default view', () => {
     expect(screen.getByRole('button', { name: 'Today' }).getAttribute('aria-pressed')).toBe('true');
     expect(screen.getByText(/Period: 15 Mar 2026, 12:00\s?am up to, not including, 16 Mar 2026, 12:00\s?am \(shop time\)\./i)).toBeTruthy();
     expect(stat('Orders').textContent).toContain('9 pieces');
-    expect(stat('Before discount').textContent).toContain(money(200000));
     expect(stat('Discounts').textContent).toContain(money(20000));
     expect(stat('Billed').textContent).toContain(money(180000));
     expect(stat('Billed').textContent).toContain(`Average ${money(45000)} per order`);
-    expect(stat('Collected').textContent).toContain(money(150000));
-    expect(stat('Advance collected').textContent).toContain(money(90000));
-    expect(stat('Advance collected').textContent).toContain('Taken when booked, after refunds');
-    expect(stat('Balance received').textContent).toContain(money(55000));
-    expect(stat('Balance received').textContent).toContain('Taken at pickup, after refunds');
-    expect(stat('Refunded').textContent).toContain(money(5000));
-    expect(stat('Refunded').classList.contains('warn')).toBe(true);
-    expect(stat('Net collected').textContent).toContain(money(145000));
-    expect(stat('Cancelled').textContent).toContain(`1${money(5000)} worth`);
+    expect(stat('Collected').textContent).toContain(money(145000));
     expect(stat('Expenses').textContent).toContain(money(30000));
     expect(stat('Profit').textContent).toContain(money(115000));
+    expect(document.querySelectorAll('.counter-stat')).toHaveLength(6);
     expect(screen.getByRole('img').getAttribute('aria-label')).toContain('Hourly sales');
     expect(screen.getByText(/The staff filter follows who created each order/)).toBeTruthy();
-    expect(screen.getByText(/Expenses are kept by day/)).toBeTruthy();
     expect(screen.getByText(/Billed counts orders created in the period/)).toBeTruthy();
-    expect(screen.getByText('Advance is the part paid when the order is booked; balance is what is paid at or after pickup.')).toBeTruthy();
+    expect(screen.queryByText(/Advance|Refunded|Before discount|Include cancelled|Order status/)).toBeNull();
   });
 
-  it('nets refunds off advance and balance separately', async () => {
-    api.getSalesSummary.mockResolvedValue(summaryOf({
-      collectedMinor: 60000, refundedMinor: 10000, advanceCollectedMinor: 40000, balanceCollectedMinor: 20000,
-      advanceRefundedMinor: 10000, balanceRefundedMinor: 0, netCollectedMinor: 50000,
-    }));
-    setup();
-    await waitFor(() => expect(stat('Advance collected').textContent).toContain(money(30000)));
-    expect(stat('Balance received').textContent).toContain(money(20000));
-    expect(stat('Net collected').textContent).toContain(money(50000));
-  });
-
-  it('breaks the figures down by method, staff, service and status', async () => {
+  it('breaks the figures down by method, staff and service', async () => {
     setup();
     await ready();
     const method = panel('By payment method');
@@ -124,7 +103,7 @@ describe('SalesPage default view', () => {
     expect(within(people).getByText(money(115000))).toBeTruthy();
     expect(within(people).getByText('Former account')).toBeTruthy();
     expect(within(panel('By service')).getByText('Wash + Iron').parentElement?.textContent).toContain('7 pieces, before discount');
-    expect(within(panel('By order status')).getByText('Quality check')).toBeTruthy();
+    expect(screen.queryByRole('region', { name: 'By order status' })).toBeNull();
   });
 
   it('shows empty breakdowns and an unavailable profit when filters hide it', async () => {
@@ -135,11 +114,9 @@ describe('SalesPage default view', () => {
     setup();
     await waitFor(() => expect(stat('Profit').textContent).toContain('—'));
     expect(stat('Profit').textContent).toContain('Not shown while filters are on');
-    expect(stat('Refunded').classList.contains('warn')).toBe(false);
     expect(within(panel('By payment method')).getByText('No payments.')).toBeTruthy();
     expect(within(panel('By staff')).getByText('No staff activity.')).toBeTruthy();
     expect(within(panel('By service')).getByText('No orders.')).toBeTruthy();
-    expect(within(panel('By order status')).getByText('No orders.')).toBeTruthy();
   });
 
   it('flags a loss', async () => {
@@ -223,7 +200,7 @@ describe('SalesPage period', () => {
 });
 
 describe('SalesPage filters', () => {
-  it('filters by payment method, status, staff, discounts and cancelled orders', async () => {
+  it('filters by payment method, staff and discounts', async () => {
     setup();
     await ready();
     await screen.findByRole('option', { name: 'Asha Patil' });
@@ -233,22 +210,11 @@ describe('SalesPage filters', () => {
     press('Cash');
     await waitFor(() => expect(lastFilter().paymentMethods).toEqual(['upi']));
     expect(screen.getByRole('button', { name: 'Cash' }).getAttribute('aria-pressed')).toBe('false');
-    press('Ready');
-    press('In process');
-    await waitFor(() => expect(lastFilter().statuses).toEqual(['washing', 'drying', 'ironing', 'quality_check', 'packing', 'ready']));
-    press('Ready');
-    press('In process');
-    press('Received');
-    await waitFor(() => expect(lastFilter().statuses).toEqual(['received']));
-    press('Received');
-    press('Collected');
-    await waitFor(() => expect(lastFilter().statuses).toEqual(['collected']));
     fireEvent.change(screen.getByLabelText(/^Staff/), { target: { value: 's2' } });
     await waitFor(() => expect(lastFilter().staffId).toBe('s2'));
     expect(screen.getByText('Orders by who created them; money by who took the payment.')).toBeTruthy();
     fireEvent.click(screen.getByLabelText('Discounted orders only'));
-    fireEvent.click(screen.getByLabelText('Include cancelled orders'));
-    await waitFor(() => expect(lastFilter()).toMatchObject({ discountedOnly: true, includeCancelled: true, staffId: 's2' }));
+    await waitFor(() => expect(lastFilter()).toMatchObject({ discountedOnly: true, includeCancelled: false, statuses: [], staffId: 's2' }));
     fireEvent.change(screen.getByLabelText(/^Staff/), { target: { value: '' } });
     await waitFor(() => expect(lastFilter().staffId).toBeUndefined());
     expect(api.listSalesOrders).toHaveBeenLastCalledWith(lastFilter(), 0, 25);
@@ -280,22 +246,20 @@ describe('SalesPage filters', () => {
 });
 
 describe('SalesPage order list', () => {
-  it('shows each order with its money, payment methods and who created it', async () => {
+  it('shows each order with its money, whether it was collected and who created it', async () => {
     const { props } = setup();
     await ready();
     const first = rowOf('LA-2026-00001');
     expect(first.textContent).toContain('Rita Joshi');
     expect(first.textContent).toContain('9876543210');
-    expect(first.textContent).toContain('Ready');
+    expect(first.textContent).toContain('Not collected');
     expect(first.textContent).toContain(`${money(2000)} off`);
     expect(first.textContent).toContain(money(500));
-    expect(first.textContent).toContain('Cash, UPI');
     expect(first.textContent).toContain('Asha Patil');
     expect(first.textContent).toMatch(/15 Mar 2026, 10:00\s?am/i);
     const cancelled = rowOf('LA-2026-00002');
     expect(cancelled.textContent).toContain('Cancelled');
-    expect(cancelled.textContent).toMatch(/Cancelled 15 Mar 2026, 10:30\s?am/i);
-    expect(within(cancelled).getAllByText('—')).toHaveLength(2);
+    expect(within(cancelled).getAllByText('—')).toHaveLength(1);
     fireEvent.click(screen.getByRole('button', { name: 'LA-2026-00002' }));
     expect(props.onOpenOrder).toHaveBeenCalledWith('o2');
   });
@@ -358,7 +322,7 @@ describe('SalesPage transactions', () => {
     expect(screen.getByText('Showing 1 to 3 of 3')).toBeTruthy();
     fireEvent.click(screen.getAllByRole('button', { name: 'LA-2026-00001' })[0]);
     fireEvent.click(screen.getByRole('tab', { name: 'Orders' }));
-    await screen.findByText('Cash, UPI');
+    await screen.findByText('Not collected');
   });
 
   it('says so when there are no transactions', async () => {

@@ -13,7 +13,7 @@ export interface SectionProps {
 
 export type SectionId =
   | 'order' | 'orders' | 'queue' | 'dashboard' | 'sales' | 'customers'
-  | 'expenses' | 'inventory' | 'machines' | 'admin' | 'settings';
+  | 'expenses' | 'inventory' | 'machines' | 'admin' | 'settings' | 'trash';
 
 /**
  * Which roles may open each section. The native commands enforce the same rules; this table
@@ -32,6 +32,7 @@ export const SECTION_ROLES: Record<SectionId, ReadonlyArray<CounterAccount['role
   machines: ['staff', 'admin'],
   admin: ['admin'],
   settings: ['admin'],
+  trash: ['admin'],
 };
 
 export const canOpen = (section: SectionId, role: CounterAccount['role']): boolean =>
@@ -47,7 +48,7 @@ export const NAV_GROUPS: ReadonlyArray<NavGroup> = [
   { label: 'Counter', sections: [{ id: 'order', label: 'New order' }, { id: 'orders', label: 'Orders / Pickup' }, { id: 'queue', label: 'Print queue' }] },
   { label: 'Insights', sections: [{ id: 'dashboard', label: 'Dashboard' }, { id: 'sales', label: 'Sales' }] },
   { label: 'Shop', sections: [{ id: 'customers', label: 'Customers' }, { id: 'expenses', label: 'Expenses' }, { id: 'inventory', label: 'Inventory' }, { id: 'machines', label: 'Machines' }] },
-  { label: 'Admin', sections: [{ id: 'admin', label: 'Admin' }, { id: 'settings', label: 'Shop settings' }] },
+  { label: 'Admin', sections: [{ id: 'admin', label: 'Admin' }, { id: 'settings', label: 'Shop settings' }, { id: 'trash', label: 'Trash' }] },
 ];
 
 /** The groups (and the sections inside them) the given role may open; empty groups are dropped. */

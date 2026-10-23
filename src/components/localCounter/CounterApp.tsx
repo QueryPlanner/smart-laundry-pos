@@ -1,28 +1,30 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { BarChart3, ClipboardList, LayoutDashboard, LockKeyhole, LogOut, Package, Printer, Receipt, Settings, ShieldCheck, ShoppingBasket, Store, Users, WashingMachine, Wrench, type LucideIcon } from 'lucide-react';
+import { ArrowLeft, BarChart3, ClipboardList, LayoutDashboard, LockKeyhole, LogOut, Package, Printer, Receipt, Settings, ShieldCheck, ShoppingBasket, Store, Trash2, Users, WashingMachine, Wrench, type LucideIcon } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import {
   dispatchPrintJob, dispatchPrintJobs, enumeratePrinters, getCounterBootstrap,
-  getCounterCatalogue, getCounterOrder,
+  getCounterCatalogue, getCounterOrder, previewCounterDraftBill, previewCounterOrderBill,
   listPrintJobs, lockCounter, loginCounter, quoteCounterOrder,
   retryPrintJob, saveCounterOrder, searchCounterCustomers,
-  reprintCounterOutput,
-  setupCounterAdmin,
+  reprintCounterOutput, requestCounterOrderTrash,
+  setupCounterAdmin, trashCounterOrder,
   type CounterAccount, type CounterBootstrap, type CounterCatalogue,
-  type CounterPrintJob, type CounterQuote, type CounterSavedOrder, type NativePrinter,
+  type BillPreviewData, type CounterPrintJob, type CounterQuote, type CounterSavedOrder, type NativePrinter,
 } from '@/lib/localFirst/counter';
+import { BillPreview } from './BillPreview';
 import { GarmentGrid } from './GarmentGrid';
 import { OrderSummary } from './OrderSummary';
-import { advanceToSend } from '@/lib/localFirst/payment';
+import { discountMinorOf } from '@/lib/localFirst/manualDiscount';
+import { backStep, pushTrail } from '@/lib/localFirst/backTrail';
 import { useOrderList } from '@/lib/localFirst/orders/useOrderList';
 import { CounterAdmin } from './CounterAdmin';
 import { RestorePendingBanner } from './RestorePendingBanner';
 import { OrdersPage } from './orders/OrdersPage';
 import { TrashRequestsPanel } from './orders/TrashRequestsPanel';
-import { OrderWorkspace } from './orders/OrderWorkspace';
+import { OrderPage } from './orders/OrderPage';
 import { PrintProgress, PrintQueue } from './PrintJobs';
 import { JOB_STATE_LABEL } from './printJobState';
 import { canOpen, NAV_GROUPS, visibleNavGroups, type SectionId, type SectionProps } from './sections';
@@ -33,6 +35,7 @@ import { ExpensesPage } from './ExpensesPage';
 import { InventoryPage } from './InventoryPage';
 import { MachinesPage } from './MachinesPage';
 import { ShopSettingsPage } from './ShopSettingsPage';
+import { TrashPage } from './TrashPage';
 
 const problem = (e: unknown) => e instanceof Error ? e.message : String(e || 'Something went wrong.');
 
@@ -52,7 +55,10 @@ const useSingleFlight = () => {
 };
 
 /** Everything the workspace can show: the registry sections plus the per-order pages reached from an order. */
-type Page = SectionId | 'detail' | 'handover' | 'prints';
+type Page = SectionId | 'detail' | 'prints';
+
+/** The pages that belong to one open order: they can be shown only while that order is open. */
+const ORDER_PAGES: Page[] = ['detail', 'prints'];
 
 /** Where a tap on the navigation or Lock goes. Leaving the order page with a draft needs a confirmation first. */
 type Destination = Page | 'lock';
@@ -65,7 +71,7 @@ const originLabel = (from: Page): string | undefined => {
 
 const NAV_ICON: Record<SectionId, LucideIcon> = {
   order: ShoppingBasket, orders: ClipboardList, queue: Printer, dashboard: LayoutDashboard, sales: BarChart3,
-  customers: Users, expenses: Receipt, inventory: Package, machines: Wrench, admin: ShieldCheck, settings: Settings,
+  customers: Users, expenses: Receipt, inventory: Package, machines: Wrench, admin: ShieldCheck, settings: Settings, trash: Trash2,
 };
 
 export const CounterApp = () => {
@@ -73,6 +79,8 @@ export const CounterApp = () => {
   const [account, setAccount] = useState<CounterAccount | null>(null);
   const [catalogue, setCatalogue] = useState<CounterCatalogue | null>(null);
   const [page, setPage] = useState<Page>('order');
+  /** The screens visited before this one, newest last, for the Back button. */
+  const [trail, setTrail] = useState<Page[]>([]);
   const [error, setError] = useState('');
   const [quoteError, setQuoteError] = useState('');
   const [notice, setNotice] = useState('');
@@ -83,26 +91,27 @@ export const CounterApp = () => {
   const [customer, setCustomer] = useState<{ name: string; phone: string; customerId?: string }>({ name: '', phone: '' });
   const [quote, setQuote] = useState<CounterQuote | null>(null);
   const [quoteRefresh, setQuoteRefresh] = useState(0);
-  const [pendingLeave, setPendingLeave] = useState<Destination | null>(null);
-  const [paymentMethod, setPaymentMethod] = useState<'cash' | 'upi' | 'card' | 'bank_transfer' | 'other'>('cash');
-  /** The advance the customer pays on the new order, in rupees as typed. Empty means nothing is paid now. */
-  const [advance, setAdvance] = useState('');
+  /** An extra discount for this bill only, in rupees as typed. Empty means none. */
+  const [discount, setDiscount] = useState('');
   const [saved, setSaved] = useState<Awaited<ReturnType<typeof saveCounterOrder>> | null>(null);
   const [jobs, setJobs] = useState<CounterPrintJob[]>([]);
   // Where the open order was reached from, so Back on its page returns there.
   const [origin, setOrigin] = useState<{ page: Page; label: string }>({ page: 'orders', label: 'Orders' });
   const [printers, setPrinters] = useState<NativePrinter[]>([]);
   const idempotencyKey = useRef(crypto.randomUUID());
-  // Set when a save starts. Until then the request key follows the advance and method, because the
-  // native submission includes the payment; after an attempt the key stays so a retry cannot duplicate the order.
+  // Set when a save starts. Until then the request key follows the discount, because it changes the
+  // order; after an attempt the key stays so a retry cannot duplicate the order.
   const saveAttempted = useRef(false);
   const reprintRequestKeys = useRef<Record<string, string>>({});
   const [reprintBusy, setReprintBusy] = useState(false);
   const [selectedReprintPieces, setSelectedReprintPieces] = useState<string[]>([]);
+  /** The bill shown in the preview window, and the saved order it can be printed for (none for an unsaved order). */
+  const [preview, setPreview] = useState<{ title: string; data: BillPreviewData; orderId?: string } | null>(null);
   const [startupWarning, setStartupWarning] = useState('');
   const [restoreStaged, setRestoreStaged] = useState(false);
   const reviewedQuote = useRef<CounterQuote | null>(null);
   const printActionOnce = useSingleFlight();
+  const previewOnce = useSingleFlight();
 
   const refresh = useCallback(async () => {
     const b = await getCounterBootstrap(); setBootstrap(b); setAccount(b.account); setStartupWarning(b.warning || '');
@@ -121,6 +130,10 @@ export const CounterApp = () => {
     const [garmentId, treatmentId] = key.split('|');
     return { garmentId, serviceId: treatmentId, quantity, ...(key in priceOverrides ? { unitPriceOverrideMinor: priceOverrides[key] } : {}) };
   }), [lines, priceOverrides]);
+  const manualDiscountMinor = discountMinorOf(discount);
+  // What is priced, saved and previewed: the garments, and the extra discount when there is one.
+  const orderInput = useMemo(() => ({ customer, items: orderItems, ...(manualDiscountMinor > 0 ? { manualDiscountMinor } : {}) }), [customer, orderItems, manualDiscountMinor]);
+  // Shown on the New order tab, so a kept draft is not forgotten.
   const draftInProgress = orderItems.length > 0 || customer.name.trim() !== '' || customer.phone.trim() !== '';
   useEffect(() => {
     if (!account) return;
@@ -133,14 +146,14 @@ export const CounterApp = () => {
     if (!account || !customer.name.trim() || orderItems.length === 0) return;
     let active = true;
     const timer = setTimeout(() => {
-      void quoteCounterOrder({ customer, items: orderItems }).then(q => {
+      void quoteCounterOrder(orderInput).then(q => {
         if (!active) return;
         reviewedQuote.current = q;
         setQuote(q);
       }).catch(e => { if (active) setQuoteError(problem(e)); });
     }, 140);
     return () => { active = false; clearTimeout(timer); };
-  }, [account, customer, orderItems, quoteRefresh]);
+  }, [account, customer, orderItems, orderInput, quoteRefresh]);
 
   const addGarment = (garmentId: string, treatment: string) => setLines(current => {
     const key = `${garmentId}|${treatment}`;
@@ -162,7 +175,7 @@ export const CounterApp = () => {
     setBusy(true); setError('');
     try {
       const a = await loginCounter(id, pin);
-      setAccount(a); setCatalogue(await getCounterCatalogue()); setPage('order'); clearDraft();
+      setAccount(a); setCatalogue(await getCounterCatalogue()); setPage('order'); setTrail([]); setNotice('');
       // A new person must never see the previous person's order tabs.
       setSaved(null);
     } catch (e) { setError(problem(e)); } finally { setBusy(false); }
@@ -172,19 +185,15 @@ export const CounterApp = () => {
     setSelectedReprintPieces([]); reprintRequestKeys.current = {};
   };
   const clearDraft = () => {
-    setCustomer({ name: '', phone: '' }); setLines({}); setPriceOverrides({}); setPaymentMethod('cash'); setAdvance('');
+    setCustomer({ name: '', phone: '' }); setLines({}); setPriceOverrides({}); setDiscount('');
     setQuote(null); setQuoteError(''); reviewedQuote.current = null;
     setReprintBusy(false); resetOrderScopedState();
     idempotencyKey.current = crypto.randomUUID(); saveAttempted.current = false;
     setError(''); setNotice('');
   };
-  /** Before any save, a different advance or method is a different submission, so it gets a new request key. */
-  const changeAdvance = (text: string) => {
-    setAdvance(text);
-    if (!saveAttempted.current) idempotencyKey.current = crypto.randomUUID();
-  };
-  const changePaymentMethod = (method: 'cash' | 'upi' | 'card' | 'bank_transfer' | 'other') => {
-    setPaymentMethod(method);
+  /** A different discount is a different order, so before any save it gets a new request key too. */
+  const changeDiscount = (text: string) => {
+    setDiscount(text);
     if (!saveAttempted.current) idempotencyKey.current = crypto.randomUUID();
   };
   const save = async () => {
@@ -194,11 +203,8 @@ export const CounterApp = () => {
     saveAttempted.current = true;
     setBusy(true); setError(''); setNotice('');
     try {
-      // Throws the reason for an advance that cannot be sent (the Save button is disabled for one, but an
-      // order must never be saved quietly without the money the cashier typed).
-      const advanceMinor = advanceToSend(advance, quoteToSave.totalMinor);
-      const result = await saveCounterOrder({ customer, items: orderItems, reviewedQuote: quoteToSave, idempotencyKey: idempotencyKey.current, ...(advanceMinor > 0 ? { payment: { amountMinor: advanceMinor, method: paymentMethod } } : {}) });
-      setSaved(result); clearDraft(); setPage('prints');
+      const result = await saveCounterOrder({ ...orderInput, reviewedQuote: quoteToSave, idempotencyKey: idempotencyKey.current });
+      setSaved(result); clearDraft(); navigate('prints');
       try {
         const dispatched = await dispatchPrintJobs(result.orderId);
         setJobs(dispatched);
@@ -234,7 +240,7 @@ export const CounterApp = () => {
   const resumePendingJob = (job: CounterPrintJob) => printActionOnce(async () => {
     try { await dispatchPrintJob(job.id); await refreshJobsAfterAction(job.orderId); } catch (e) { setError(problem(e)); }
   });
-  const openOrder = async (orderId: string, target: 'detail' | 'handover' = 'detail') => {
+  const openOrder = async (orderId: string) => {
     setBusy(true); setError('');
     try {
       const result = await getCounterOrder(orderId);
@@ -244,22 +250,37 @@ export const CounterApp = () => {
       // Moving between an order's own pages keeps where it was first opened from.
       const from = originLabel(page);
       if (from) setOrigin({ page, label: from });
-      setSaved(result); setJobs(result.printJobs); setNotice(''); setPage(target);
+      setSaved(result); setJobs(result.printJobs); setNotice(''); navigate('detail');
     } catch (e) { setError(problem(e)); } finally { setBusy(false); }
   };
-  /** A fresher copy of the open order (after a payment, a stage change, a hand-over ...). */
+  /** A fresher copy of the open order (after a payment or a hand-over). */
   const replaceOrder = useCallback((order: CounterSavedOrder) => { setSaved(order); setJobs(order.printJobs); }, []);
-  /** After a hand-over: back to the list of orders waiting for pickup, ready for the next customer. */
-  const finishHandover = () => { orderList.setSegment('ready'); setSaved(null); setPage('orders'); };
-  const reprint = (order: CounterSavedOrder, kind: 'bill' | 'tags', pieceIds: string[] = []) => printActionOnce(async () => {
+  /** Every bill of one customer: the list, searched by their phone number. */
+  const showCustomer = (phone: string) => { orderList.setQuery(phone); arrive('orders'); };
+  /** Trash (admin) or mark for trash (staff), from the list or the order page. */
+  const trash = (orderId: string, orderNumber: string, reason?: string) => printActionOnce(async () => {
+    setBusy(true); setError('');
+    try {
+      if (reason === undefined) {
+        await trashCounterOrder(orderId);
+        setNotice(`Order ${orderNumber} moved to the trash.`);
+        if (page === 'detail') arrive(origin.page);
+      } else {
+        await requestCounterOrderTrash(orderId, reason);
+        setNotice(`Order ${orderNumber} was sent to the owner to be trashed. It still counts in sales until they approve.`);
+      }
+      orderList.reload();
+    } catch (e) { setError(problem(e)); } finally { setBusy(false); }
+  });
+  const reprint = (orderId: string, kind: 'bill' | 'tags', pieceIds: string[] = []) => printActionOnce(async () => {
     const selected = kind === 'tags' ? [...new Set(pieceIds)].sort() : [];
-    const requestKey = `${kind}:${selected.join(',')}`;
+    const requestKey = `${orderId}:${kind}:${selected.join(',')}`;
     const requestId = reprintRequestKeys.current[requestKey] ||= crypto.randomUUID();
     setReprintBusy(true); setError('');
     try {
-      const created = await reprintCounterOutput(order.orderId, kind, selected, requestId);
+      const created = await reprintCounterOutput(orderId, kind, selected, requestId);
       const dispatched = await dispatchPrintJob(created.id);
-      await refreshJobs(order.orderId);
+      await refreshJobs(orderId);
       if (dispatched.state !== 'submitted') {
         // The reprint exists but the printer did not take it. Keep the request key so the same
         // selection resumes the same job instead of creating another one.
@@ -268,35 +289,55 @@ export const CounterApp = () => {
       }
       delete reprintRequestKeys.current[requestKey];
       setSelectedReprintPieces([]);
-      setNotice(kind === 'bill' ? 'A bill reprint was added to the Canon queue.' : `${selected.length} selected garment tag(s) were added to the TSC queue.`);
+      setNotice(kind === 'bill' ? `Bill ${created.orderNumber} sent to the printer.` : `${selected.length} selected garment tag(s) were added to the TSC queue.`);
     } catch (e) {
-      setError(`The ${kind} reprint request may already be saved. Retry this same selection to safely resume: ${problem(e)}`);
+      setError(kind === 'bill'
+        ? `The bill could not be printed: ${problem(e)}. Press Reprint bill again to retry.`
+        : `The ${kind} reprint request may already be saved. Retry this same selection to safely resume: ${problem(e)}`);
     } finally { setReprintBusy(false); }
   });
-  const openPrinterSettings = async () => { try { setPrinters(await enumeratePrinters()); setPage('admin'); } catch (e) { setError(problem(e)); } };
-  const logout = async () => { try { await lockCounter(); } catch (e) { setError(`The counter could not be locked: ${problem(e)}`); return; } clearDraft(); setSaved(null); setJobs([]); orderList.reset(); setSelectedReprintPieces([]); setAccount(null); setCatalogue(null); setPage('order'); setBootstrap(await getCounterBootstrap()); };
+  /** Shows the bill of the order being taken. Nothing is saved. */
+  const previewDraft = () => previewOnce(async () => {
+    try {
+      setPreview({ title: 'Bill preview', data: await previewCounterDraftBill(orderInput) });
+    } catch (e) { setError(problem(e)); }
+  });
+  /** Shows the bill of a saved order, as a reprint would print it now. */
+  const previewSaved = (order: { orderId: string; orderNumber: string }) => previewOnce(async () => {
+    try {
+      setPreview({ title: `Bill ${order.orderNumber}`, data: await previewCounterOrderBill(order.orderId), orderId: order.orderId });
+    } catch (e) { setError(problem(e)); }
+  });
+  const printFromPreview = () => {
+    const orderId = (preview as { orderId: string }).orderId;
+    setPreview(null);
+    void reprint(orderId, 'bill');
+  };
+  const openPrinterSettings = async () => { try { setPrinters(await enumeratePrinters()); navigate('admin'); } catch (e) { setError(problem(e)); } };
+  const logout = async () => { try { await lockCounter(); } catch (e) { setError(`The counter could not be locked: ${problem(e)}`); return; } setNotice(''); setSaved(null); setPreview(null); setJobs([]); orderList.reset(); setSelectedReprintPieces([]); setAccount(null); setCatalogue(null); setPage('order'); setTrail([]); setBootstrap(await getCounterBootstrap()); };
 
+  /** Shows a page and remembers the one being left, so Back can return to it. */
+  const navigate = (next: Page) => { setTrail(current => pushTrail(current, page, next)); setPage(next); };
   /** Moves to a page, doing whatever that page needs loaded first. */
   const arrive = (destination: Destination) => {
     if (destination === 'lock') { void logout(); return; }
-    if (destination === 'order') { clearDraft(); setSaved(null); }
+    if (destination === 'order') setSaved(null);
     if (destination === 'queue') void refreshJobs();
-    setPage(destination);
+    navigate(destination);
   };
-  /** Goes there at once, or asks first when it would walk away from an order that is being taken. */
+  /** The order being taken stays as it is while other pages are open (and across Lock) until it is saved or cleared. */
   const leaveTo = (destination: Destination) => {
     if (destination === 'order' && page === 'order') return;
-    if (draftInProgress && destination !== 'order') { setPendingLeave(destination); return; }
     arrive(destination);
   };
-  const discardDraftAndLeave = () => {
-    const destination = pendingLeave as Destination;
-    setPendingLeave(null);
-    // A failed lock keeps the draft, so only clear it for pages that really replace it.
-    if (destination !== 'lock') clearDraft();
-    arrive(destination);
+  /** The screen Back returns to: the newest one visited that can still be shown. */
+  const back = backStep(trail, previous => previous !== page && (!ORDER_PAGES.includes(previous) || saved !== null));
+  // Only offered (see the header) while `back` exists.
+  const goBack = () => {
+    setTrail(back.rest);
+    if (back.target === 'queue') void refreshJobs();
+    setPage(back.target);
   };
-  const keepEditing = () => setPendingLeave(null);
   // Section pages load their own data in effects; keep these callbacks stable so they do not reload on every render here.
   const openOrderRef = useRef(openOrder);
   openOrderRef.current = openOrder;
@@ -315,34 +356,31 @@ export const CounterApp = () => {
   const savedOrderJobs = saved ? jobs.filter(j => j.orderId === saved.orderId) : [];
 
   // An order's own pages (detail, hand-over, print progress) belong to Orders / Pickup in the navigation.
-  const activeSection: Page = page === 'detail' || page === 'handover' || page === 'prints' ? 'orders' : page;
+  const activeSection: Page = page === 'detail' || page === 'prints' ? 'orders' : page;
   const sectionProps: SectionProps = { account, onError: reportError, onNotice: setNotice, onOpenOrder };
   const showing = (section: SectionId) => page === section && canOpen(section, account.role);
 
   return <div className="counter-shell">
-    <header className="counter-topbar"><div className="counter-brand"><span className="counter-brand-mark"><WashingMachine /></span><span><strong>Smart Laundry</strong><small>Counter · Offline</small></span></div><div className="counter-session"><Badge variant="outline">{admin ? 'Admin' : 'Staff'} · {account.fullName}</Badge><Button variant="outline" size="sm" onClick={() => leaveTo('lock')}><LogOut className="mr-2 h-4 w-4" />Lock</Button></div></header>
-    <nav className="counter-nav" aria-label="Workspace sections">
-      {visibleNavGroups(account.role).map(group => <div key={group.label} className="counter-nav-group" role="group" aria-label={group.label}>
-        <span className="counter-nav-label" aria-hidden="true">{group.label}</span>
-        {group.sections.map(section => {
-          const Icon = NAV_ICON[section.id];
-          return <button key={section.id} type="button" className={activeSection === section.id ? 'active' : ''} aria-current={activeSection === section.id ? 'page' : undefined} onClick={() => leaveTo(section.id)}><Icon className="h-4 w-4" />{section.label}</button>;
-        })}
-      </div>)}
-    </nav>
-    {pendingLeave && <div className="counter-discard-bar" role="alertdialog" aria-label="Unsaved order">
-      <p>You have an unsaved order. Discard it?</p>
-      <Button onClick={discardDraftAndLeave}>Discard order</Button>
-      <Button variant="outline" onClick={keepEditing}>Keep editing</Button>
-    </div>}
+    <div className="counter-sticky-head">
+      <header className="counter-topbar"><div className="counter-brand">{back && <Button variant="outline" className="counter-back" onClick={goBack}><ArrowLeft className="mr-2 h-4 w-4" />Back</Button>}<span className="counter-brand-mark"><WashingMachine /></span><span><strong>Smart Laundry</strong><small>Counter · Offline</small></span></div><div className="counter-session"><Badge variant="outline">{admin ? 'Admin' : 'Staff'} · {account.fullName}</Badge><Button variant="outline" size="sm" onClick={() => leaveTo('lock')}><LogOut className="mr-2 h-4 w-4" />Lock</Button></div></header>
+      <nav className="counter-nav" aria-label="Workspace sections">
+        {visibleNavGroups(account.role).map(group => <div key={group.label} className="counter-nav-group" role="group" aria-label={group.label}>
+          <span className="counter-nav-label" aria-hidden="true">{group.label}</span>
+          {group.sections.map(section => {
+            const Icon = NAV_ICON[section.id];
+            return <button key={section.id} type="button" className={activeSection === section.id ? 'active' : ''} aria-current={activeSection === section.id ? 'page' : undefined} onClick={() => leaveTo(section.id)}><Icon className="h-4 w-4" />{section.label}{section.id === 'order' && draftInProgress && page !== 'order' && <span className="counter-draft-dot" aria-hidden="true">in progress</span>}</button>;
+          })}
+        </div>)}
+      </nav>
+    </div>
     {notice && <p className="counter-notice" role="status">{notice}</p>}{error && <p className="counter-error" role="alert">{error}</p>}
     {quoteError && <p className="counter-error" role="alert">{quoteError}</p>}
     {restoreWaiting && <RestorePendingBanner />}
     {startupWarning && <p className="counter-error" role="status">{startupWarning}</p>}
-    {page === 'order' && <fieldset className="counter-fieldset" disabled={busy}><div className="counter-layout"><main className="counter-main"><CustomerEntry customer={customer} onChange={setCustomer} search={searchCounterCustomers} /><section className="counter-panel"><GarmentGrid catalogue={catalogue} lines={lines} onAdd={addGarment} onQuantity={setQuantity} /></section></main><aside className="counter-aside"><OrderSummary catalogue={catalogue} lines={lines} quote={quote} quoteFailed={quoteError !== ''} customer={customer} advance={advance} onAdvance={changeAdvance} paymentMethod={paymentMethod} onPaymentMethod={changePaymentMethod} onRemove={(id, sid) => setQuantity(id, 0, sid)} onQuantity={setQuantity} onPrice={setLinePrice} onSave={() => void save()} busy={busy} /></aside></div></fieldset>}
+    {page === 'order' && <fieldset className="counter-fieldset" disabled={busy}><div className="counter-layout"><main className="counter-main"><CustomerEntry customer={customer} onChange={setCustomer} search={searchCounterCustomers} /><section className="counter-panel"><GarmentGrid catalogue={catalogue} lines={lines} onAdd={addGarment} onQuantity={setQuantity} /></section></main><aside className="counter-aside"><OrderSummary catalogue={catalogue} lines={lines} quote={quote} quoteFailed={quoteError !== ''} customer={customer} discount={discount} onDiscount={changeDiscount} onRemove={(id, sid) => setQuantity(id, 0, sid)} onQuantity={setQuantity} onPrice={setLinePrice} onSave={() => void save()} onPreview={() => void previewDraft()} onClear={clearDraft} busy={busy} /></aside></div></fieldset>}
     {page === 'orders' && admin && <TrashRequestsPanel onError={reportError} onNotice={setNotice} onChanged={orderList.reload} />}
-    {page === 'orders' && <OrdersPage query={orderList.query} onQuery={orderList.setQuery} segment={orderList.segment} onSegment={orderList.setSegment} counts={orderList.counts} results={orderList.results} loading={orderList.loading} hasMore={orderList.hasMore} onLoadMore={orderList.loadMore} onOpen={id => void openOrder(id)} onHandover={id => void openOrder(id, 'handover')} busy={busy} />}
-    {(page === 'detail' || page === 'handover') && saved && <OrderWorkspace order={saved} view={page} isAdmin={admin} backLabel={origin.label} onBack={() => arrive(origin.page)} onView={setPage} onOrder={replaceOrder} onError={reportError} onNotice={setNotice} onReprintBill={() => void reprint(saved, 'bill')} onReprintTags={() => void reprint(saved, 'tags', saved.pieces.filter(piece => piece.tagged).map(piece => piece.shortId))} onOpenPrints={() => { void refreshJobs(saved.orderId); setPage('prints'); }} onFinished={finishHandover} />}
+    {page === 'orders' && <OrdersPage query={orderList.query} onQuery={orderList.setQuery} segment={orderList.segment} onSegment={orderList.setSegment} today={orderList.today} counts={orderList.counts} results={orderList.results} loading={orderList.loading} hasMore={orderList.hasMore} onLoadMore={orderList.loadMore} isAdmin={admin} onOpen={id => void openOrder(id)} onCustomer={showCustomer} onPreviewBill={(orderId, orderNumber) => void previewSaved({ orderId, orderNumber })} onTrash={(id, number) => void trash(id, number)} onRequestTrash={(id, number, reason) => void trash(id, number, reason)} busy={busy} />}
+    {page === 'detail' && saved && <OrderPage key={saved.orderId} order={saved} isAdmin={admin} busy={busy || reprintBusy} backLabel={origin.label} onBack={() => arrive(origin.page)} onOrder={replaceOrder} onError={reportError} onNotice={setNotice} onCustomer={showCustomer} onReprintBill={() => void reprint(saved.orderId, 'bill')} onPreviewBill={() => void previewSaved(saved)} onReprintTags={() => void reprint(saved.orderId, 'tags', saved.pieces.filter(piece => piece.tagged).map(piece => piece.shortId))} onOpenPrints={() => { void refreshJobs(saved.orderId); navigate('prints'); }} onTrash={() => void trash(saved.orderId, saved.orderNumber)} onRequestTrash={reason => void trash(saved.orderId, saved.orderNumber, reason)} />}
     {showing('admin') && <CounterAdmin catalogue={catalogue} onCatalogue={setCatalogue} printers={printers} onReloadPrinters={openPrinterSettings} onError={reportError} onNotice={setNotice} onRestoreStaged={() => setRestoreStaged(true)} />}
     {showing('dashboard') && <DashboardPage {...sectionProps} />}
     {showing('sales') && <SalesPage {...sectionProps} />}
@@ -351,7 +389,9 @@ export const CounterApp = () => {
     {showing('inventory') && <InventoryPage {...sectionProps} />}
     {showing('machines') && <MachinesPage {...sectionProps} />}
     {showing('settings') && <ShopSettingsPage {...sectionProps} />}
-    {page === 'prints' && saved && <PrintProgress onBack={() => setPage('detail')} orderNumber={saved.orderNumber} promisedAt={saved.promisedAt} jobs={savedOrderJobs.length ? savedOrderJobs : saved.printJobs} pieces={saved.pieces} selected={selectedReprintPieces} onSelected={setSelectedReprintPieces} reprintBusy={reprintBusy} onReprintBill={() => void reprint(saved, 'bill')} onReprintTags={() => void reprint(saved, 'tags', selectedReprintPieces)} onRetry={doRetry} onResume={resumePendingJob} />}
+    {showing('trash') && <TrashPage {...sectionProps} />}
+    {page === 'prints' && saved && <PrintProgress onBack={() => navigate('detail')} orderNumber={saved.orderNumber} promisedAt={saved.promisedAt} jobs={savedOrderJobs.length ? savedOrderJobs : saved.printJobs} pieces={saved.pieces} selected={selectedReprintPieces} onSelected={setSelectedReprintPieces} reprintBusy={reprintBusy} onReprintBill={() => void reprint(saved.orderId, 'bill')} onReprintTags={() => void reprint(saved.orderId, 'tags', selectedReprintPieces)} onRetry={doRetry} onResume={resumePendingJob} />}
+    {preview && <BillPreview title={preview.title} preview={preview.data} onClose={() => setPreview(null)} onPrint={preview.orderId ? printFromPreview : undefined} />}
     {page === 'queue' && <PrintQueue jobs={jobs} onRefresh={() => void refreshJobs()} onOpenOrder={orderId => void openOrder(orderId)} onRetry={doRetry} onResume={resumePendingJob} />}
   </div>;
 };

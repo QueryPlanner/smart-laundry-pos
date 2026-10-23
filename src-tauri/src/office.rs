@@ -341,6 +341,8 @@ pub async fn get_customer(
          COALESCE((SELECT COUNT(*) FROM order_pieces p WHERE p.order_id=o.id),0) AS pieces,\
          COALESCE((SELECT COUNT(*) FROM order_pieces p WHERE p.order_id=o.id AND p.tagged=0),0) AS untagged,\
          o.payment_status,\
+         (SELECT COUNT(*) FROM piece_matches pm WHERE pm.order_id=o.id AND pm.stage='collection') AS handed_over,\
+         COALESCE((SELECT group_concat(t,', ') FROM (SELECT CAST(ROUND(i.quantity) AS INTEGER)||' '||i.item_name||' · '||i.service_name AS t FROM order_items i WHERE i.order_id=o.id ORDER BY i.created_at,i.rowid)),'') AS items_text,\
          CASE WHEN o.status IN ('received','washing','drying','ironing','quality_check','packing') AND CAST(strftime('%s',o.expected_ready_at) AS INTEGER) < CAST(strftime('%s','now') AS INTEGER) THEN 1 ELSE 0 END AS overdue \
          FROM orders o WHERE o.trashed_at IS NULL AND (o.customer_id=?1 OR (o.customer_id IS NULL AND o.customer_phone=?2)) \
          ORDER BY o.created_at DESC LIMIT ?3",
@@ -374,6 +376,8 @@ pub async fn get_customer(
                 overdue: r.try_get::<i64, _>("overdue").map_err(db_err)? == 1,
                 untagged_count: r.try_get("untagged").map_err(db_err)?,
                 match_reason: None,
+                items_text: r.try_get("items_text").map_err(db_err)?,
+                handed_over_count: r.try_get("handed_over").map_err(db_err)?,
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
