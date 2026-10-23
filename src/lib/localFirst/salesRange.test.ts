@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   addDays, allowedBuckets, autoBucket, bucketLabel, bucketTick, formatDay, formatLocal, formatShopDateTime, joinLocal, lastDaysRange,
-  methodText, presetRange, rangeProblem, shopDateOf, spanDays, splitLocal, statusText,
+  methodText, presetRange, rangeProblem, shopDateOf, spanDays, splitLocal,
 } from './salesRange';
 
 // 15 March 2026, 00:30 in shop time = 14 March 19:00 UTC.
@@ -103,9 +103,7 @@ describe('labels', () => {
     expect(formatDay('2026-01-01')).toBe('01 Jan 2026');
   });
 
-  it('shows readable statuses and methods, and passes unknown ones through', () => {
-    expect(statusText('quality_check')).toBe('Quality check');
-    expect(statusText('mystery')).toBe('mystery');
+  it('shows readable payment methods, and passes unknown ones through', () => {
     expect(methodText('bank_transfer')).toBe('Bank transfer');
     expect(methodText('credit')).toContain('Credit');
     expect(methodText('voucher')).toBe('voucher');

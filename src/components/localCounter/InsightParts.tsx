@@ -1,11 +1,9 @@
-import { statusText } from '@/lib/localFirst/salesRange';
-
-const STATUS_TONE: Record<string, string> = { ready: 'good', cancelled: 'bad', collected: '' };
-
-/** An order status as a coloured pill: ready is green, cancelled red, work in hand amber. */
-export const StatusBadge = ({ status }: { status: string }) => (
-  <span className={`counter-badge ${STATUS_TONE[status] ?? 'warn'}`.trim()}>{statusText(status)}</span>
-);
+/** Whether the customer has the order: collected is green, cancelled red, anything else still at the shop. */
+export const StatusBadge = ({ status }: { status: string }) => {
+  if (status === 'collected') return <span className="counter-badge good">Collected</span>;
+  if (status === 'cancelled') return <span className="counter-badge bad">Cancelled</span>;
+  return <span className="counter-badge warn">Not collected</span>;
+};
 
 /** A bill number that opens the order in Orders / Pickup. */
 export const OrderLink = ({ id, number, onOpen }: { id: string; number: string; onOpen: (orderId: string) => void }) => (

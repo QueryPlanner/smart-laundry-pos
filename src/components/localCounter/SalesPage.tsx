@@ -1,13 +1,13 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { Button } from '@/components/ui/button';
 import {
-  getSalesSeries, getSalesSummary, listSalesOrders, listSalesStaff, listSalesTransactions, netByKind,
-  type SalesBucket, type SalesFilter, type SalesOrderRow, type SalesOrderStatus, type SalesPage as Page,
+  getSalesSeries, getSalesSummary, listSalesOrders, listSalesStaff, listSalesTransactions,
+  type SalesBucket, type SalesFilter, type SalesOrderRow, type SalesPage as Page,
   type SalesPaymentMethod, type SalesSeries, type SalesStaffOption, type SalesSummary, type SalesTransaction,
 } from '@/lib/localFirst/insights';
 import {
   allowedBuckets, autoBucket, formatLocal, formatShopDateTime, joinLocal, methodText, presetRange, rangeProblem,
-  splitLocal, statusText, type LocalRange, type SalesPreset,
+  splitLocal, type LocalRange, type SalesPreset,
 } from '@/lib/localFirst/salesRange';
 import { EmptyState, FormField, PageHeader, StatCard, count, money } from './ui';
 import { OrderLink, StatusBadge } from './InsightParts';
@@ -20,13 +20,6 @@ const PRESETS: Array<{ id: SalesPreset; label: string }> = [
   { id: 'month', label: 'This month' }, { id: 'custom', label: 'Custom' },
 ];
 const METHODS: SalesPaymentMethod[] = ['cash', 'upi', 'card', 'bank_transfer', 'other'];
-/** The status chips group the five working stages into one. */
-const STATUS_GROUPS: Array<{ id: string; label: string; statuses: SalesOrderStatus[] }> = [
-  { id: 'received', label: 'Received', statuses: ['received'] },
-  { id: 'process', label: 'In process', statuses: ['washing', 'drying', 'ironing', 'quality_check', 'packing'] },
-  { id: 'ready', label: 'Ready', statuses: ['ready'] },
-  { id: 'collected', label: 'Collected', statuses: ['collected'] },
-];
 const BUCKET_LABEL: Record<SalesBucket, string> = { hour: 'Hourly', day: 'Daily', month: 'Monthly' };
 
 type Tab = 'orders' | 'transactions';
@@ -70,12 +63,10 @@ export const SalesPage = ({ onError, onOpenOrder }: SectionProps) => {
   const [preset, setPreset] = useState<SalesPreset>('today');
   const [edges, setEdges] = useState<Edges>(() => edgesOf(presetRange('today', new Date())));
   const [methods, setMethods] = useState<SalesPaymentMethod[]>([]);
-  const [groups, setGroups] = useState<string[]>([]);
   const [staffId, setStaffId] = useState('');
   const [searchText, setSearchText] = useState('');
   const [search, setSearch] = useState('');
   const [discountedOnly, setDiscountedOnly] = useState(false);
-  const [includeCancelled, setIncludeCancelled] = useState(false);
   const [tick, setTick] = useState(0);
   const [bucketChoice, setBucketChoice] = useState<SalesBucket | null>(null);
   const [tab, setTab] = useState<Tab>('orders');
@@ -98,12 +89,12 @@ export const SalesPage = ({ onError, onOpenOrder }: SectionProps) => {
     from: range.from,
     to: range.to,
     paymentMethods: methods,
-    statuses: STATUS_GROUPS.filter(group => groups.includes(group.id)).flatMap(group => group.statuses),
+    statuses: [],
     staffId: staffId || undefined,
     search: search || undefined,
     discountedOnly,
-    includeCancelled,
-  }), [range, methods, groups, staffId, search, discountedOnly, includeCancelled]);
+    includeCancelled: false,
+  }), [range, methods, staffId, search, discountedOnly]);
 
   useEffect(() => {
     let live = true;
@@ -176,14 +167,6 @@ export const SalesPage = ({ onError, onOpenOrder }: SectionProps) => {
               ))}
             </div>
           </div>
-          <div className="counter-field">
-            <span>Order status</span>
-            <div className="counter-chips" role="group" aria-label="Order status">
-              {STATUS_GROUPS.map(group => (
-                <button key={group.id} type="button" className={groups.includes(group.id) ? 'selected' : ''} aria-pressed={groups.includes(group.id)} onClick={() => ask(() => setGroups(toggled(groups, group.id)))}>{group.label}</button>
-              ))}
-            </div>
-          </div>
         </div>
 
         <div className="counter-filters">
@@ -200,7 +183,6 @@ export const SalesPage = ({ onError, onOpenOrder }: SectionProps) => {
             <Button type="submit" variant="outline">Search</Button>
           </form>
           <label className="counter-check"><input type="checkbox" checked={discountedOnly} onChange={event => ask(() => setDiscountedOnly(event.target.checked))} />Discounted orders only</label>
-          <label className="counter-check"><input type="checkbox" checked={includeCancelled} onChange={event => ask(() => setIncludeCancelled(event.target.checked))} />Include cancelled orders</label>
         </div>
       </section>
 
@@ -208,28 +190,20 @@ export const SalesPage = ({ onError, onOpenOrder }: SectionProps) => {
         <>
           <div className="counter-stats">
             <StatCard label="Orders" value={summary.orders} hint={count(summary.pieces, 'piece')} />
-            <StatCard label="Before discount" value={money(summary.grossMinor)} />
-            <StatCard label="Discounts" value={money(summary.discountMinor)} />
             <StatCard label="Billed" value={money(summary.netBilledMinor)} hint={`Average ${money(summary.averageOrderMinor)} per order`} />
-            <StatCard label="Advance collected" value={money(netByKind(summary).advanceMinor)} hint="Taken when booked, after refunds" />
-            <StatCard label="Balance received" value={money(netByKind(summary).balanceMinor)} hint="Taken at pickup, after refunds" />
-            <StatCard label="Collected" value={money(summary.collectedMinor)} hint="Payments taken" />
-            <StatCard label="Refunded" value={money(summary.refundedMinor)} hint="Handed back" tone={summary.refundedMinor > 0 ? 'warn' : 'neutral'} />
-            <StatCard label="Net collected" value={money(summary.netCollectedMinor)} tone="good" />
-            <StatCard label="Cancelled" value={summary.cancelledCount} hint={`${money(summary.cancelledMinor)} worth`} />
+            <StatCard label="Discounts" value={money(summary.discountMinor)} />
+            <StatCard label="Collected" value={money(summary.netCollectedMinor)} hint="Payments taken" tone="good" />
             <StatCard label="Expenses" value={money(summary.expensesMinor)} hint="By day of the expense" />
             <StatCard
               label="Profit"
               value={summary.profitMinor === null ? '—' : money(summary.profitMinor)}
-              hint={summary.profitMinor === null ? 'Not shown while filters are on' : 'Net collected minus expenses'}
+              hint={summary.profitMinor === null ? 'Not shown while filters are on' : 'Collected minus expenses'}
               tone={summary.profitMinor !== null && summary.profitMinor < 0 ? 'bad' : 'neutral'}
             />
           </div>
           <ul className="counter-hints">
-            <li>Billed counts orders created in the period; cancelled orders are left out unless you include them. Collected counts payments taken in the period, and a refund counts on the day the money was handed back.</li>
-            <li>Advance is the part paid when the order is booked; balance is what is paid at or after pickup.</li>
+            <li>Billed counts orders created in the period; Collected counts payments taken in the period.</li>
             <li>The staff filter follows who created each order, but for money it follows who took the payment.</li>
-            <li>Expenses are kept by day, so any expense dated on a day the period touches is included.</li>
           </ul>
 
           <section className="counter-panel">
@@ -263,10 +237,6 @@ export const SalesPage = ({ onError, onOpenOrder }: SectionProps) => {
               title="By service" empty="No orders."
               rows={summary.byService.map(item => ({ key: item.service, name: item.service, detail: `${count(item.pieces, 'piece')}, before discount`, value: money(item.amountMinor) }))}
             />
-            <Breakdown
-              title="By order status" empty="No orders."
-              rows={summary.byStatus.map(item => ({ key: item.status, name: statusText(item.status), detail: count(item.orders, 'order'), value: money(item.netBilledMinor) }))}
-            />
           </div>
         </>
       )}
@@ -280,22 +250,17 @@ export const SalesPage = ({ onError, onOpenOrder }: SectionProps) => {
           <>
             <div className="counter-table-wrap">
               <table className="counter-table">
-                <thead><tr><th>Bill</th><th>Created</th><th>Customer</th><th>Status</th><th className="num">Pieces</th><th className="num">Total</th><th className="num">Paid</th><th className="num">Balance</th><th>Paid by</th><th>Created by</th></tr></thead>
+                <thead><tr><th>Bill</th><th>Created</th><th>Customer</th><th>Status</th><th className="num">Total</th><th className="num">Paid</th><th className="num">Balance</th><th>Created by</th></tr></thead>
                 <tbody>
                   {orders.items.map(order => (
                     <tr key={order.id}>
                       <td><OrderLink id={order.id} number={order.orderNumber} onOpen={onOpenOrder} /></td>
                       <td>{formatShopDateTime(order.receivedAt)}</td>
                       <td>{order.customerName}<span className="counter-cell-note">{order.customerPhone}</span></td>
-                      <td>
-                        <StatusBadge status={order.status} />
-                        {order.cancelledAt && <span className="counter-cell-note">Cancelled {formatShopDateTime(order.cancelledAt)}</span>}
-                      </td>
-                      <td className="num">{order.pieceCount}</td>
+                      <td><StatusBadge status={order.status} /></td>
                       <td className="num">{money(order.totalMinor)}{order.discountMinor > 0 && <span className="counter-cell-note">{money(order.discountMinor)} off</span>}</td>
                       <td className="num">{money(order.paidMinor)}</td>
                       <td className="num">{money(order.balanceMinor)}</td>
-                      <td>{order.methods.length === 0 ? '—' : order.methods.map(methodText).join(', ')}</td>
                       <td>{order.staffName ?? '—'}</td>
                     </tr>
                   ))}

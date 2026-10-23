@@ -162,12 +162,6 @@ export interface DashboardOverview {
 export type KindFigures = Pick<SalesSummary,
   'advanceCollectedMinor' | 'balanceCollectedMinor' | 'advanceRefundedMinor' | 'balanceRefundedMinor'>;
 
-/** Net money per kind: what was taken less what was handed back, for advance and for balance. */
-export const netByKind = (item: KindFigures): { advanceMinor: number; balanceMinor: number } => ({
-  advanceMinor: item.advanceCollectedMinor - item.advanceRefundedMinor,
-  balanceMinor: item.balanceCollectedMinor - item.balanceRefundedMinor,
-});
-
 export const getDashboardOverview = (): Promise<DashboardOverview> => call('counter_dashboard_overview');
 export const getSalesSummary = (filter: SalesFilter): Promise<SalesSummary> => call('counter_sales_summary', { filter });
 export const getSalesSeries = (filter: SalesFilter, bucket: SalesBucket): Promise<SalesSeries> =>

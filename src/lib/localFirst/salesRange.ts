@@ -117,14 +117,9 @@ export const formatDay = (date: string): string => shopDayFormat.format(new Date
 /** "05 Mar 2026, 2:30 pm" for a shop-local `YYYY-MM-DDTHH:MM`. */
 export const formatLocal = (local: string): string => formatShopDateTime(new Date(`${local}:00+05:30`).toISOString());
 
-const STATUS_LABELS: Record<string, string> = {
-  received: 'Received', washing: 'Washing', drying: 'Drying', ironing: 'Ironing', quality_check: 'Quality check',
-  packing: 'Packing', ready: 'Ready', collected: 'Collected', cancelled: 'Cancelled',
-};
 const METHOD_LABELS: Record<string, string> = {
   cash: 'Cash', upi: 'UPI', card: 'Card', bank_transfer: 'Bank transfer', credit: 'Credit (older orders)', other: 'Other',
 };
 
-/** Readable status; an unknown value is shown as it is rather than hidden. */
-export const statusText = (status: string): string => STATUS_LABELS[status] ?? status;
+/** Readable payment method; an unknown value is shown as it is rather than hidden. */
 export const methodText = (method: string): string => METHOD_LABELS[method] ?? method;
