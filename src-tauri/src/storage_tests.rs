@@ -821,13 +821,19 @@ fn a_v7_database_gets_wash_only_and_wash_plus_press_and_keeps_every_past_order_l
             "a rate for a service that does not exist is still refused"
         );
 
-        // The key check now allows wash_only and nothing else new.
-        assert!(sqlx::query(
-            "INSERT INTO service_methods(id, service_key, name) VALUES ('x', 'bogus', 'Bogus')"
-        )
-        .execute(pool)
-        .await
-        .is_err());
+        // Since version 9 the key check only keeps keys short and plain, so the shop can add services.
+        for bad in ["Bad Key", "UPPER", "a/b", ""] {
+            assert!(
+                sqlx::query(
+                    "INSERT INTO service_methods(id, service_key, name) VALUES ('x', ?, 'Bad')"
+                )
+                .bind(bad)
+                .execute(pool)
+                .await
+                .is_err(),
+                "{bad}"
+            );
+        }
 
         // Clothes keep their prices on Wash + Press; Wash only is waiting for the shop's prices.
         assert_eq!(rate_cell(pool, "g-shirt", "svc-wash").await, shirt_before);
@@ -876,6 +882,73 @@ fn a_v7_database_gets_wash_only_and_wash_plus_press_and_keeps_every_past_order_l
             rate_cell(pool, "g-sweater", "svc-wash").await.0,
             Some(10000)
         );
+    });
+}
+
+#[test]
+fn a_v8_database_gets_ordered_services_and_keeps_every_past_order_link() {
+    tauri::async_runtime::block_on(async {
+        let temporary = TempDatabase::new();
+        create_schema_file(&temporary.path, 8).await;
+        let setup = connect_writer_pool(&temporary.path, false, 1)
+            .await
+            .unwrap();
+        seed_order_with_payments(&setup).await;
+        sqlx::query("UPDATE order_items SET garment_id = 'g-shirt', service_method_id = 'svc-wash' WHERE id = 'item-1'")
+            .execute(&setup)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE order_pieces SET garment_id = 'g-shirt', service_id = 'svc-wash'")
+            .execute(&setup)
+            .await
+            .unwrap();
+        let shirt_before = rate_cell(&setup, "g-shirt", "svc-wash").await;
+        setup.close().await;
+
+        let upgraded = open(&temporary.path).await;
+        assert_eq!(upgraded.info().error, None);
+        let pool = &upgraded.pools().unwrap().writer;
+        assert_eq!(user_version(pool).await, SCHEMA_VERSION);
+
+        // The same five services, in the counter's order.
+        let ordered: Vec<String> =
+            sqlx::query_scalar("SELECT name FROM service_methods ORDER BY sort_order")
+                .fetch_all(pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            ordered,
+            ["Iron", "Wash only", "Wash + Press", "Dry Clean", "Starch"]
+        );
+        // Rebuilding the table fired no ON DELETE SET NULL: the past order keeps its service.
+        let item: Option<String> =
+            sqlx::query_scalar("SELECT service_method_id FROM order_items WHERE id = 'item-1'")
+                .fetch_one(pool)
+                .await
+                .unwrap();
+        assert_eq!(item.as_deref(), Some("svc-wash"));
+        let pieces: Vec<Option<String>> =
+            sqlx::query_scalar("SELECT service_id FROM order_pieces ORDER BY id")
+                .fetch_all(pool)
+                .await
+                .unwrap();
+        assert_eq!(pieces, vec![Some("svc-wash".to_string()); 2]);
+        assert_eq!(rate_cell(pool, "g-shirt", "svc-wash").await, shirt_before);
+        let enforced: i64 = sqlx::query_scalar("PRAGMA foreign_keys")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        assert_eq!(enforced, 1);
+        assert!(sqlx::query("PRAGMA foreign_key_check")
+            .fetch_all(pool)
+            .await
+            .unwrap()
+            .is_empty());
+        // A plain new key is allowed now.
+        sqlx::query("INSERT INTO service_methods(id, service_key, name, sort_order) VALUES ('svc-steam', 'custom_steam', 'Steam press', 6)")
+            .execute(pool)
+            .await
+            .unwrap();
     });
 }
 

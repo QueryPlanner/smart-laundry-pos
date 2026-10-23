@@ -33,22 +33,51 @@ interface GarmentGridProps {
   onQuantity: (garmentId: string, quantity: number, serviceId: string) => void;
 }
 
+/** The section tab that shows every service at once. */
+const ALL = 'all';
+
 /**
- * Every active garment at once. The services it is sold under (for example Iron, Wash only, Wash + Press,
- * Dry Clean, Starch) are buttons along the bottom of each card, each with its price: one tap adds one
- * piece, and a count with a minus button appears once a service has been added. A service the garment
- * has no price for is not shown at all, so each card offers only real choices.
+ * The garments, by section. "All" shows every active garment with the services it is sold under (for
+ * example Iron, Wash only, Wash + Press, Dry Clean, Starch) as buttons along the bottom of its card, each
+ * with its price. A section (one service) shows only the garments priced for it, each with that one
+ * button. One tap adds one piece; a count with a minus button appears once something has been added, and
+ * each section tab counts the pieces added in it. A service the garment has no price for is not shown.
  */
 export const GarmentGrid = ({ catalogue, lines, onAdd, onQuantity }: GarmentGridProps) => {
-  const services = (catalogue?.services ?? []).filter(service => service.active);
+  const [section, setSection] = useState(ALL);
+  const active = (catalogue?.services ?? []).filter(service => service.active);
+  const sections = catalogue ? active.filter(service => catalogue.garments.some(garment => garment.active
+    && isSellable(garment, service, catalogue.rates.find(r => r.garmentId === garment.id && r.serviceId === service.id)))) : [];
+  // A section that was removed or lost its last price falls back to every service.
+  const chosen = sections.find(service => service.id === section);
+  const services = chosen ? [chosen] : active;
+  const added = (serviceId: string) => Object.entries(lines)
+    .filter(([key]) => key.endsWith(`|${serviceId}`))
+    .reduce((sum, [, quantity]) => sum + quantity, 0);
   return <>
-    {catalogue && nothingIsSellable(catalogue, services) && <p className="counter-no-rates" role="status">No prices are set yet. Ask the owner to set the rate card.</p>}
+    {catalogue && nothingIsSellable(catalogue, active) && <p className="counter-no-rates" role="status">No prices are set yet. Ask the owner to set the rate card.</p>}
+    {sections.length > 1 && (
+      <div className="counter-services" role="group" aria-label="Sections">
+        <span className="counter-section-label">Section</span>
+        <button type="button" className={chosen ? '' : 'selected'} aria-pressed={!chosen} onClick={() => setSection(ALL)}>All</button>
+        {sections.map(service => {
+          const count = added(service.id);
+          return (
+            <button type="button" key={service.id} className={chosen?.id === service.id ? 'selected' : ''} aria-pressed={chosen?.id === service.id} onClick={() => setSection(service.id)}>
+              {service.name}{count > 0 && <em className="counter-section-count" aria-label={`${count} in this section`}>{count}</em>}
+            </button>
+          );
+        })}
+      </div>
+    )}
     <div className="counter-garment-grid" aria-label="Garments">
       {(catalogue?.garments ?? []).filter(garment => garment.active).map(garment => {
         const offered = services.flatMap(service => {
           const rate = catalogue?.rates.find(r => r.garmentId === garment.id && r.serviceId === service.id);
           return isSellable(garment, service, rate) ? [{ service, rate: rate as CounterRate, quantity: lines[`${garment.id}|${service.id}`] || 0 }] : [];
         });
+        // Inside a section, a garment that is not sold there is left out rather than greyed out.
+        if (chosen && offered.length === 0) return null;
         return (
           <article className={`counter-garment ${offered.length > 0 ? '' : 'unavailable'}`} key={garment.id}>
             <div className="counter-garment-picture">

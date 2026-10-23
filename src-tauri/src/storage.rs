@@ -24,6 +24,7 @@ const MIGRATION_V5_SQL: &str = include_str!("../migrations/005_order_trash.sql")
 const MIGRATION_V6_SQL: &str = include_str!("../migrations/006_simplified_rate_card.sql");
 const MIGRATION_V7_SQL: &str = include_str!("../migrations/007_trash_requests.sql");
 const MIGRATION_V8_SQL: &str = include_str!("../migrations/008_wash_only_and_press.sql");
+const MIGRATION_V9_SQL: &str = include_str!("../migrations/009_custom_services.sql");
 /// Every schema step, oldest first: its version number, its SQL and a name for error messages.
 /// Startup, the schema contract and the test fixtures all read this one list, so a new step is
 /// added here once and nowhere else.
@@ -40,11 +41,13 @@ const MIGRATION_STEPS: &[(i64, &str, &str)] = &[
     (6, MIGRATION_V6_SQL, "v6 simplified rate card"),
     (7, MIGRATION_V7_SQL, "v7 trash requests"),
     (8, MIGRATION_V8_SQL, "v8 wash only and wash + press"),
+    (9, MIGRATION_V9_SQL, "v9 custom services"),
 ];
-const SCHEMA_VERSION: i64 = 8;
-/// The first step that rebuilds a table other tables point to. A database older than this is
-/// migrated with foreign keys switched off, which SQLite only allows outside a transaction.
-const FIRST_TABLE_REBUILD_STEP: i64 = 8;
+const SCHEMA_VERSION: i64 = 9;
+/// The last step that rebuilds a table other tables point to (steps 8 and 9 both rebuild
+/// `service_methods`). A database older than this is migrated with foreign keys switched off,
+/// which SQLite only allows outside a transaction.
+const LAST_TABLE_REBUILD_STEP: i64 = 9;
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const WRITER_CONNECTIONS: u32 = 1;
 const READER_CONNECTIONS: u32 = 4;
@@ -1098,7 +1101,7 @@ async fn initialize_schema(pool: &SqlitePool, existed: bool) -> Result<(), Strin
         // Foreign keys must be off while a table that others point to is rebuilt, and SQLite ignores
         // the setting inside a transaction, so it is switched off before the migration begins. It is
         // switched back on whatever happens: this connection goes back into the pool.
-        let rebuilds_tables = applied < FIRST_TABLE_REBUILD_STEP;
+        let rebuilds_tables = applied < LAST_TABLE_REBUILD_STEP;
         if rebuilds_tables {
             set_foreign_keys(&mut connection, false).await?;
         }

@@ -11,7 +11,8 @@ export type CounterRole = 'admin' | 'staff';
  * `wash_iron` is the "Starch" service since schema v6, and `wash` is shown as "Wash + Press" since v8 (their
  * keys could not be changed). `wash_only` is "Wash only".
  */
-export type CounterServiceKey = 'wash' | 'iron' | 'wash_iron' | 'dry_clean' | 'wash_only';
+/** The built-in services, plus `custom_<id>` for those the administrator adds. */
+export type CounterServiceKey = 'wash' | 'iron' | 'wash_iron' | 'dry_clean' | 'wash_only' | `custom_${string}`;
 export type CounterJobKind = 'bill' | 'tags';
 export type CounterJobState = 'pending' | 'submitting' | 'submitted' | 'failed' | 'uncertain';
 export type CounterPaymentMethod = 'cash' | 'upi' | 'card' | 'bank_transfer' | 'other';
@@ -141,7 +142,14 @@ export const searchCounterCustomers = (phone: string): Promise<Array<{id: string
 export const setCounterRate = (garmentId: string, serviceId: string, priceMinor: number | null, available: boolean): Promise<void> =>
   call('counter_set_rate', { garmentId, serviceId, priceMinor, available });
 /** Admin only. Adds a garment with no rates; it can be sold only for the services priced on the rate card. */
-export const addCounterGarment = (name: string): Promise<void> => call('counter_add_garment', { name });
+/** Adds a garment, shown with one of the bundled pictures (`picture` is its key) or its first letter. */
+export const addCounterGarment = (name: string, picture?: string): Promise<void> =>
+  call('counter_add_garment', { name, picture: picture ?? null });
+/** Adds a service (a section of the counter), or brings back a removed one with the same name. */
+export const addCounterService = (name: string): Promise<void> => call('counter_add_service', { name });
+/** Removes a service from the counter (past orders keep it) or brings it back. */
+export const setCounterServiceActive = (serviceId: string, active: boolean): Promise<void> =>
+  call('counter_set_service_active', { serviceId, active });
 /** Admin only. Hides the order from lists, sales and the dashboard. Nothing is deleted. */
 export const trashCounterOrder = (orderId: string): Promise<void> => call('counter_trash_order', { orderId });
 /** A bill staff marked for the trash, waiting for an administrator. */

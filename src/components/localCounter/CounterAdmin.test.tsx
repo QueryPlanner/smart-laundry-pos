@@ -12,6 +12,7 @@ const api = vi.hoisted(() => ({
 vi.mock('@/lib/localFirst/counter', () => api);
 vi.mock('./CounterDiscounts', () => ({ CounterDiscounts: () => <p>discounts panel</p> }));
 vi.mock('./CounterBackups', () => ({ CounterBackups: () => <p>backups panel</p> }));
+vi.mock('./ServiceList', () => ({ ServiceList: ({ onChanged }: { onChanged: () => Promise<void> }) => <button onClick={() => void onChanged()}>services changed</button> }));
 
 const catalogue: CounterCatalogue = {
   garments: [
@@ -66,10 +67,25 @@ describe('CounterAdmin new garment', () => {
     expect(add.disabled).toBe(true);
     fireEvent.change(screen.getByLabelText('New garment'), { target: { value: 'Leather jacket' } });
     fireEvent.click(add);
-    await waitFor(() => expect(api.addCounterGarment).toHaveBeenCalledWith('Leather jacket'));
+    await waitFor(() => expect(api.addCounterGarment).toHaveBeenCalledWith('Leather jacket', undefined));
     await waitFor(() => expect(props.onCatalogue).toHaveBeenCalledWith(catalogue));
     expect(props.onNotice).toHaveBeenCalledWith('Garment added. Set a rate for each service it should be sold with.');
     expect((screen.getByLabelText('New garment') as HTMLInputElement).value).toBe('');
+  });
+
+  it('adds a garment with the picture chosen, then clears the choice', async () => {
+    setup();
+    fireEvent.change(screen.getByLabelText('New garment'), { target: { value: 'Churidar suit' } });
+    fireEvent.click(screen.getByLabelText('Churidar suit'));
+    fireEvent.click(screen.getByRole('button', { name: 'Add garment' }));
+    await waitFor(() => expect(api.addCounterGarment).toHaveBeenCalledWith('Churidar suit', 'churidar'));
+    await waitFor(() => expect((screen.getByLabelText('No picture') as HTMLInputElement).checked).toBe(true));
+  });
+
+  it('reloads the rate card when the services change', async () => {
+    const props = setup();
+    fireEvent.click(screen.getByRole('button', { name: 'services changed' }));
+    await waitFor(() => expect(props.onCatalogue).toHaveBeenCalledWith(catalogue));
   });
 
   it('keeps the name and reports the error when adding fails', async () => {

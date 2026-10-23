@@ -629,7 +629,12 @@ pub async fn catalogue(db: &DatabaseState, session: &CounterSession) -> Result<C
     let _ = actor(session)?;
     let p = db.writer_pool()?;
     let g=sqlx::query("SELECT id,garment_key AS key,name_en AS nameEn,name_mr AS nameMr,category,image_key AS imageKey,billing_unit AS billingUnit,active FROM garments ORDER BY sort_order").fetch_all(p).await.map_err(db_err)?;
-    let sv=sqlx::query("SELECT id,service_key AS key,name,active FROM service_methods ORDER BY CASE service_key WHEN 'iron' THEN 1 WHEN 'wash_only' THEN 2 WHEN 'wash' THEN 3 WHEN 'dry_clean' THEN 4 ELSE 5 END").fetch_all(p).await.map_err(db_err)?;
+    let sv = sqlx::query(
+        "SELECT id,service_key AS key,name,active FROM service_methods ORDER BY sort_order,name",
+    )
+    .fetch_all(p)
+    .await
+    .map_err(db_err)?;
     let r=sqlx::query("SELECT garment_id AS garmentId,service_id AS serviceId,price_minor AS priceMinor,configured,available,version FROM garment_service_rates ORDER BY garment_id,service_id").fetch_all(p).await.map_err(db_err)?;
     Ok(Catalogue {
         garments: g.iter().map(row_value).collect(),
@@ -967,13 +972,24 @@ pub async fn set_rate(
 /// Longest name an administrator may give a garment they add to the rate card.
 const MAX_GARMENT_NAME_CHARS: usize = 40;
 
-/// Adds a garment that is not in the default rate card (for example a leather jacket). It gets one
-/// unset, unavailable rate for every service, so it can be sold only for the services the
-/// administrator later prices on the rate card.
+/// A picture name: the file `public/garments/<key>-transparent.png`. Kept plain so it can only ever
+/// name a file in that folder.
+fn is_picture_key(key: &str) -> bool {
+    (1..=40).contains(&key.len())
+        && key
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
+/// Adds a garment that is not in the default rate card (for example a leather jacket), shown with
+/// the chosen picture (`None` shows the first letter of its name instead). It gets one unset,
+/// unavailable rate for every service, so it can be sold only for the services the administrator
+/// later prices on the rate card.
 pub async fn add_garment(
     db: &DatabaseState,
     session: &CounterSession,
     name: &str,
+    picture: Option<&str>,
 ) -> Result<(), String> {
     require_admin(session, "add a garment")?;
     let name = name.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -981,6 +997,9 @@ pub async fn add_garment(
         return Err(format!(
             "Give the garment a name of 1 to {MAX_GARMENT_NAME_CHARS} characters."
         ));
+    }
+    if picture.is_some_and(|key| !is_picture_key(key)) {
+        return Err("Choose one of the pictures shown.".into());
     }
     let mut tx = db.begin_counter_write().await?;
     let actor = require_admin_in_tx(&mut tx, session, "add a garment").await?;
@@ -995,8 +1014,8 @@ pub async fn add_garment(
     }
     let id = format!("g-custom-{}", Uuid::new_v4());
     let now = Utc::now().to_rfc3339();
-    sqlx::query("INSERT INTO garments(id,garment_key,name_en,name_mr,category,image_key,billing_unit,sort_order) VALUES(?1,?1,?2,'','custom',?1,'piece',(SELECT COALESCE(MAX(sort_order),0)+1 FROM garments))")
-        .bind(&id).bind(&name).execute(&mut *tx).await.map_err(db_err)?;
+    sqlx::query("INSERT INTO garments(id,garment_key,name_en,name_mr,category,image_key,billing_unit,sort_order) VALUES(?1,?1,?2,'','custom',?3,'piece',(SELECT COALESCE(MAX(sort_order),0)+1 FROM garments))")
+        .bind(&id).bind(&name).bind(picture.unwrap_or(id.as_str())).execute(&mut *tx).await.map_err(db_err)?;
     sqlx::query("INSERT INTO garment_service_rates(garment_id,service_id,price_minor,configured,available,version,updated_at,updated_by) SELECT ?1,id,NULL,0,0,1,?2,?3 FROM service_methods")
         .bind(&id).bind(&now).bind(&actor.id).execute(&mut *tx).await.map_err(db_err)?;
     audit_details(
@@ -1005,6 +1024,120 @@ pub async fn add_garment(
         "garment_added",
         "garment",
         &id,
+        &now,
+        &serde_json::json!({ "name": name, "picture": picture }),
+    )
+    .await?;
+    tx.commit().await.map_err(db_err)
+}
+
+/// Longest name an administrator may give a service.
+const MAX_SERVICE_NAME_CHARS: usize = 30;
+
+/// Adds a service (for example "Steam press") as a new section of the counter. Every garment gets an
+/// unset, unavailable rate for it, so it shows only on the garments the administrator prices. A
+/// removed service with the same name is brought back instead, with its old prices.
+pub async fn add_service(
+    db: &DatabaseState,
+    session: &CounterSession,
+    name: &str,
+) -> Result<(), String> {
+    require_admin(session, "add a service")?;
+    let name = name.split_whitespace().collect::<Vec<_>>().join(" ");
+    if name.is_empty() || name.chars().count() > MAX_SERVICE_NAME_CHARS {
+        return Err(format!(
+            "Give the service a name of 1 to {MAX_SERVICE_NAME_CHARS} characters."
+        ));
+    }
+    let mut tx = db.begin_counter_write().await?;
+    let actor = require_admin_in_tx(&mut tx, session, "add a service").await?;
+    let now = Utc::now().to_rfc3339();
+    let existing = sqlx::query("SELECT id,active FROM service_methods WHERE LOWER(name)=LOWER(?)")
+        .bind(&name)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(db_err)?;
+    let id = if let Some(row) = existing {
+        if row.try_get::<i64, _>("active").map_err(db_err)? == 1 {
+            return Err("A service with this name already exists.".into());
+        }
+        let id: String = row.try_get("id").map_err(db_err)?;
+        sqlx::query("UPDATE service_methods SET active=1 WHERE id=?")
+            .bind(&id)
+            .execute(&mut *tx)
+            .await
+            .map_err(db_err)?;
+        id
+    } else {
+        let suffix = Uuid::new_v4().simple().to_string();
+        let id = format!("svc-custom-{suffix}");
+        sqlx::query("INSERT INTO service_methods(id,service_key,name,active,sort_order) VALUES(?1,?2,?3,1,(SELECT COALESCE(MAX(sort_order),0)+1 FROM service_methods))")
+            .bind(&id).bind(format!("custom_{suffix}")).bind(&name).execute(&mut *tx).await.map_err(db_err)?;
+        // Order lines still point at the older services table, so the service is listed there too.
+        sqlx::query("INSERT INTO services(id,name,category,price_per_piece,price_per_kg,created_at,updated_at,origin_device_id) VALUES(?1,?2,'laundry',NULL,NULL,?3,?3,'counter')")
+            .bind(&id).bind(&name).bind(&now).execute(&mut *tx).await.map_err(db_err)?;
+        sqlx::query("INSERT INTO garment_service_rates(garment_id,service_id,price_minor,configured,available,version,updated_at,updated_by) SELECT id,?1,NULL,0,0,1,?2,?3 FROM garments")
+            .bind(&id).bind(&now).bind(&actor.id).execute(&mut *tx).await.map_err(db_err)?;
+        id
+    };
+    audit_details(
+        &mut tx,
+        &actor.id,
+        "service_added",
+        "service",
+        &id,
+        &now,
+        &serde_json::json!({ "name": name }),
+    )
+    .await?;
+    tx.commit().await.map_err(db_err)
+}
+
+/// Removes a service from the counter (`active` false) or brings it back. Nothing is deleted: past
+/// orders keep their service and the prices stay for when it comes back. One service always stays.
+pub async fn set_service_active(
+    db: &DatabaseState,
+    session: &CounterSession,
+    service_id: &str,
+    active: bool,
+) -> Result<(), String> {
+    require_admin(session, "change the services")?;
+    let mut tx = db.begin_counter_write().await?;
+    let actor = require_admin_in_tx(&mut tx, session, "change the services").await?;
+    let name: String = sqlx::query_scalar("SELECT name FROM service_methods WHERE id=?")
+        .bind(service_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(db_err)?
+        .ok_or("Service not found.")?;
+    if !active {
+        let others: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM service_methods WHERE active=1 AND id<>?")
+                .bind(service_id)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(db_err)?;
+        if others == 0 {
+            return Err("Keep at least one service.".into());
+        }
+    }
+    sqlx::query("UPDATE service_methods SET active=? WHERE id=?")
+        .bind(active as i64)
+        .bind(service_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(db_err)?;
+    let now = Utc::now().to_rfc3339();
+    audit_details(
+        &mut tx,
+        &actor.id,
+        if active {
+            "service_restored"
+        } else {
+            "service_removed"
+        },
+        "service",
+        service_id,
         &now,
         &serde_json::json!({ "name": name }),
     )
@@ -4383,6 +4516,149 @@ mod counter_tests {
     }
 
     #[test]
+    fn an_admin_adds_removes_and_restores_a_service() {
+        tauri::async_runtime::block_on(async {
+            let path = fixture_path();
+            let db = DatabaseState::open(path.clone()).await;
+            let admin = admin_fixture(&db).await;
+            let staff = staff_fixture(&db).await;
+            let names = |cat: &Catalogue| {
+                cat.services
+                    .iter()
+                    .filter(|s| s["active"] == 1)
+                    .map(|s| s["name"].as_str().unwrap().to_string())
+                    .collect::<Vec<_>>()
+            };
+
+            // Staff cannot change services; names are checked.
+            assert!(add_service(&db, &staff, "Steam press")
+                .await
+                .unwrap_err()
+                .contains("Administrator access"));
+            assert!(add_service(&db, &admin, "  ").await.is_err());
+            assert!(add_service(&db, &admin, &"x".repeat(31)).await.is_err());
+            assert!(add_service(&db, &admin, "wash only")
+                .await
+                .unwrap_err()
+                .contains("already exists"));
+
+            // A new service comes last, with an unset, unavailable rate for every garment.
+            add_service(&db, &admin, "  Steam   press ").await.unwrap();
+            let cat = catalogue(&db, &admin).await.unwrap();
+            assert_eq!(
+                names(&cat),
+                [
+                    "Iron",
+                    "Wash only",
+                    "Wash + Press",
+                    "Dry Clean",
+                    "Starch",
+                    "Steam press"
+                ]
+            );
+            let steam = cat.services.last().unwrap()["id"]
+                .as_str()
+                .unwrap()
+                .to_string();
+            let rates: Vec<_> = cat
+                .rates
+                .iter()
+                .filter(|r| r["serviceId"] == steam.as_str())
+                .collect();
+            assert_eq!(rates.len(), cat.garments.len());
+            assert!(rates
+                .iter()
+                .all(|r| r["configured"] == 0 && r["available"] == 0));
+
+            // Once priced it can be sold, and the order keeps it after the service is removed.
+            set_rate(&db, &admin, "g-shirt", &steam, Some(2500), true)
+                .await
+                .unwrap();
+            let mut order = order_input(1);
+            order.items[0].service_id = steam.clone();
+            let saved = save_with_advance(&db, &staff, order.clone(), "steam-order", None)
+                .await
+                .unwrap();
+            assert_eq!(saved.lines[0].service, "Steam press");
+            assert!(set_service_active(&db, &staff, &steam, false)
+                .await
+                .is_err());
+            set_service_active(&db, &admin, &steam, false)
+                .await
+                .unwrap();
+            assert!(
+                !names(&catalogue(&db, &admin).await.unwrap()).contains(&"Steam press".to_string())
+            );
+            assert!(
+                quote(&db, &staff, &order).await.is_err(),
+                "a removed service cannot be sold"
+            );
+            let kept = get_saved(&db, &saved.order_id).await.unwrap().unwrap();
+            assert_eq!(kept.lines[0].service, "Steam press");
+
+            // Adding the same name again brings it back with its price.
+            add_service(&db, &admin, "steam press").await.unwrap();
+            let cat = catalogue(&db, &admin).await.unwrap();
+            assert_eq!(
+                cat.services
+                    .iter()
+                    .filter(|s| s["name"] == "Steam press")
+                    .count(),
+                1
+            );
+            assert!(quote(&db, &staff, &order).await.is_ok());
+            set_service_active(&db, &admin, &steam, false)
+                .await
+                .unwrap();
+            set_service_active(&db, &admin, &steam, true).await.unwrap();
+            assert!(
+                names(&catalogue(&db, &admin).await.unwrap()).contains(&"Steam press".to_string())
+            );
+
+            // An unknown service, and removing the last one, are refused.
+            assert_eq!(
+                set_service_active(&db, &admin, "nope", false)
+                    .await
+                    .unwrap_err(),
+                "Service not found."
+            );
+            for id in [
+                "svc-iron",
+                "svc-wash-only",
+                "svc-wash",
+                "svc-dry-clean",
+                "svc-wash-iron",
+            ] {
+                set_service_active(&db, &admin, id, false).await.unwrap();
+            }
+            assert_eq!(
+                set_service_active(&db, &admin, &steam, false)
+                    .await
+                    .unwrap_err(),
+                "Keep at least one service."
+            );
+            let audits: Vec<String> = sqlx::query_scalar(
+                "SELECT action FROM counter_audit WHERE entity_type='service' AND entity_id=? ORDER BY rowid",
+            )
+            .bind(&steam)
+            .fetch_all(db.writer_pool().unwrap())
+            .await
+            .unwrap();
+            assert_eq!(
+                audits,
+                [
+                    "service_added",
+                    "service_removed",
+                    "service_added",
+                    "service_removed",
+                    "service_restored"
+                ]
+            );
+            cleanup(db, path).await;
+        });
+    }
+
+    #[test]
     fn an_admin_adds_a_garment_that_is_sellable_only_for_priced_services() {
         tauri::async_runtime::block_on(async {
             let path = fixture_path();
@@ -4391,16 +4667,26 @@ mod counter_tests {
             let staff = staff_fixture(&db).await;
             let before = catalogue(&db, &admin).await.unwrap().garments.len();
 
-            assert!(add_garment(&db, &staff, "Leather jacket")
+            assert!(add_garment(&db, &staff, "Leather jacket", None)
                 .await
                 .unwrap_err()
                 .contains("Administrator access"));
-            assert!(add_garment(&db, &admin, "   ").await.is_err());
-            assert!(add_garment(&db, &admin, &"x".repeat(41)).await.is_err());
-            add_garment(&db, &admin, "  Leather   jacket ")
+            assert!(add_garment(&db, &admin, "   ", None).await.is_err());
+            assert!(add_garment(&db, &admin, &"x".repeat(41), None)
+                .await
+                .is_err());
+            for bad in ["", "../etc", "Saree", "a b", &"x".repeat(41)] {
+                assert_eq!(
+                    add_garment(&db, &admin, "Odd picture", Some(bad))
+                        .await
+                        .unwrap_err(),
+                    "Choose one of the pictures shown."
+                );
+            }
+            add_garment(&db, &admin, "  Leather   jacket ", None)
                 .await
                 .unwrap();
-            assert!(add_garment(&db, &admin, "leather JACKET")
+            assert!(add_garment(&db, &admin, "leather JACKET", Some("jacket"))
                 .await
                 .unwrap_err()
                 .contains("already exists"));
@@ -4410,6 +4696,13 @@ mod counter_tests {
             let jacket = cat.garments.last().unwrap();
             assert_eq!(jacket["nameEn"], "Leather jacket");
             let id = jacket["id"].as_str().unwrap().to_string();
+            // No picture chosen: the key names no file, so the counter shows the first letter.
+            assert_eq!(jacket["imageKey"], id.as_str());
+            add_garment(&db, &admin, "Churidar suit", Some("churidar"))
+                .await
+                .unwrap();
+            let cat = catalogue(&db, &admin).await.unwrap();
+            assert_eq!(cat.garments.last().unwrap()["imageKey"], "churidar");
             let rates: Vec<_> = cat
                 .rates
                 .iter()

@@ -853,3 +853,20 @@ All colors MUST be HSL.
 
 /* A garment with no price for any service. */
 .counter-garment-none{margin:0;padding:12px 8px;color:#8a5a47;font-size:14px;text-align:center}
+.counter-section-count{margin-left:4px;min-width:1.6em;padding:0 6px;border-radius:999px;background:#14694d;color:#fff;font-size:12px;font-style:normal;font-weight:800;text-align:center}
+.counter-service-list{display:grid;gap:8px;padding:12px 0;border-bottom:1px solid #edf1ef}
+.counter-service-list h3{margin:0;font-size:15px}
+.counter-service-list ul{display:grid;gap:6px;margin:0;padding:0;list-style:none}
+.counter-service-list li{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:6px 10px;border:1px solid #e1e9e5;border-radius:10px;font-size:14px}
+.counter-service-list small{color:#9a5c47}
+.counter-add-garment{display:grid;gap:10px;padding:12px 0;border-bottom:1px solid #edf1ef}
+.counter-add-garment>button{justify-self:start}
+.counter-picture-picker{display:grid;grid-template-columns:repeat(auto-fill,minmax(104px,1fr));gap:8px;max-height:340px;overflow:auto;margin:0;padding:8px;border:1px solid #e1e9e5;border-radius:12px}
+.counter-picture-picker legend{padding:0 4px;font-size:13px;font-weight:650;color:#4f6159}
+.counter-picture-picker label{display:grid;justify-items:center;gap:4px;padding:6px;border:2px solid transparent;border-radius:10px;background:#f6faf8;font-size:12px;text-align:center;cursor:pointer}
+.counter-picture-picker label.selected{border-color:#14694d;background:#e2f3ec}
+.counter-picture-picker input{position:absolute;opacity:0;pointer-events:none}
+.counter-picture-picker label:focus-within{outline:2px solid hsl(var(--ring));outline-offset:2px}
+.counter-picture-picker img,.counter-picture-none{width:72px;height:72px;object-fit:contain}
+.counter-picture-none::before{content:"A"}
+.counter-picture-none{display:grid;place-items:center;border-radius:50%;background:#cde4da;color:#267457;font-size:28px;font-weight:700;width:56px;height:56px;margin:8px}

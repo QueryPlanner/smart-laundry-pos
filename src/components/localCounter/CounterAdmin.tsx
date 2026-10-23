@@ -4,6 +4,8 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { CounterBackups } from './CounterBackups';
 import { CounterDiscounts } from './CounterDiscounts';
+import { PicturePicker } from './PicturePicker';
+import { ServiceList } from './ServiceList';
 import { parsePaymentAmountMinor } from '@/lib/localFirst/payment';
 import { addCounterGarment, createCounterStaff, enumeratePrinters, getCounterCatalogue, getPrinterProfiles, listCounterStaff, resetCounterStaffPin, setCounterRate, setCounterStaffActive, setPrinterProfiles, type CounterAccount, type CounterCatalogue, type NativePrinter } from '@/lib/localFirst/counter';
 
@@ -26,6 +28,7 @@ export const CounterAdmin = ({ catalogue, onCatalogue, printers, onReloadPrinter
   const [name, setName] = useState('');
   const [pin, setPin] = useState('');
   const [garmentName, setGarmentName] = useState('');
+  const [garmentPicture, setGarmentPicture] = useState<string | null>(null);
   const [profiles, setProfiles] = useState({ billPrinterId: '', tagPrinterId: '' });
   const [knownPrinters, setKnownPrinters] = useState<NativePrinter[]>(printers);
 
@@ -53,8 +56,9 @@ export const CounterAdmin = ({ catalogue, onCatalogue, printers, onReloadPrinter
 
   const addGarment = async () => {
     try {
-      await addCounterGarment(garmentName);
+      await addCounterGarment(garmentName, garmentPicture ?? undefined);
       setGarmentName('');
+      setGarmentPicture(null);
       onCatalogue(await getCounterCatalogue());
       onNotice('Garment added. Set a rate for each service it should be sold with.');
     } catch (e) { onError(e); }
@@ -70,8 +74,10 @@ export const CounterAdmin = ({ catalogue, onCatalogue, printers, onReloadPrinter
     {tab === 'rates' && <div className="counter-rates">
       <p className="counter-rate-warning">The starting prices are estimates. Check every price before using the app with customers.</p>
       <p>Only administrator-set rates can be sold. Empty rates remain unavailable; changing a rate affects future orders.</p>
-      <form className="counter-add-staff" onSubmit={e => { e.preventDefault(); void addGarment(); }}>
+      <ServiceList services={catalogue?.services ?? []} onChanged={async () => onCatalogue(await getCounterCatalogue())} onError={onError} onNotice={onNotice} />
+      <form className="counter-add-garment" onSubmit={e => { e.preventDefault(); void addGarment(); }}>
         <Label>New garment<Input value={garmentName} maxLength={40} placeholder="For example, Leather jacket" onChange={e => setGarmentName(e.target.value)} /></Label>
+        <PicturePicker value={garmentPicture} onChange={setGarmentPicture} />
         <Button type="submit" disabled={!garmentName.trim()}>Add garment</Button>
       </form>
       <p>A new garment can be sold only for services you give a rate. Leave a service empty to make it unavailable.</p>
