@@ -47,7 +47,7 @@ const catalogue: CounterCatalogue = {
 };
 const order = (): CounterSavedOrder => ({
   orderId: 'o-7', orderNumber: 'SL-7', customerName: 'Rita Joshi', customerPhone: '9876543210', paymentStatus: 'unpaid', collectedAt: null, refundDueMinor: 0, payments: [], receivedAt: '2026-10-15T06:00:00Z', promisedAt: '2026-10-17T11:30:00Z', status: 'ready',
-  totalMinor: 4000, paidMinor: 0, balanceMinor: 4000, pieces: [], printJobs: [],
+  totalMinor: 4000, paidMinor: 0, balanceMinor: 4000, lines: [], payments: [], pieces: [], printJobs: [],
 } as unknown as CounterSavedOrder);
 
 const signedInAs = async (account: CounterAccount) => {
@@ -201,7 +201,7 @@ describe('opening an order from another section', () => {
     expect(navigation().getByRole('button', { name: 'Orders / Pickup' }).getAttribute('aria-current')).toBe('page');
     expect(screen.queryByRole('heading', { name: 'Customers page' })).toBeNull();
     // The order says who it belongs to, and Back goes to the section it was opened from.
-    expect(screen.getByText('Rita Joshi · 9876543210')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Rita Joshi' })).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: '← Customers' }));
     expect(await screen.findByRole('heading', { name: 'Customers page' })).toBeTruthy();
   });
@@ -222,11 +222,6 @@ describe('opening an order from another section', () => {
     await screen.findByRole('heading', { name: 'SL-7' });
     expect(labels()).not.toContain('Print progress');
     expect(labels()).not.toContain('Packing / pickup');
-    fireEvent.click(screen.getByRole('button', { name: 'Hand over to customer →' }));
-    await screen.findByRole('button', { name: '← Order' });
-    expect(navigation().getByRole('button', { name: 'Orders / Pickup' }).getAttribute('aria-current')).toBe('page');
-    fireEvent.click(screen.getByRole('button', { name: '← Order' }));
-    fireEvent.click(await screen.findByRole('button', { name: 'More actions' }));
     fireEvent.click(screen.getByRole('button', { name: 'Print status' }));
     await screen.findByRole('heading', { name: 'SL-7 · Print progress' });
     expect(navigation().getByRole('button', { name: 'Orders / Pickup' }).getAttribute('aria-current')).toBe('page');

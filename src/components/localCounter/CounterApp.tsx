@@ -9,8 +9,8 @@ import {
   getCounterCatalogue, getCounterOrder, previewCounterDraftBill, previewCounterOrderBill,
   listPrintJobs, lockCounter, loginCounter, quoteCounterOrder,
   retryPrintJob, saveCounterOrder, searchCounterCustomers,
-  reprintCounterOutput,
-  setupCounterAdmin,
+  reprintCounterOutput, requestCounterOrderTrash,
+  setupCounterAdmin, trashCounterOrder,
   type CounterAccount, type CounterBootstrap, type CounterCatalogue,
   type BillPreviewData, type CounterPrintJob, type CounterQuote, type CounterSavedOrder, type NativePrinter,
 } from '@/lib/localFirst/counter';
@@ -24,7 +24,7 @@ import { CounterAdmin } from './CounterAdmin';
 import { RestorePendingBanner } from './RestorePendingBanner';
 import { OrdersPage } from './orders/OrdersPage';
 import { TrashRequestsPanel } from './orders/TrashRequestsPanel';
-import { OrderWorkspace } from './orders/OrderWorkspace';
+import { OrderPage } from './orders/OrderPage';
 import { PrintProgress, PrintQueue } from './PrintJobs';
 import { JOB_STATE_LABEL } from './printJobState';
 import { canOpen, NAV_GROUPS, visibleNavGroups, type SectionId, type SectionProps } from './sections';
@@ -55,10 +55,10 @@ const useSingleFlight = () => {
 };
 
 /** Everything the workspace can show: the registry sections plus the per-order pages reached from an order. */
-type Page = SectionId | 'detail' | 'handover' | 'prints';
+type Page = SectionId | 'detail' | 'prints';
 
 /** The pages that belong to one open order: they can be shown only while that order is open. */
-const ORDER_PAGES: Page[] = ['detail', 'handover', 'prints'];
+const ORDER_PAGES: Page[] = ['detail', 'prints'];
 
 /** Where a tap on the navigation or Lock goes. Leaving the order page with a draft needs a confirmation first. */
 type Destination = Page | 'lock';
@@ -240,7 +240,7 @@ export const CounterApp = () => {
   const resumePendingJob = (job: CounterPrintJob) => printActionOnce(async () => {
     try { await dispatchPrintJob(job.id); await refreshJobsAfterAction(job.orderId); } catch (e) { setError(problem(e)); }
   });
-  const openOrder = async (orderId: string, target: 'detail' | 'handover' = 'detail') => {
+  const openOrder = async (orderId: string) => {
     setBusy(true); setError('');
     try {
       const result = await getCounterOrder(orderId);
@@ -250,13 +250,28 @@ export const CounterApp = () => {
       // Moving between an order's own pages keeps where it was first opened from.
       const from = originLabel(page);
       if (from) setOrigin({ page, label: from });
-      setSaved(result); setJobs(result.printJobs); setNotice(''); navigate(target);
+      setSaved(result); setJobs(result.printJobs); setNotice(''); navigate('detail');
     } catch (e) { setError(problem(e)); } finally { setBusy(false); }
   };
-  /** A fresher copy of the open order (after a payment, a stage change, a hand-over ...). */
+  /** A fresher copy of the open order (after a payment or a hand-over). */
   const replaceOrder = useCallback((order: CounterSavedOrder) => { setSaved(order); setJobs(order.printJobs); }, []);
-  /** After a hand-over: back to the list of orders waiting for pickup, ready for the next customer. */
-  const finishHandover = () => { orderList.setSegment('ready'); setSaved(null); navigate('orders'); };
+  /** Every bill of one customer: the list, searched by their phone number. */
+  const showCustomer = (phone: string) => { orderList.setQuery(phone); arrive('orders'); };
+  /** Trash (admin) or mark for trash (staff), from the list or the order page. */
+  const trash = (orderId: string, orderNumber: string, reason?: string) => printActionOnce(async () => {
+    setBusy(true); setError('');
+    try {
+      if (reason === undefined) {
+        await trashCounterOrder(orderId);
+        setNotice(`Order ${orderNumber} moved to the trash.`);
+        if (page === 'detail') arrive(origin.page);
+      } else {
+        await requestCounterOrderTrash(orderId, reason);
+        setNotice(`Order ${orderNumber} was sent to the owner to be trashed. It still counts in sales until they approve.`);
+      }
+      orderList.reload();
+    } catch (e) { setError(problem(e)); } finally { setBusy(false); }
+  });
   const reprint = (orderId: string, kind: 'bill' | 'tags', pieceIds: string[] = []) => printActionOnce(async () => {
     const selected = kind === 'tags' ? [...new Set(pieceIds)].sort() : [];
     const requestKey = `${orderId}:${kind}:${selected.join(',')}`;
@@ -288,7 +303,7 @@ export const CounterApp = () => {
     } catch (e) { setError(problem(e)); }
   });
   /** Shows the bill of a saved order, as a reprint would print it now. */
-  const previewSaved = (order: CounterSavedOrder) => previewOnce(async () => {
+  const previewSaved = (order: { orderId: string; orderNumber: string }) => previewOnce(async () => {
     try {
       setPreview({ title: `Bill ${order.orderNumber}`, data: await previewCounterOrderBill(order.orderId), orderId: order.orderId });
     } catch (e) { setError(problem(e)); }
@@ -341,7 +356,7 @@ export const CounterApp = () => {
   const savedOrderJobs = saved ? jobs.filter(j => j.orderId === saved.orderId) : [];
 
   // An order's own pages (detail, hand-over, print progress) belong to Orders / Pickup in the navigation.
-  const activeSection: Page = page === 'detail' || page === 'handover' || page === 'prints' ? 'orders' : page;
+  const activeSection: Page = page === 'detail' || page === 'prints' ? 'orders' : page;
   const sectionProps: SectionProps = { account, onError: reportError, onNotice: setNotice, onOpenOrder };
   const showing = (section: SectionId) => page === section && canOpen(section, account.role);
 
@@ -364,8 +379,8 @@ export const CounterApp = () => {
     {startupWarning && <p className="counter-error" role="status">{startupWarning}</p>}
     {page === 'order' && <fieldset className="counter-fieldset" disabled={busy}><div className="counter-layout"><main className="counter-main"><CustomerEntry customer={customer} onChange={setCustomer} search={searchCounterCustomers} /><section className="counter-panel"><GarmentGrid catalogue={catalogue} lines={lines} onAdd={addGarment} onQuantity={setQuantity} /></section></main><aside className="counter-aside"><OrderSummary catalogue={catalogue} lines={lines} quote={quote} quoteFailed={quoteError !== ''} customer={customer} discount={discount} onDiscount={changeDiscount} onRemove={(id, sid) => setQuantity(id, 0, sid)} onQuantity={setQuantity} onPrice={setLinePrice} onSave={() => void save()} onPreview={() => void previewDraft()} onClear={clearDraft} busy={busy} /></aside></div></fieldset>}
     {page === 'orders' && admin && <TrashRequestsPanel onError={reportError} onNotice={setNotice} onChanged={orderList.reload} />}
-    {page === 'orders' && <OrdersPage query={orderList.query} onQuery={orderList.setQuery} segment={orderList.segment} onSegment={orderList.setSegment} day={orderList.day} today={orderList.today} onDay={orderList.setDay} counts={orderList.counts} results={orderList.results} loading={orderList.loading} hasMore={orderList.hasMore} onLoadMore={orderList.loadMore} onOpen={id => void openOrder(id)} onHandover={id => void openOrder(id, 'handover')} onReprintBill={id => void reprint(id, 'bill')} busy={busy} />}
-    {(page === 'detail' || page === 'handover') && saved && <OrderWorkspace order={saved} view={page} isAdmin={admin} backLabel={origin.label} onBack={() => arrive(origin.page)} onView={navigate} onOrder={replaceOrder} onError={reportError} onNotice={setNotice} onReprintBill={() => void reprint(saved.orderId, 'bill')} onPreviewBill={() => void previewSaved(saved)} onReprintTags={() => void reprint(saved.orderId, 'tags', saved.pieces.filter(piece => piece.tagged).map(piece => piece.shortId))} onOpenPrints={() => { void refreshJobs(saved.orderId); navigate('prints'); }} onFinished={finishHandover} />}
+    {page === 'orders' && <OrdersPage query={orderList.query} onQuery={orderList.setQuery} segment={orderList.segment} onSegment={orderList.setSegment} today={orderList.today} counts={orderList.counts} results={orderList.results} loading={orderList.loading} hasMore={orderList.hasMore} onLoadMore={orderList.loadMore} isAdmin={admin} onOpen={id => void openOrder(id)} onCustomer={showCustomer} onPreviewBill={(orderId, orderNumber) => void previewSaved({ orderId, orderNumber })} onTrash={(id, number) => void trash(id, number)} onRequestTrash={(id, number, reason) => void trash(id, number, reason)} busy={busy} />}
+    {page === 'detail' && saved && <OrderPage key={saved.orderId} order={saved} isAdmin={admin} busy={busy || reprintBusy} backLabel={origin.label} onBack={() => arrive(origin.page)} onOrder={replaceOrder} onError={reportError} onNotice={setNotice} onCustomer={showCustomer} onReprintBill={() => void reprint(saved.orderId, 'bill')} onPreviewBill={() => void previewSaved(saved)} onReprintTags={() => void reprint(saved.orderId, 'tags', saved.pieces.filter(piece => piece.tagged).map(piece => piece.shortId))} onOpenPrints={() => { void refreshJobs(saved.orderId); navigate('prints'); }} onTrash={() => void trash(saved.orderId, saved.orderNumber)} onRequestTrash={reason => void trash(saved.orderId, saved.orderNumber, reason)} />}
     {showing('admin') && <CounterAdmin catalogue={catalogue} onCatalogue={setCatalogue} printers={printers} onReloadPrinters={openPrinterSettings} onError={reportError} onNotice={setNotice} onRestoreStaged={() => setRestoreStaged(true)} />}
     {showing('dashboard') && <DashboardPage {...sectionProps} />}
     {showing('sales') && <SalesPage {...sectionProps} />}

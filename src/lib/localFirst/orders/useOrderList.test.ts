@@ -10,11 +10,11 @@ vi.mock('@/lib/localFirst/counter', () => api);
 const summary = (id: string): CounterOrderSummary => ({
   id, orderNumber: `2026101700${id}`, customerName: 'Rita Joshi', customerPhone: '9876543210', status: 'ready',
   receivedAt: '2026-10-17T05:00:00Z', promisedAt: '2026-10-17T11:30:00Z', totalMinor: 10000, paidMinor: 3000,
-  balanceMinor: 7000, pieceCount: 3, paymentStatus: 'partially_paid', overdue: false, untaggedCount: 0, matchReason: null,
+  balanceMinor: 7000, pieceCount: 3, paymentStatus: 'partially_paid', overdue: false, untaggedCount: 0, matchReason: null, itemsText: '3 Shirt · Iron', handedOverCount: 0,
 });
 const page = (size: number, from = 0): CounterOrderSummary[] => Array.from({ length: size }, (_, i) => summary(String(from + i)));
 const countsOf = (over: Partial<CounterQueueCounts> = {}): CounterQueueCounts => ({
-  ready: 2, balanceDue: 3, overdue: 1, inProcess: 4, today: 5, all: 9, balanceDueMinor: 12000, ...over,
+  ready: 2, balanceDue: 3, overdue: 1, inProcess: 4, today: 5, all: 9, balanceDueMinor: 12000, open: 6, collected: 3, ...over,
 });
 
 interface Deferred<T> { promise: Promise<T>; resolve(value: T): void; reject(error: unknown): void }
@@ -49,7 +49,7 @@ describe('while the Orders page is not showing', () => {
     await settle(1000);
     expect(api.getCounterOrderQueueCounts).not.toHaveBeenCalled();
     expect(api.searchCounterOrders).not.toHaveBeenCalled();
-    expect(result.current).toMatchObject({ results: [], counts: null, loading: false, hasMore: false, segment: 'ready', query: '' });
+    expect(result.current).toMatchObject({ results: [], counts: null, loading: false, hasMore: false, segment: 'open', query: '' });
   });
 
   it('starts fetching when the page becomes active and stops showing a spinner when it is left', async () => {
@@ -69,53 +69,26 @@ describe('while the Orders page is not showing', () => {
 });
 
 describe('the first load', () => {
-  it('fetches the counts and the first page of the ready segment', async () => {
+  it('fetches the counts and the first page of orders not yet collected', async () => {
     const { result } = setup();
     expect(result.current.loading).toBe(true);
     await settle();
     expect(api.getCounterOrderQueueCounts).toHaveBeenCalledTimes(1);
-    expect(api.searchCounterOrders).toHaveBeenCalledWith('', 0, 50, 'ready');
+    expect(api.searchCounterOrders).toHaveBeenCalledWith('', 0, 50, 'open');
     expect(result.current.counts).toEqual(countsOf());
     expect(result.current.results).toHaveLength(3);
     expect(result.current.loading).toBe(false);
     expect(result.current.hasMore).toBe(false);
   });
 
-  it('opens on In process when nothing is ready and the cashier has not chosen a segment', async () => {
-    api.getCounterOrderQueueCounts.mockResolvedValue(countsOf({ ready: 0 }));
+  it('keeps the tab the cashier chose across a reload', async () => {
     const { result } = setup();
     await settle();
-    expect(result.current.segment).toBe('in_process');
-    // The switch re-fetches the list for the new segment in a second step.
-    await settle();
-    expect(api.searchCounterOrders).toHaveBeenLastCalledWith('', 0, 50, 'in_process');
-  });
-
-  it('keeps Ready when something is ready', async () => {
-    const { result } = setup();
-    await settle();
-    expect(result.current.segment).toBe('ready');
-  });
-
-  it('never overrides a segment the cashier already chose', async () => {
-    api.getCounterOrderQueueCounts.mockResolvedValue(countsOf({ ready: 0 }));
-    const { result } = setup();
-    act(() => result.current.setSegment('balance_due'));
-    await settle();
-    expect(result.current.segment).toBe('balance_due');
-  });
-
-  it('makes the automatic choice only once, not on every reload', async () => {
-    api.getCounterOrderQueueCounts.mockResolvedValue(countsOf({ ready: 0 }));
-    const { result } = setup();
-    await settle();
-    expect(result.current.segment).toBe('in_process');
-    act(() => result.current.setSegment('today'));
-    await settle();
-    api.getCounterOrderQueueCounts.mockResolvedValue(countsOf({ ready: 0 }));
+    act(() => result.current.setSegment('collected'));
     act(() => result.current.reload());
     await settle();
-    expect(result.current.segment).toBe('today');
+    expect(result.current.segment).toBe('collected');
+    expect(api.searchCounterOrders).toHaveBeenLastCalledWith('', 0, 50, 'collected');
   });
 });
 
@@ -123,7 +96,7 @@ describe('searching', () => {
   it('searches the trimmed text across every order whatever the segment', async () => {
     const { result } = setup();
     await settle();
-    act(() => result.current.setSegment('balance_due'));
+    act(() => result.current.setSegment('collected'));
     await settle();
     act(() => result.current.setQuery('  rita  '));
     await settle(180);
@@ -159,14 +132,14 @@ describe('searching', () => {
     const { result } = setup();
     await settle();
     api.searchCounterOrders.mockClear();
-    act(() => result.current.setSegment('overdue'));
+    act(() => result.current.setSegment('collected'));
     await settle();
-    expect(api.searchCounterOrders).toHaveBeenLastCalledWith('', 0, 50, 'overdue');
+    expect(api.searchCounterOrders).toHaveBeenLastCalledWith('', 0, 50, 'collected');
     act(() => result.current.setQuery('rita'));
     await settle(180);
     act(() => result.current.setQuery(''));
     await settle();
-    expect(api.searchCounterOrders).toHaveBeenLastCalledWith('', 0, 50, 'overdue');
+    expect(api.searchCounterOrders).toHaveBeenLastCalledWith('', 0, 50, 'collected');
   });
 
   it('ignores an older answer that arrives after a newer one', async () => {
@@ -174,7 +147,7 @@ describe('searching', () => {
     const { result } = setup();
     await settle();
     api.searchCounterOrders.mockReturnValueOnce(slow.promise).mockResolvedValueOnce(page(1, 40));
-    act(() => result.current.setSegment('today'));
+    act(() => result.current.setSegment('collected'));
     await settle();
     act(() => result.current.setSegment('all'));
     await settle();
@@ -201,7 +174,7 @@ describe('more pages', () => {
     act(() => result.current.loadMore());
     expect(result.current.loading).toBe(true);
     await settle();
-    expect(api.searchCounterOrders).toHaveBeenLastCalledWith('', 50, 50, 'ready');
+    expect(api.searchCounterOrders).toHaveBeenLastCalledWith('', 50, 50, 'open');
     expect(result.current.results).toHaveLength(60);
     expect(result.current.hasMore).toBe(false);
     expect(result.current.loading).toBe(false);
@@ -245,7 +218,7 @@ describe('more pages', () => {
     await settle();
     const slow = deferred<CounterOrderSummary[]>();
     api.searchCounterOrders.mockReturnValueOnce(slow.promise);
-    act(() => result.current.setSegment('today'));
+    act(() => result.current.setSegment('collected'));
     await act(async () => { await vi.advanceTimersByTimeAsync(0); });
     expect(result.current.loading).toBe(true);
     act(() => result.current.loadMore());
@@ -261,7 +234,7 @@ describe('more pages', () => {
     const late = deferred<CounterOrderSummary[]>();
     api.searchCounterOrders.mockReturnValueOnce(late.promise).mockResolvedValueOnce(page(2, 90));
     act(() => result.current.loadMore());
-    act(() => result.current.setSegment('today'));
+    act(() => result.current.setSegment('collected'));
     await settle();
     late.resolve(page(50, 100));
     await settle();
@@ -277,7 +250,7 @@ describe('more pages', () => {
     const late = deferred<CounterOrderSummary[]>();
     api.searchCounterOrders.mockReturnValueOnce(late.promise).mockResolvedValueOnce(page(1, 90));
     act(() => result.current.loadMore());
-    act(() => result.current.setSegment('today'));
+    act(() => result.current.setSegment('collected'));
     await settle();
     late.reject(new Error('too late'));
     await settle();
@@ -290,89 +263,35 @@ describe('reloading', () => {
   it('fetches the counts and the first page again', async () => {
     const { result } = setup();
     await settle();
-    api.getCounterOrderQueueCounts.mockResolvedValue(countsOf({ ready: 7 }));
+    api.getCounterOrderQueueCounts.mockResolvedValue(countsOf({ open: 7 }));
     api.searchCounterOrders.mockResolvedValue(page(1, 70));
     act(() => result.current.reload());
     await settle();
-    expect(result.current.counts?.ready).toBe(7);
+    expect(result.current.counts?.open).toBe(7);
     expect(result.current.results.map(order => order.id)).toEqual(['70']);
   });
 });
 
-describe('picking a day', () => {
-  it('searches the chosen day, and stays on the day segment', async () => {
-    vi.setSystemTime(new Date('2026-10-20T06:30:00Z'));
-    const { result } = setup();
-    await settle();
-    expect(result.current).toMatchObject({ day: '2026-10-20', today: '2026-10-20' });
-    api.searchCounterOrders.mockClear();
-    act(() => result.current.setDay('2026-10-17'));
-    await settle();
-    expect(result.current).toMatchObject({ segment: 'day', day: '2026-10-17' });
-    expect(api.searchCounterOrders).toHaveBeenCalledWith('', 0, 50, 'day:2026-10-17');
-    // Choosing another ready-made list leaves the day behind but remembers it.
-    act(() => result.current.setSegment('all'));
-    await settle();
-    expect(api.searchCounterOrders).toHaveBeenLastCalledWith('', 0, 50, 'all');
-    act(() => result.current.setSegment('day'));
-    await settle();
-    expect(api.searchCounterOrders).toHaveBeenLastCalledWith('', 0, 50, 'day:2026-10-17');
-  });
-
-  it('shows the shop day, which can already be tomorrow in UTC terms', () => {
+describe('the shop day', () => {
+  it('is the IST day, which can already be tomorrow in UTC terms', () => {
     vi.setSystemTime(new Date('2026-10-19T20:00:00Z'));
     const { result } = setup({ active: false });
     expect(result.current.today).toBe('2026-10-20');
   });
-
-  it('lets a typed search look through every order, whatever day is chosen', async () => {
-    const { result } = setup();
-    await settle();
-    act(() => result.current.setDay('2026-10-17'));
-    act(() => result.current.setQuery('rita'));
-    await settle(180);
-    expect(api.searchCounterOrders).toHaveBeenLastCalledWith('rita', 0, 50, 'all');
-  });
-
-  it('goes back to today when the list is reset for the next person', async () => {
-    vi.setSystemTime(new Date('2026-10-20T06:30:00Z'));
-    const { result } = setup();
-    await settle();
-    act(() => result.current.setDay('2026-10-01'));
-    await settle();
-    act(() => result.current.reset());
-    await settle();
-    expect(result.current).toMatchObject({ day: '2026-10-20', segment: 'ready' });
-  });
-
-  it('is not overridden by the automatic first choice', async () => {
-    api.getCounterOrderQueueCounts.mockResolvedValue(countsOf({ ready: 0 }));
-    const { result } = setup();
-    act(() => result.current.setDay('2026-10-17'));
-    await settle();
-    await settle();
-    expect(result.current.segment).toBe('day');
-  });
 });
 
 describe('resetting', () => {
-  it('forgets the text, the segment, the counts and the orders, and lets the automatic choice happen again', async () => {
-    api.getCounterOrderQueueCounts.mockResolvedValue(countsOf({ ready: 0 }));
+  it('forgets the text, the tab, the counts and the orders', async () => {
     const { result } = setup();
     await settle();
-    await settle();
     act(() => result.current.setQuery('rita'));
-    act(() => result.current.setSegment('today'));
+    act(() => result.current.setSegment('collected'));
     await settle(180);
-    expect(result.current.segment).toBe('today');
     api.searchCounterOrders.mockResolvedValue(page(50));
     act(() => result.current.reset());
-    expect(result.current).toMatchObject({ query: '', segment: 'ready', counts: null, results: [], hasMore: false });
-    expect(result.current.day).toBe(result.current.today);
+    expect(result.current).toMatchObject({ query: '', segment: 'open', counts: null, results: [], hasMore: false });
     await settle();
-    await settle();
-    // Nothing was ready, and the cashier has not chosen anything since the reset: In process opens again.
-    expect(result.current.segment).toBe('in_process');
+    expect(api.searchCounterOrders).toHaveBeenLastCalledWith('', 0, 50, 'open');
   });
 });
 
@@ -414,7 +333,7 @@ describe('failures', () => {
     const { result, onError } = setup();
     await settle();
     api.searchCounterOrders.mockResolvedValueOnce(page(1, 60));
-    act(() => result.current.setSegment('today'));
+    act(() => result.current.setSegment('collected'));
     await settle();
     slow.reject(new Error('stale failure'));
     await settle();
@@ -433,7 +352,7 @@ describe('failures', () => {
     slowCounts.resolve(countsOf({ ready: 0 }));
     await settle();
     expect(result.current.counts).toBeNull();
-    expect(result.current.segment).toBe('ready');
+    expect(result.current.segment).toBe('open');
     expect(onError).not.toHaveBeenCalled();
   });
 

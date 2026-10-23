@@ -81,7 +81,13 @@ export interface CounterSavedOrder {
   refundDueMinor: number;
   /** Oldest first; includes voided payments. */
   payments: CounterPayment[];
+  /** The bill lines, each with how many of its pieces the customer has taken. */
+  lines: CounterOrderLine[];
   pieces: CounterPiece[]; printJobs: CounterPrintJob[];
+}
+export interface CounterOrderLine {
+  itemId: string; garment: string; service: string; quantity: number;
+  unitPriceMinor: number; lineTotalMinor: number; pieceCount: number; handedOverCount: number;
 }
 export interface CounterOrderSummary {
   id: string; orderNumber: string; customerName: string; customerPhone: string; status: string;
@@ -89,15 +95,19 @@ export interface CounterOrderSummary {
   pieceCount: number; paymentStatus: CounterPaymentStatus; overdue: boolean; untaggedCount: number;
   /** Why this order matched the search text, or null when it matched the filter alone. */
   matchReason: string | null;
+  /** The lines in short: "3 Shirt · Iron, 1 Saree · Dry Clean". */
+  itemsText: string;
+  /** Pieces already with the customer; some but not all means part collected. */
+  handedOverCount: number;
 }
 export interface CounterRecordPaymentInput { amountMinor: number; method: CounterPaymentMethod; reference?: string; idempotencyKey: string }
 /** The ready-made lists of the Orders screen, each with a count. */
-export type CounterOrderSegment = 'all' | 'ready' | 'balance_due' | 'overdue' | 'in_process' | 'today';
+export type CounterOrderSegment = 'all' | 'open' | 'collected' | 'ready' | 'balance_due' | 'overdue' | 'in_process' | 'today';
 /** What the native search filters by: a list above, or every order received on one shop day (`day:2026-10-17`). */
 export type CounterOrderFilter = CounterOrderSegment | `day:${string}`;
 export interface CounterQueueCounts {
   ready: number; balanceDue: number; overdue: number; inProcess: number; today: number; all: number;
-  balanceDueMinor: number;
+  balanceDueMinor: number; open: number; collected: number;
 }
 export type CounterMatchStage = 'packing' | 'collection';
 export type CounterProcessingStatus = 'washing' | 'drying' | 'ironing' | 'quality_check' | 'packing' | 'ready';
@@ -203,6 +213,9 @@ export const updateCounterOrderStatus = (orderId: string, status: CounterProcess
  * When `payment` is present it is recorded as a settlement in the same transaction as the collection,
  * so either both happen or neither.
  */
+/** Hands the pieces of these bill lines to the customer. The last ones need the bill paid. */
+export const handOverCounterItems = (orderId: string, itemIds: string[]): Promise<CounterSavedOrder> =>
+  call('counter_hand_over_items', { orderId, itemIds });
 export const collectCounterOrder = (orderId: string, pieceIds: string[], requestId: string, payment?: CounterRecordPaymentInput): Promise<CounterSavedOrder> =>
   call('counter_collect_order', { orderId, pieceIds, requestId, payment });
 /** Admin only. Voids every payment on the order and marks it cancelled; `reason` must be 3 to 200 characters. */

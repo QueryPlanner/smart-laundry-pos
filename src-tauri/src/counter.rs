@@ -539,8 +539,25 @@ pub struct SavedOrder {
     /// Money to hand back on a cancelled order (its voided payments). 0 for every other order.
     pub refund_due_minor: i64,
     pub payments: Vec<PaymentRow>,
+    /// The bill lines, each with how many of its pieces the customer has taken so far.
+    pub lines: Vec<OrderLine>,
     pub pieces: Vec<Piece>,
     pub print_jobs: Vec<PrintJob>,
+}
+/// One line of a saved bill, as the order page shows it and hands it over.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OrderLine {
+    pub item_id: String,
+    pub garment: String,
+    pub service: String,
+    pub quantity: i64,
+    pub unit_price_minor: i64,
+    pub line_total_minor: i64,
+    /// Pieces made for this line (one per garment).
+    pub piece_count: i64,
+    /// Pieces of this line already handed to the customer.
+    pub handed_over_count: i64,
 }
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -2145,6 +2162,7 @@ pub async fn get_saved(db: &DatabaseState, id: &str) -> Result<Option<SavedOrder
     } else {
         0
     };
+    let lines = order_lines(p, &id).await?;
     let pieces = pieces_for(p, &id).await?;
     let jobs = jobs_for(p, Some(&id)).await?;
     Ok(Some(SavedOrder {
@@ -2162,9 +2180,39 @@ pub async fn get_saved(db: &DatabaseState, id: &str) -> Result<Option<SavedOrder
         balance_minor: total_minor - paid_minor,
         refund_due_minor,
         payments,
+        lines,
         pieces,
         print_jobs: jobs,
     }))
+}
+
+/// The lines of an order in the order they were entered, with their piece and hand-over counts.
+async fn order_lines(p: &SqlitePool, order: &str) -> Result<Vec<OrderLine>, String> {
+    let rows = sqlx::query(
+        "SELECT i.id,i.item_name,i.service_name,CAST(ROUND(i.quantity) AS INTEGER) AS quantity,\
+CAST(ROUND(i.rate*100) AS INTEGER) AS unit_minor,CAST(ROUND(i.line_total*100) AS INTEGER) AS total_minor,\
+(SELECT COUNT(*) FROM order_pieces op WHERE op.order_item_id=i.id) AS piece_count,\
+(SELECT COUNT(*) FROM order_pieces op JOIN piece_matches m ON m.piece_id=op.id AND m.stage='collection' WHERE op.order_item_id=i.id) AS handed_over \
+FROM order_items i WHERE i.order_id=? ORDER BY i.created_at,i.rowid",
+    )
+    .bind(order)
+    .fetch_all(p)
+    .await
+    .map_err(db_err)?;
+    rows.iter()
+        .map(|row| {
+            Ok(OrderLine {
+                item_id: row.try_get("id").map_err(db_err)?,
+                garment: row.try_get("item_name").map_err(db_err)?,
+                service: row.try_get("service_name").map_err(db_err)?,
+                quantity: row.try_get("quantity").map_err(db_err)?,
+                unit_price_minor: row.try_get("unit_minor").map_err(db_err)?,
+                line_total_minor: row.try_get("total_minor").map_err(db_err)?,
+                piece_count: row.try_get("piece_count").map_err(db_err)?,
+                handed_over_count: row.try_get("handed_over").map_err(db_err)?,
+            })
+        })
+        .collect()
 }
 
 /// Every payment on an order, oldest first, including voided ones. Each amount is rounded on its own.
@@ -2214,6 +2262,10 @@ pub struct OrderSummary {
     pub untagged_count: i64,
     /// Why the order matched the search text, or None when it matched the filter alone.
     pub match_reason: Option<String>,
+    /// The lines in short, such as "3 Shirt · Iron, 1 Saree · Dry Clean".
+    pub items_text: String,
+    /// Pieces already handed to the customer (some, but not all, means part collected).
+    pub handed_over_count: u32,
 }
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -2239,7 +2291,10 @@ CAST(strftime('%s',o.expected_ready_at) AS INTEGER) AS promised_epoch,\
 CAST(ROUND(o.total_amount*100) AS INTEGER) AS total_minor,\
 COALESCE((SELECT SUM(CAST(ROUND(p.amount*100) AS INTEGER)) FROM payments p WHERE p.order_id=o.id AND p.voided_at IS NULL),0) AS paid_minor,\
 (SELECT COUNT(*) FROM order_pieces op WHERE op.order_id=o.id) AS piece_count,\
-(SELECT COUNT(*) FROM order_pieces op WHERE op.order_id=o.id AND op.tagged=0) AS untagged_count \
+(SELECT COUNT(*) FROM order_pieces op WHERE op.order_id=o.id AND op.tagged=0) AS untagged_count,\
+(SELECT COUNT(*) FROM piece_matches pm WHERE pm.order_id=o.id AND pm.stage='collection') AS handed_over_count,\
+COALESCE((SELECT group_concat(t,', ') FROM (SELECT CAST(ROUND(i.quantity) AS INTEGER)||' '||i.item_name||' · '||i.service_name AS t \
+FROM order_items i WHERE i.order_id=o.id ORDER BY i.created_at,i.rowid)),'') AS items_text \
 FROM orders o WHERE o.trashed_at IS NULL";
 
 /// `ORDER_ROWS` plus the balance, the overdue flag and the search reason (alias `m` in the callers).
@@ -2269,6 +2324,10 @@ enum OrderFilter {
     Overdue,
     InProcess,
     Today,
+    /// Not yet fully handed over (and not cancelled), including part-collected orders.
+    Open,
+    /// Every piece handed over.
+    Collected,
     /// Orders received on one shop (IST) day, from the filter text `day:YYYY-MM-DD`.
     Day(chrono::NaiveDate),
 }
@@ -2289,6 +2348,8 @@ impl OrderFilter {
             "overdue" => Ok(Self::Overdue),
             "in_process" => Ok(Self::InProcess),
             "today" => Ok(Self::Today),
+            "open" => Ok(Self::Open),
+            "collected" => Ok(Self::Collected),
             _ => Err("Unknown order filter.".into()),
         }
     }
@@ -2303,6 +2364,8 @@ impl OrderFilter {
             }
             Self::Overdue => "m.overdue=1".into(),
             Self::InProcess => format!("m.status IN ({IN_PROCESS_STATUSES})"),
+            Self::Open => "m.status NOT IN ('collected','cancelled')".into(),
+            Self::Collected => "m.status='collected'".into(),
             Self::Today | Self::Day(_) => "m.received_epoch>=?7 AND m.received_epoch<?8".into(),
         }
     }
@@ -2315,7 +2378,7 @@ impl OrderFilter {
                 "m.promised_epoch IS NULL,m.promised_epoch,m.created_at DESC,m.id"
             }
             Self::BalanceDue => "m.balance_minor DESC,m.created_at DESC,m.id",
-            Self::All | Self::Today | Self::Day(_) => {
+            Self::All | Self::Today | Self::Open | Self::Collected | Self::Day(_) => {
                 "m.received_epoch DESC,m.created_at DESC,m.id"
             }
         }
@@ -2492,6 +2555,8 @@ fn order_summary(row: &sqlx::sqlite::SqliteRow) -> Result<OrderSummary, String> 
         overdue: overdue == 1,
         untagged_count: row.try_get("untagged_count").map_err(db_err)?,
         match_reason: row.try_get("match_reason").map_err(db_err)?,
+        items_text: row.try_get("items_text").map_err(db_err)?,
+        handed_over_count: row.try_get("handed_over_count").map_err(db_err)?,
     })
 }
 
@@ -2507,6 +2572,8 @@ pub struct QueueCounts {
     pub today: i64,
     pub all: i64,
     pub balance_due_minor: i64,
+    pub open: i64,
+    pub collected: i64,
 }
 
 pub async fn order_queue_counts(
@@ -2530,7 +2597,7 @@ async fn order_queue_counts_at(
         )
     };
     let sql = format!(
-        "SELECT {} AS c_ready,{} AS c_balance_due,{} AS c_overdue,{} AS c_in_process,{} AS c_today,{} AS c_all,\
+        "SELECT {} AS c_ready,{} AS c_balance_due,{} AS c_overdue,{} AS c_in_process,{} AS c_today,{} AS c_all,{} AS c_open,{} AS c_collected,\
 COALESCE(SUM(CASE WHEN {} THEN m.balance_minor ELSE 0 END),0) AS c_balance_minor FROM ({}) m",
         count(OrderFilter::Ready),
         count(OrderFilter::BalanceDue),
@@ -2538,6 +2605,8 @@ COALESCE(SUM(CASE WHEN {} THEN m.balance_minor ELSE 0 END),0) AS c_balance_minor
         count(OrderFilter::InProcess),
         count(OrderFilter::Today),
         count(OrderFilter::All),
+        count(OrderFilter::Open),
+        count(OrderFilter::Collected),
         OrderFilter::BalanceDue.predicate(),
         order_list_sql(),
     );
@@ -2554,6 +2623,8 @@ COALESCE(SUM(CASE WHEN {} THEN m.balance_minor ELSE 0 END),0) AS c_balance_minor
         today: row.try_get("c_today").map_err(db_err)?,
         all: row.try_get("c_all").map_err(db_err)?,
         balance_due_minor: row.try_get("c_balance_minor").map_err(db_err)?,
+        open: row.try_get("c_open").map_err(db_err)?,
+        collected: row.try_get("c_collected").map_err(db_err)?,
     })
 }
 
@@ -2964,6 +3035,117 @@ pub async fn collect_order(
     .await
     .map_err(db_err)?;
     audit(&mut tx, &a.id, "order_collected", "order", order_id, &now).await?;
+    tx.commit().await.map_err(db_err)?;
+    get_saved(db, order_id)
+        .await?
+        .ok_or("Order not found.".into())
+}
+
+/// Hands the pieces of the chosen lines to the customer. Any part of an order can go at any time, paid
+/// or not; the hand-over that leaves nothing behind marks the order collected and needs the whole bill
+/// paid first. Handing over a line that is already with the customer changes nothing, so a repeated
+/// tap is harmless and needs no request key.
+pub async fn hand_over_items(
+    db: &DatabaseState,
+    session: &CounterSession,
+    order_id: &str,
+    item_ids: &[String],
+) -> Result<SavedOrder, String> {
+    let a = actor(session)?;
+    if item_ids.is_empty() {
+        return Err("Choose what the customer is taking.".into());
+    }
+    let mut tx = db.begin_counter_write().await?;
+    let row =
+        sqlx::query("SELECT status,total_amount FROM orders WHERE id=? AND trashed_at IS NULL")
+            .bind(order_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(db_err)?
+            .ok_or("Order not found.".to_string())?;
+    let status: String = row.try_get("status").map_err(db_err)?;
+    if status == "cancelled" {
+        return Err("This order was cancelled. Nothing can be handed over.".into());
+    }
+    let wanted: std::collections::HashSet<&str> = item_ids.iter().map(String::as_str).collect();
+    let lines: Vec<String> = sqlx::query_scalar("SELECT id FROM order_items WHERE order_id=?")
+        .bind(order_id)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(db_err)?;
+    if wanted.iter().any(|id| !lines.iter().any(|line| line == id)) {
+        return Err("That line is not on this bill.".into());
+    }
+    if status == "collected" {
+        tx.rollback().await.map_err(db_err)?;
+        return get_saved(db, order_id)
+            .await?
+            .ok_or("Order not found.".into());
+    }
+    // Pieces still at the shop, and which of them go now.
+    let waiting = sqlx::query(
+        "SELECT op.id,op.order_item_id FROM order_pieces op WHERE op.order_id=? \
+         AND NOT EXISTS(SELECT 1 FROM piece_matches m WHERE m.piece_id=op.id AND m.stage='collection')",
+    )
+    .bind(order_id)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(db_err)?;
+    let mut going = Vec::new();
+    for piece in &waiting {
+        let item: String = piece.try_get("order_item_id").map_err(db_err)?;
+        if wanted.contains(item.as_str()) {
+            going.push(piece.try_get::<String, _>("id").map_err(db_err)?);
+        }
+    }
+    let now = Utc::now().to_rfc3339();
+    let last = going.len() == waiting.len();
+    if last {
+        let total: f64 = row.try_get("total_amount").map_err(db_err)?;
+        let balance = (total * 100.0).round() as i64 - paid_amount_minor(&mut tx, order_id).await?;
+        if balance > 0 {
+            return Err(format!(
+                "This order still has {} to pay. Take the payment before the last items go.",
+                crate::print_layout::format_money(balance)
+            ));
+        }
+    }
+    for piece in &going {
+        sqlx::query("INSERT OR IGNORE INTO piece_matches(id,order_id,piece_id,stage,matched_by,matched_at) VALUES(?,?,?,'collection',?,?)")
+            .bind(Uuid::new_v4().to_string()).bind(order_id).bind(piece).bind(&a.id).bind(&now)
+            .execute(&mut *tx).await.map_err(db_err)?;
+    }
+    if last {
+        sqlx::query("UPDATE orders SET status='collected',updated_at=? WHERE id=?")
+            .bind(&now)
+            .bind(order_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(db_err)?;
+        // When it was collected, read by the order page and the reports.
+        sqlx::query(
+            "INSERT OR IGNORE INTO counter_collection_requests(request_id,order_id,created_at) VALUES(?,?,?)",
+        )
+        .bind(Uuid::new_v4().to_string())
+        .bind(order_id)
+        .bind(&now)
+        .execute(&mut *tx)
+        .await
+        .map_err(db_err)?;
+    }
+    if !going.is_empty() {
+        let details = serde_json::json!({ "pieces": going.len(), "collected": last });
+        audit_details(
+            &mut tx,
+            &a.id,
+            "items_handed_over",
+            "order",
+            order_id,
+            &now,
+            &details,
+        )
+        .await?;
+    }
     tx.commit().await.map_err(db_err)?;
     get_saved(db, order_id)
         .await?
@@ -4621,6 +4803,200 @@ mod counter_tests {
             .await
             .unwrap();
             assert_eq!(audited, 1);
+            cleanup(db, path).await;
+        });
+    }
+
+    #[test]
+    fn part_of_an_order_can_be_handed_over_and_the_last_part_needs_the_bill_paid() {
+        tauri::async_runtime::block_on(async {
+            let path = fixture_path();
+            let db = DatabaseState::open(path.clone()).await;
+            let _admin = admin_fixture(&db).await;
+            let staff = staff_fixture(&db).await;
+            let mut order = order_input(3);
+            order.items.push(LineInput {
+                garment_id: "g-shirt".into(),
+                service_id: "svc-iron".into(),
+                quantity: 2,
+                unit_price_override_minor: None,
+            });
+            let saved = save_with_advance(&db, &staff, order, "part-handover", None)
+                .await
+                .unwrap();
+            // The saved order lists its lines with prices and nothing handed over yet.
+            assert_eq!(saved.lines.len(), 2);
+            let (wash, iron) = (&saved.lines[0], &saved.lines[1]);
+            assert_eq!(
+                (wash.quantity, wash.piece_count, wash.handed_over_count),
+                (3, 3, 0)
+            );
+            assert_eq!(wash.line_total_minor, wash.unit_price_minor * 3);
+            assert_eq!((iron.quantity, iron.service.as_str()), (2, "Iron"));
+            assert_eq!(
+                wash.line_total_minor + iron.line_total_minor,
+                saved.total_minor
+            );
+            let listed = search_orders(&db, &staff, "", 0, 50, Some("open"))
+                .await
+                .unwrap();
+            assert_eq!(listed.len(), 1);
+            assert_eq!(
+                listed[0].items_text,
+                format!(
+                    "3 {} · {}, 2 {} · Iron",
+                    wash.garment, wash.service, iron.garment
+                )
+            );
+            assert_eq!(listed[0].handed_over_count, 0);
+
+            // Nothing chosen, a line from nowhere and a signed-out user are refused.
+            assert!(hand_over_items(&db, &staff, &saved.order_id, &[])
+                .await
+                .is_err());
+            assert_eq!(
+                hand_over_items(&db, &staff, &saved.order_id, &["nope".into()])
+                    .await
+                    .unwrap_err(),
+                "That line is not on this bill."
+            );
+            assert!(hand_over_items(
+                &db,
+                &CounterSession::default(),
+                &saved.order_id,
+                std::slice::from_ref(&wash.item_id)
+            )
+            .await
+            .is_err());
+
+            // The washed shirts go now, unpaid; the order stays open and counts as part collected.
+            let part = hand_over_items(
+                &db,
+                &staff,
+                &saved.order_id,
+                std::slice::from_ref(&wash.item_id),
+            )
+            .await
+            .unwrap();
+            assert_eq!(part.status, "received");
+            assert_eq!(part.lines[0].handed_over_count, 3);
+            assert_eq!(part.lines[1].handed_over_count, 0);
+            assert!(part.collected_at.is_none());
+            // A repeated tap changes nothing.
+            let again = hand_over_items(
+                &db,
+                &staff,
+                &saved.order_id,
+                std::slice::from_ref(&wash.item_id),
+            )
+            .await
+            .unwrap();
+            assert_eq!(again.lines[0].handed_over_count, 3);
+            let listed = search_orders(&db, &staff, "", 0, 50, Some("open"))
+                .await
+                .unwrap();
+            assert_eq!(listed[0].handed_over_count, 3);
+
+            // The last line cannot go while money is owed.
+            let owed = hand_over_items(
+                &db,
+                &staff,
+                &saved.order_id,
+                std::slice::from_ref(&iron.item_id),
+            )
+            .await
+            .unwrap_err();
+            assert!(
+                owed.contains("still has") && owed.contains("to pay"),
+                "{owed}"
+            );
+            record_payment(
+                &db,
+                &staff,
+                &saved.order_id,
+                RecordPaymentInput {
+                    amount_minor: saved.total_minor,
+                    method: "upi".into(),
+                    reference: None,
+                    idempotency_key: "part-handover-pay".into(),
+                },
+            )
+            .await
+            .unwrap();
+            let done = hand_over_items(
+                &db,
+                &staff,
+                &saved.order_id,
+                std::slice::from_ref(&iron.item_id),
+            )
+            .await
+            .unwrap();
+            assert_eq!(done.status, "collected");
+            assert!(done.collected_at.is_some());
+            assert!(done
+                .lines
+                .iter()
+                .all(|line| line.handed_over_count == line.piece_count));
+            // Collected is final: asking again returns the order as it is.
+            assert_eq!(
+                hand_over_items(
+                    &db,
+                    &staff,
+                    &saved.order_id,
+                    std::slice::from_ref(&iron.item_id)
+                )
+                .await
+                .unwrap()
+                .status,
+                "collected"
+            );
+            let counts = order_queue_counts(&db, &staff).await.unwrap();
+            assert_eq!((counts.open, counts.collected), (0, 1));
+            assert_eq!(
+                search_orders(&db, &staff, "", 0, 50, Some("collected"))
+                    .await
+                    .unwrap()
+                    .len(),
+                1
+            );
+            let audits: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM counter_audit WHERE action='items_handed_over' AND entity_id=?",
+            )
+            .bind(&saved.order_id)
+            .fetch_one(db.writer_pool().unwrap())
+            .await
+            .unwrap();
+            assert_eq!(audits, 2, "one for each hand-over that moved pieces");
+
+            // A cancelled order hands nothing over.
+            let other = save_with_advance(&db, &staff, order_input(1), "part-handover-2", None)
+                .await
+                .unwrap();
+            sqlx::query("UPDATE orders SET status='cancelled' WHERE id=?")
+                .bind(&other.order_id)
+                .execute(db.writer_pool().unwrap())
+                .await
+                .unwrap();
+            assert!(hand_over_items(
+                &db,
+                &staff,
+                &other.order_id,
+                std::slice::from_ref(&other.lines[0].item_id)
+            )
+            .await
+            .unwrap_err()
+            .contains("cancelled"));
+            assert_eq!(
+                hand_over_items(
+                    &db,
+                    &staff,
+                    "missing",
+                    std::slice::from_ref(&other.lines[0].item_id)
+                )
+                .await
+                .unwrap_err(),
+                "Order not found."
+            );
             cleanup(db, path).await;
         });
     }
@@ -6404,6 +6780,8 @@ mod counter_tests {
                     today: 6,
                     all: 8,
                     balance_due_minor: 3000 + 1000 + 3000 + 1000,
+                    open: 6,
+                    collected: 1,
                 }
             );
             cleanup(db, path).await;

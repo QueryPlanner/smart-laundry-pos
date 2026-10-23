@@ -51,6 +51,7 @@ const table: Array<[string, () => Promise<unknown>, string, Record<string, unkno
   ['previewCounterDraftBill', () => counter.previewCounterDraftBill({ customer: { name: 'A', phone: '1' }, items: [] }), 'counter_preview_draft_bill', { input: { customer: { name: 'A', phone: '1' }, items: [] } }],
   ['previewCounterOrderBill', () => counter.previewCounterOrderBill('o'), 'counter_preview_order_bill', { orderId: 'o' }],
   ['listCounterTrashedOrders', () => counter.listCounterTrashedOrders(), 'counter_list_trashed_orders', undefined],
+  ['handOverCounterItems', () => counter.handOverCounterItems('o', ['i']), 'counter_hand_over_items', { orderId: 'o', itemIds: ['i'] }],
   ['restoreCounterOrder', () => counter.restoreCounterOrder('o'), 'counter_restore_order', { orderId: 'o' }],
   ['clearCounterOrders', () => counter.clearCounterOrders('CLEAR'), 'counter_clear_all_orders', { confirmation: 'CLEAR' }],
   ['collectCounterOrder', () => counter.collectCounterOrder('o', ['p'], 'r'), 'counter_collect_order', { orderId: 'o', pieceIds: ['p'], requestId: 'r', payment: undefined }],

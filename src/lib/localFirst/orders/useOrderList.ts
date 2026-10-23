@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { getCounterOrderQueueCounts, searchCounterOrders } from '../counter';
-import type { CounterOrderFilter, CounterOrderSegment, CounterOrderSummary, CounterQueueCounts } from '../counter';
+import type { CounterOrderSummary, CounterQueueCounts } from '../counter';
 import { shopDateOf } from '../salesRange';
 
 /**
@@ -11,8 +11,8 @@ import { shopDateOf } from '../salesRange';
 
 const PAGE_SIZE = 50;
 
-/** What the buttons above the list choose between: the ready-made lists, or the orders of one chosen day. */
-export type OrderSegment = CounterOrderSegment | 'day';
+/** The tabs above the list: orders still to be handed over (the default), finished ones, or every order. */
+export type OrderSegment = 'open' | 'collected' | 'all';
 
 export interface OrderListOptions {
   active: boolean;
@@ -26,11 +26,7 @@ export interface OrderList {
   setQuery(query: string): void;
   segment: OrderSegment;
   setSegment(segment: OrderSegment): void;
-  /** The day shown by the "Pick a day" segment, shop-local `YYYY-MM-DD`. */
-  day: string;
-  /** Show the orders received on this day (and switch to the day segment). */
-  setDay(day: string): void;
-  /** Today in shop time, so the day picker never goes past it. */
+  /** Today in shop time, for the day headings. */
   today: string;
   counts: CounterQueueCounts | null;
   results: CounterOrderSummary[];
@@ -45,8 +41,7 @@ export interface OrderList {
 
 export const useOrderList = ({ active, onError, debounceMs = 180 }: OrderListOptions): OrderList => {
   const [query, setQuery] = useState('');
-  const [segment, setSegmentState] = useState<OrderSegment>('ready');
-  const [day, setDayState] = useState(() => shopDateOf(new Date()));
+  const [segment, setSegment] = useState<OrderSegment>('open');
   const [counts, setCounts] = useState<CounterQueueCounts | null>(null);
   const [results, setResults] = useState<CounterOrderSummary[]>([]);
   // Already loading on the first render when the page is showing, so "nothing here" never flashes before the list.
@@ -56,17 +51,13 @@ export const useOrderList = ({ active, onError, debounceMs = 180 }: OrderListOpt
   // The latest error handler, so a new function from the parent never restarts a fetch.
   const report = useRef(onError);
   report.current = onError;
-  // True once the cashier has picked a segment: the automatic choice below must never override it.
-  const chosen = useRef(false);
-  // True after the first counts arrived: the automatic choice is made once.
-  const countsSeen = useRef(false);
   // Counts every list fetch. A page that arrives for an older number is ignored.
   const generation = useRef(0);
   const loadingMore = useRef(false);
 
   const text = query.trim();
-  // Searching looks through every order, whatever segment is selected.
-  const filter: CounterOrderFilter = text ? 'all' : segment === 'day' ? `day:${day}` : segment;
+  // Searching looks through every order, whatever tab is selected.
+  const filter = text ? 'all' : segment;
 
   useEffect(() => {
     if (!active) return undefined;
@@ -74,8 +65,6 @@ export const useOrderList = ({ active, onError, debounceMs = 180 }: OrderListOpt
     void getCounterOrderQueueCounts().then(next => {
       if (!live) return;
       setCounts(next);
-      if (!countsSeen.current && !chosen.current && next.ready === 0) setSegmentState('in_process');
-      countsSeen.current = true;
     }).catch(error => { if (live) report.current(error); });
     return () => { live = false; };
   }, [active, reloads]);
@@ -121,9 +110,7 @@ export const useOrderList = ({ active, onError, debounceMs = 180 }: OrderListOpt
     query,
     setQuery,
     segment,
-    setSegment: next => { chosen.current = true; setSegmentState(next); },
-    day,
-    setDay: next => { chosen.current = true; setDayState(next); setSegmentState('day'); },
+    setSegment,
     today: shopDateOf(new Date()),
     counts,
     results,
@@ -132,11 +119,8 @@ export const useOrderList = ({ active, onError, debounceMs = 180 }: OrderListOpt
     loadMore,
     reload: () => setReloads(current => current + 1),
     reset: () => {
-      chosen.current = false;
-      countsSeen.current = false;
       setQuery('');
-      setSegmentState('ready');
-      setDayState(shopDateOf(new Date()));
+      setSegment('open');
       setCounts(null);
       setResults([]);
       setHasMore(false);

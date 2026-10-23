@@ -670,22 +670,33 @@ All colors MUST be HSL.
 .counter-search-hint{margin:0;color:#5f6f68;font-size:13px}
 .counter-load-more{display:flex;justify-content:center}
 
-/* Order list: one row per order. Wide: head, customer, money and the action button on one line.
-   Narrower: the action button moves to a third column, then the row stacks with the action last. */
+/* Order list: one row per order. The wide part opens the order (bill number, items, pickup state and money);
+   the customer name sits under it; Preview and Trash stay on the right, or last on narrow screens. */
 .counter-order-list{display:grid;gap:10px;margin:0;padding:0;list-style:none}
-.counter-order-row{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1.3fr) minmax(0,1fr) 15rem;grid-template-areas:"head customer money action" "match match match action";align-items:center;gap:8px 18px;padding:14px 16px;border:1px solid #e1e9e5;border-radius:12px;background:#fff;box-shadow:0 4px 18px #152b2310}
-.counter-order-head{grid-area:head;display:flex;flex-wrap:wrap;align-items:center;gap:8px;min-width:0}
-.counter-order-head .counter-badge{gap:4px}
-.counter-order-head svg{width:14px;height:14px;flex:none}
-.counter-order-customer{grid-area:customer;display:grid;gap:2px;min-width:0}
-.counter-order-customer strong{font-size:15px;color:#1c2a25;overflow-wrap:anywhere}
+.counter-order-row{display:grid;grid-template-columns:minmax(0,1fr) 12rem;grid-template-areas:"open action" "customer action" "match action";align-items:center;gap:6px 18px;padding:12px 16px;border:1px solid #e1e9e5;border-radius:12px;background:#fff;box-shadow:0 4px 18px #152b2310}
+.counter-order-open{grid-area:open;display:grid;grid-template-columns:auto minmax(0,1fr) auto auto;align-items:center;gap:8px 16px;min-width:0;padding:4px 0;border:0;background:none;color:inherit;text-align:left;cursor:pointer}
+.counter-order-open:disabled{cursor:not-allowed;opacity:.7}
+.counter-order-items{color:#34483f;font-size:14px;overflow-wrap:anywhere}
+.counter-order-amount{display:grid;justify-items:end;font-size:16px;font-weight:750;color:#1c2a25;font-variant-numeric:tabular-nums}
+.counter-order-amount small{font-size:13px;font-weight:700;color:#7a5200}
+.counter-order-customer{grid-area:customer;display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 10px;min-width:0}
 .counter-order-customer span{font-size:13px;color:#5f6f68;overflow-wrap:anywhere}
-.counter-order-money{grid-area:money;display:grid;gap:6px;justify-items:start;min-width:0}
-.counter-order-money>span:first-child{font-size:13px;color:#5f6f68}
+.counter-customer-link{padding:0;font-size:15px;font-weight:700;text-decoration:underline;text-underline-offset:3px}
 .counter-match-reason{grid-area:match;font-size:12px;font-weight:650;color:#4f6159}
-.counter-order-row>.counter-touch{grid-area:action;justify-self:end;min-width:9.5rem}
-@media (max-width:1100px){.counter-order-row{grid-template-columns:minmax(0,1fr) minmax(0,1fr) 15rem;grid-template-areas:"head customer action" "money money action" "match match action"}}
-@media (max-width:900px){.counter-order-row{grid-template-columns:minmax(0,1fr);grid-template-areas:"head" "customer" "money" "match" "action"}.counter-order-row>.counter-touch{justify-self:stretch;min-width:0}}
+@media (max-width:900px){.counter-order-row{grid-template-columns:minmax(0,1fr);grid-template-areas:"open" "customer" "match" "action"}.counter-order-open{grid-template-columns:auto minmax(0,1fr)}}
+/* Pickup state: the words say it; colour and border style add a second cue. */
+.counter-pickup-chip{display:inline-flex;justify-self:start;padding:3px 10px;border:1px solid #e8c97a;border-radius:999px;background:#fff8e6;color:#7a5200;font-size:12px;font-weight:750;white-space:nowrap}
+.counter-pickup-chip.part{border-style:dashed;border-color:#8fb3d9;background:#eef5fc;color:#1d4f80}
+.counter-pickup-chip.collected{border-color:#a9dcc3;background:#e4f5ec;color:#176344}
+.counter-pickup-chip.cancelled{border:2px solid #d98a7b;background:#fff0ed;color:#9a3e2f}
+/* Order page: one row per bill line, with its tick, amount and how much of it has gone. */
+.counter-pickup-lines{display:grid;gap:0;margin:0;padding:6px 16px;list-style:none;border:1px solid #e1e9e5;border-radius:14px;background:#fff}
+.counter-pickup-lines li{display:grid;grid-template-columns:minmax(0,1fr) auto 7rem;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid #edf1ef;font-size:15px}
+.counter-pickup-lines li:last-child{border-bottom:0}
+.counter-pickup-lines label{display:flex;align-items:center;gap:12px;min-width:0}
+.counter-pickup-lines input{width:22px;height:22px;flex:none}
+.counter-pickup-lines strong{font-variant-numeric:tabular-nums}
+.counter-pickup-lines small{color:#5f6f68;font-size:12px;text-align:right}
 
 /* Bill number: the date part (first 8 digits) small and muted, the sequence (last 4 digits) large and bold, on one baseline. */
 .counter-bill-number{display:inline-flex;align-items:baseline;gap:1px;color:#1c2a25;font-size:16px;font-weight:700;font-variant-numeric:tabular-nums;white-space:nowrap}
@@ -807,7 +818,7 @@ All colors MUST be HSL.
 .counter-aside{top:128px}
 .counter-summary{max-height:calc(100vh - 148px)}
 
-/* An order row's two buttons: the next step on top, Reprint bill under it. */
+/* An order row's Preview and Trash, stacked. */
 .counter-order-actions{grid-area:action;justify-self:end;display:flex;flex-direction:column;gap:8px;min-width:9.5rem}
 .counter-order-actions .counter-touch{width:100%}
 @media (max-width:900px){.counter-order-actions{justify-self:stretch;min-width:0}}

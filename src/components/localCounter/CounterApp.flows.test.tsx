@@ -12,7 +12,7 @@ const api = vi.hoisted(() => ({
   listCounterStaff: vi.fn(), listPrintJobs: vi.fn(), lockCounter: vi.fn(), loginCounter: vi.fn(), matchOrderPieces: vi.fn(), quoteCounterOrder: vi.fn(),
   recordCounterPayment: vi.fn(), reprintCounterOutput: vi.fn(), resetCounterStaffPin: vi.fn(), retryPrintJob: vi.fn(), saveCounterOrder: vi.fn(),
   searchCounterCustomers: vi.fn(), searchCounterOrders: vi.fn(), setCounterRate: vi.fn(), setCounterStaffActive: vi.fn(), setPrinterProfiles: vi.fn(),
-  setupCounterAdmin: vi.fn(), updateCounterOrderStatus: vi.fn(),
+  setupCounterAdmin: vi.fn(), updateCounterOrderStatus: vi.fn(), handOverCounterItems: vi.fn(), trashCounterOrder: vi.fn(), requestCounterOrderTrash: vi.fn(),
 }));
 vi.mock('@/lib/localFirst/counter', () => api);
 
@@ -32,8 +32,8 @@ const pieces: CounterPiece[] = [
   { id: 'p-1', shortId: '2600001-1', garmentId: 'shirt', garment: 'Shirt', service: 'Wash + Iron', position: 1, total: 2, matched: false, packingMatched: false, collectionMatched: false, tagged: true },
   { id: 'p-2', shortId: '2600001-2', garmentId: 'shirt', garment: 'Shirt', service: 'Wash + Iron', position: 2, total: 2, matched: false, packingMatched: false, collectionMatched: false, tagged: true },
 ];
-const savedOrder = (over: Partial<CounterSavedOrder> = {}): CounterSavedOrder => ({ orderId: 'o-1', orderNumber: 'SL-1', customerName: 'Customer 1', customerPhone: '9876543210', receivedAt: '2026-10-15T06:00:00Z', promisedAt: '2026-10-17T11:30:00Z', status: 'ready', totalMinor: 4000, paidMinor: 0, balanceMinor: 4000, paymentStatus: 'unpaid', collectedAt: null, refundDueMinor: 0, payments: [], pieces, printJobs: [job('bill'), job('tags')], ...over });
-const summary = (n: number, over: Partial<CounterOrderSummary> = {}): CounterOrderSummary => ({ id: `o-${n}`, orderNumber: `SL-${n}`, customerName: `Customer ${n}`, customerPhone: '9876543210', status: 'ready', receivedAt: '2026-10-15T06:00:00Z', promisedAt: '2026-10-17T11:30:00Z', totalMinor: 4000, paidMinor: 0, balanceMinor: 4000, pieceCount: 2, paymentStatus: 'unpaid', overdue: false, untaggedCount: 0, matchReason: null, ...over });
+const savedOrder = (over: Partial<CounterSavedOrder> = {}): CounterSavedOrder => ({ orderId: 'o-1', orderNumber: 'SL-1', customerName: 'Customer 1', customerPhone: '9876543210', receivedAt: '2026-10-15T06:00:00Z', promisedAt: '2026-10-17T11:30:00Z', status: 'ready', totalMinor: 4000, paidMinor: 0, balanceMinor: 4000, paymentStatus: 'unpaid', collectedAt: null, refundDueMinor: 0, payments: [], lines: [{ itemId: 'i-1', garment: 'Shirt', service: 'Wash', quantity: pieces.length, unitPriceMinor: 2000, lineTotalMinor: 4000, pieceCount: pieces.length, handedOverCount: 0 }], pieces, printJobs: [job('bill'), job('tags')], ...over });
+const summary = (n: number, over: Partial<CounterOrderSummary> = {}): CounterOrderSummary => ({ id: `o-${n}`, orderNumber: `SL-${n}`, customerName: `Customer ${n}`, customerPhone: '9876543210', status: 'ready', receivedAt: '2026-10-15T06:00:00Z', promisedAt: '2026-10-17T11:30:00Z', totalMinor: 4000, paidMinor: 0, balanceMinor: 4000, pieceCount: 2, paymentStatus: 'unpaid', overdue: false, untaggedCount: 0, matchReason: null, itemsText: '2 Shirt · Wash', handedOverCount: 0, ...over });
 const quoteFor = (input: CounterOrderInput, total?: number) => {
   const pieceCount = input.items.reduce((n, x) => n + x.quantity, 0);
   const unit = (x: CounterOrderInput['items'][number]) => x.unitPriceOverrideMinor ?? 2000;
@@ -56,17 +56,16 @@ const signIn = async (account: CounterAccount = staff) => {
   await screen.findByLabelText('Garments');
 };
 const nav = (name: string) => fireEvent.click(screen.getByRole('button', { name }));
-/** Opens the Orders / Pickup list and the detail page of its first order (an order still being washed, so it opens as detail). */
+/** Opens the Orders / Pickup list and the page of its first order. */
 const openOrdersAndFirstOrder = async (results = [summary(1, { status: 'washing' })]) => {
   api.searchCounterOrders.mockResolvedValue(results);
   nav('Orders / Pickup');
   await screen.findByText(results[0].orderNumber);
-  fireEvent.click(screen.getAllByRole('button', { name: 'Open' })[0]);
+  fireEvent.click(screen.getAllByRole('button', { name: /^Open bill/ })[0]);
   await screen.findByRole('heading', { name: results[0].orderNumber });
 };
-/** From an order's detail page to its print progress, through More actions. */
+/** From an order's detail page to its print progress. */
 const openPrintProgress = async () => {
-  fireEvent.click(screen.getByRole('button', { name: 'More actions' }));
   fireEvent.click(screen.getByRole('button', { name: 'Print status' }));
   await screen.findByText(/· Print progress/);
 };
@@ -831,13 +830,13 @@ describe('opening one order after another', () => {
     api.getCounterOrder.mockImplementation(async (id: string) => savedOrder({ orderId: id, orderNumber: id === 'o-1' ? 'SL-1' : 'SL-2' }));
     nav('Orders / Pickup');
     await screen.findByText('SL-2');
-    fireEvent.click(screen.getAllByRole('button', { name: 'Open' })[0]);
+    fireEvent.click(screen.getAllByRole('button', { name: /^Open bill/ })[0]);
     await screen.findByRole('heading', { name: 'SL-1' });
     await openPrintProgress();
     fireEvent.click(await screen.findByRole('checkbox', { name: /2600001-1/ }));
     expect(screen.getByRole('button', { name: 'Reprint selected tags (1)' })).toBeTruthy();
     nav('Orders / Pickup');
-    fireEvent.click((await screen.findAllByRole('button', { name: 'Open' }))[1]);
+    fireEvent.click((await screen.findAllByRole('button', { name: /^Open bill/ }))[1]);
     await screen.findByRole('heading', { name: 'SL-2' });
     await openPrintProgress();
     expect(await screen.findByRole('button', { name: 'Reprint selected tags (0)' })).toBeTruthy();
@@ -1008,16 +1007,16 @@ describe('a double tap never runs a print or pickup action twice', () => {
 describe('Orders / Pickup', () => {
   const searchBox = () => screen.getByLabelText('Search bill number, phone, name or tag ID') as HTMLInputElement;
 
-  it('opens on the ready list with the counts, and marks Orders / Pickup as the current page', async () => {
+  it('opens on the orders not yet collected, and marks Orders / Pickup as the current page', async () => {
     await signIn();
     api.searchCounterOrders.mockResolvedValue([summary(1)]);
     nav('Orders / Pickup');
     await screen.findByText('SL-1');
-    expect(api.searchCounterOrders).toHaveBeenCalledWith('', 0, 50, 'ready');
+    expect(api.searchCounterOrders).toHaveBeenCalledWith('', 0, 50, 'open');
     expect(api.getCounterOrderQueueCounts).toHaveBeenCalled();
     expect(screen.getByRole('button', { name: 'Orders / Pickup' }).getAttribute('aria-current')).toBe('page');
-    expect(screen.getByRole('button', { name: /^Ready/ }).getAttribute('aria-pressed')).toBe('true');
-    expect(screen.getByText('To collect')).toBeTruthy();
+    expect(screen.getByRole('button', { name: /^Not collected/ }).getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByText('2 Shirt · Wash')).toBeTruthy();
   });
 
   it('has no navigation items for Print progress or Packing / pickup', async () => {
@@ -1030,13 +1029,13 @@ describe('Orders / Pickup', () => {
   it('switches segment, and searches every order by what is typed', async () => {
     await signIn();
     nav('Orders / Pickup');
-    await screen.findByText('Nothing is ready for pickup.');
-    fireEvent.click(screen.getByRole('button', { name: /^Overdue/ }));
-    await waitFor(() => expect(api.searchCounterOrders).toHaveBeenLastCalledWith('', 0, 50, 'overdue'));
+    await screen.findByText('Every order has been collected.');
+    fireEvent.click(screen.getByRole('button', { name: /^Collected/ }));
+    await waitFor(() => expect(api.searchCounterOrders).toHaveBeenLastCalledWith('', 0, 50, 'collected'));
     fireEvent.change(searchBox(), { target: { value: 'rita' } });
     await waitFor(() => expect(api.searchCounterOrders).toHaveBeenLastCalledWith('rita', 0, 50, 'all'));
     fireEvent.click(screen.getByRole('button', { name: 'Clear' }));
-    await waitFor(() => expect(api.searchCounterOrders).toHaveBeenLastCalledWith('', 0, 50, 'overdue'));
+    await waitFor(() => expect(api.searchCounterOrders).toHaveBeenLastCalledWith('', 0, 50, 'collected'));
   });
 
   it('pages through a long list', async () => {
@@ -1045,7 +1044,7 @@ describe('Orders / Pickup', () => {
     nav('Orders / Pickup');
     fireEvent.click(await screen.findByRole('button', { name: 'Load more' }));
     await screen.findByText('SL-51');
-    expect(api.searchCounterOrders).toHaveBeenLastCalledWith('', 50, 50, 'ready');
+    expect(api.searchCounterOrders).toHaveBeenLastCalledWith('', 50, 50, 'open');
   });
 
   it('opens an order on its detail page, and Back restores the search that was typed', async () => {
@@ -1055,9 +1054,9 @@ describe('Orders / Pickup', () => {
     await screen.findByText('SL-1');
     fireEvent.change(searchBox(), { target: { value: 'rita' } });
     await waitFor(() => expect(api.searchCounterOrders).toHaveBeenLastCalledWith('rita', 0, 50, 'all'));
-    fireEvent.click(await screen.findByRole('button', { name: 'Open' }));
+    fireEvent.click(await screen.findByRole('button', { name: /^Open bill/ }));
     await screen.findByRole('heading', { name: 'SL-1' });
-    expect(screen.getByText('Customer 1 · 9876543210')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Customer 1' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Orders / Pickup' }).getAttribute('aria-current')).toBe('page');
     fireEvent.click(screen.getByRole('button', { name: '← Orders' }));
     await screen.findByText('Searching all orders');
@@ -1069,7 +1068,7 @@ describe('Orders / Pickup', () => {
     api.getCounterOrder.mockResolvedValue(null);
     api.searchCounterOrders.mockResolvedValue([summary(1, { status: 'washing' })]);
     nav('Orders / Pickup');
-    fireEvent.click(await screen.findByRole('button', { name: 'Open' }));
+    fireEvent.click(await screen.findByRole('button', { name: /^Open bill/ }));
     expect((await screen.findByRole('alert')).textContent).toBe('This order is no longer available.');
     expect(screen.getByRole('heading', { name: 'Orders / Pickup' })).toBeTruthy();
   });
@@ -1079,35 +1078,27 @@ describe('Orders / Pickup', () => {
     api.getCounterOrder.mockRejectedValue(new Error('database is busy'));
     api.searchCounterOrders.mockResolvedValue([summary(1, { status: 'washing' })]);
     nav('Orders / Pickup');
-    fireEvent.click(await screen.findByRole('button', { name: 'Open' }));
+    fireEvent.click(await screen.findByRole('button', { name: /^Open bill/ }));
     expect((await screen.findByRole('alert')).textContent).toBe('database is busy');
   });
 
-  it('hands over a ready order from the list and returns to the ready list for the next customer', async () => {
+  it('hands part of an order over with a payment, and the rest later', async () => {
     await signIn();
-    const collected = savedOrder({ status: 'collected', paidMinor: 4000, balanceMinor: 0, paymentStatus: 'paid' });
-    api.collectCounterOrder.mockResolvedValue(collected);
-    api.searchCounterOrders.mockResolvedValue([summary(1)]);
-    nav('Orders / Pickup');
-    fireEvent.click(await screen.findByRole('button', { name: 'Receive ₹40.00 & hand over' }));
-    await screen.findByText('Balance due ₹40.00');
-    fireEvent.click(screen.getByRole('button', { name: 'Tick all' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Receive ₹40.00 & hand over' }));
-    await screen.findByText('Handed over ✓ SL-1');
-    expect(api.collectCounterOrder).toHaveBeenCalledWith('o-1', ['p-1', 'p-2'], expect.any(String), expect.objectContaining({ amountMinor: 4000, method: 'cash' }));
-    api.searchCounterOrders.mockClear();
-    fireEvent.click(screen.getByRole('button', { name: 'Next order' }));
-    await screen.findByRole('heading', { name: 'Orders / Pickup' });
-    await waitFor(() => expect(api.searchCounterOrders).toHaveBeenCalledWith('', 0, 50, 'ready'));
-  });
-
-  it('goes from the hand-over screen back to the order', async () => {
-    await signIn();
-    api.searchCounterOrders.mockResolvedValue([summary(1)]);
-    nav('Orders / Pickup');
-    fireEvent.click(await screen.findByRole('button', { name: 'Receive ₹40.00 & hand over' }));
-    fireEvent.click(await screen.findByRole('button', { name: '← Order' }));
-    await screen.findByRole('button', { name: 'Hand over to customer →' });
+    const twoLines = savedOrder({ status: 'received', lines: [
+      { itemId: 'i-1', garment: 'Shirt', service: 'Iron', quantity: 3, unitPriceMinor: 1000, lineTotalMinor: 3000, pieceCount: 3, handedOverCount: 0 },
+      { itemId: 'i-2', garment: 'Saree', service: 'Dry Clean', quantity: 1, unitPriceMinor: 1000, lineTotalMinor: 1000, pieceCount: 1, handedOverCount: 0 },
+    ] });
+    api.getCounterOrder.mockResolvedValue(twoLines);
+    await openOrdersAndFirstOrder();
+    const paid = { ...twoLines, paidMinor: 3000, balanceMinor: 1000 };
+    api.recordCounterPayment.mockResolvedValue(paid);
+    api.handOverCounterItems.mockResolvedValue({ ...paid, lines: [{ ...twoLines.lines[0], handedOverCount: 3 }, twoLines.lines[1]] });
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Hand over 1 × Saree · Dry Clean' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Receive ₹30.00 and hand over 3 pieces' }));
+    await screen.findByText('Received ₹30.00. 3 pieces handed over.');
+    expect(api.handOverCounterItems).toHaveBeenCalledWith('o-1', ['i-1']);
+    expect(await screen.findByText('Part collected')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Receive ₹10.00 and hand over 1 piece' })).toBeTruthy();
   });
 
   it('returns to where the order was opened from', async () => {
@@ -1120,143 +1111,99 @@ describe('Orders / Pickup', () => {
     await screen.findByRole('heading', { name: 'Saved print queue' });
   });
 
-  it('moves the order to the next stage and shows the new status and a message', async () => {
-    await signIn();
-    api.getCounterOrder.mockResolvedValue(savedOrder({ status: 'received' }));
-    await openOrdersAndFirstOrder();
-    fireEvent.click(await screen.findByRole('button', { name: 'Move to Washing' }));
-    await screen.findByText('Order SL-1 moved to washing.');
-    expect(api.updateCounterOrderStatus).toHaveBeenCalledWith('o-1', 'washing');
-  });
-
-  it('shows a refused stage change', async () => {
-    await signIn();
-    api.getCounterOrder.mockResolvedValue(savedOrder({ status: 'received' }));
-    await openOrdersAndFirstOrder();
-    api.updateCounterOrderStatus.mockRejectedValueOnce(new Error('Order cannot move from received to washing.'));
-    fireEvent.click(await screen.findByRole('button', { name: 'Move to Washing' }));
-    expect((await screen.findByRole('alert')).textContent).toBe('Order cannot move from received to washing.');
-  });
-
-  it('receives a payment on the order and shows the new balance', async () => {
+  it('shows every bill of a customer from the name, on the list and on the order page', async () => {
     await signIn();
     await openOrdersAndFirstOrder();
-    api.recordCounterPayment.mockResolvedValue(savedOrder({ status: 'washing', paidMinor: 4000, balanceMinor: 0, paymentStatus: 'paid' }));
-    fireEvent.click(screen.getAllByRole('button', { name: 'Receive ₹40.00' })[0]);
-    await screen.findByText('Payment saved.');
-    expect(api.recordCounterPayment).toHaveBeenCalledWith('o-1', expect.objectContaining({ amountMinor: 4000, method: 'cash' }));
-    expect(await screen.findByText('Paid in full')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Customer 1' }));
+    await screen.findByText('Searching all orders');
+    expect(searchBox().value).toBe('9876543210');
+    await waitFor(() => expect(api.searchCounterOrders).toHaveBeenLastCalledWith('9876543210', 0, 50, 'all'));
+    fireEvent.click(screen.getByRole('button', { name: 'Clear' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Customer 1' }));
+    await waitFor(() => expect(searchBox().value).toBe('9876543210'));
   });
 
-  it('lets an administrator cancel with a reason, and says how much to hand back', async () => {
-    await signIn(admin);
-    await openOrdersAndFirstOrder();
-    api.cancelCounterOrder.mockResolvedValue(savedOrder({ status: 'cancelled', refundDueMinor: 1500 }));
-    fireEvent.click(screen.getByRole('button', { name: 'More actions' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Cancel order' }));
-    fireEvent.change(screen.getByLabelText('Reason for cancelling'), { target: { value: 'Customer did not come back' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Confirm cancel order' }));
-    await screen.findByText('Order cancelled. Hand back ₹15.00.');
-    expect(api.cancelCounterOrder).toHaveBeenCalledWith('o-1', 'Customer did not come back');
-  });
-
-  it('reprints the bill and the tags of the tagged pieces from the order page', async () => {
+  it('reprints the bill and every tag from the order page, and retries a failed bill with the same key', async () => {
     await signIn();
     await openOrdersAndFirstOrder();
     api.reprintCounterOutput.mockResolvedValue(job('tags'));
-    fireEvent.click(screen.getByRole('button', { name: 'More actions' }));
     fireEvent.click(screen.getByRole('button', { name: 'Reprint tags' }));
     await screen.findByText('2 selected garment tag(s) were added to the TSC queue.');
     expect(api.reprintCounterOutput).toHaveBeenCalledWith('o-1', 'tags', ['2600001-1', '2600001-2'], expect.any(String));
+    api.reprintCounterOutput.mockRejectedValueOnce(new Error('database is busy'));
+    fireEvent.click(screen.getByRole('button', { name: 'Reprint bill' }));
+    expect((await screen.findByRole('alert')).textContent).toBe('The bill could not be printed: database is busy. Press Reprint bill again to retry.');
     api.reprintCounterOutput.mockResolvedValue(job('bill'));
     fireEvent.click(screen.getByRole('button', { name: 'Reprint bill' }));
     await screen.findByText('Bill SL-1 sent to the printer.');
+    const [, failed, retried] = api.reprintCounterOutput.mock.calls.map(call => call[3]);
+    expect(retried).toBe(failed);
   });
 
-  describe('going through earlier orders', () => {
-    it('opens a chosen day, steps back a day at a time, and opens an order from it', async () => {
-      await signIn();
-      api.searchCounterOrders.mockResolvedValue([summary(1, { status: 'washing' })]);
-      nav('Orders / Pickup');
-      await screen.findByText('SL-1');
-      fireEvent.click(screen.getByRole('button', { name: 'Pick a day' }));
-      const input = await screen.findByLabelText('Day') as HTMLInputElement;
-      const first = input.value;
-      await waitFor(() => expect(api.searchCounterOrders).toHaveBeenLastCalledWith('', 0, 50, `day:${first}`));
-      fireEvent.click(screen.getByRole('button', { name: '← Previous day' }));
-      await waitFor(() => expect((screen.getByLabelText('Day') as HTMLInputElement).value < first).toBe(true));
-      const earlier = (screen.getByLabelText('Day') as HTMLInputElement).value;
-      await waitFor(() => expect(api.searchCounterOrders).toHaveBeenLastCalledWith('', 0, 50, `day:${earlier}`));
-      fireEvent.click(screen.getAllByRole('button', { name: 'Open' })[0]);
-      await screen.findByRole('heading', { name: 'SL-1' });
-    });
-
-    it('shows All with a heading for each day', async () => {
-      await signIn();
-      api.searchCounterOrders.mockResolvedValue([summary(1, { status: 'washing' })]);
-      nav('Orders / Pickup');
-      await screen.findByText('SL-1');
-      fireEvent.click(screen.getByRole('button', { name: /^All/ }));
-      expect((await screen.findAllByRole('heading', { level: 2 })).length).toBeGreaterThan(0);
-    });
-  });
-
-  describe('reprinting a bill straight from the Orders list', () => {
-    const openList = async (results = [summary(1, { status: 'washing' }), summary(2, { status: 'ready' })]) => {
+  describe('from the list', () => {
+    const openList = async (results = [summary(1), summary(2)]) => {
       api.searchCounterOrders.mockResolvedValue(results);
       nav('Orders / Pickup');
       await screen.findByText(results[0].orderNumber);
     };
 
-    it('prints the bill of the chosen order and says so, without opening the order', async () => {
+    it('previews the bill of a listed order without opening it', async () => {
       await signIn();
       await openList();
-      api.reprintCounterOutput.mockResolvedValue(job('bill', 'pending', 'o-2'));
-      api.dispatchPrintJob.mockResolvedValue(job('bill', 'submitted', 'o-2'));
-      fireEvent.click(screen.getAllByRole('button', { name: 'Reprint bill' })[1]);
-      await screen.findByText('Bill SL-1 sent to the printer.');
-      expect(api.reprintCounterOutput).toHaveBeenCalledWith('o-2', 'bill', [], expect.any(String));
+      api.previewCounterOrderBill.mockResolvedValue(previewData('Bill two'));
+      fireEvent.click(screen.getAllByRole('button', { name: 'Preview' })[1]);
+      const dialog = await screen.findByRole('dialog', { name: 'Bill SL-2' });
+      expect(api.previewCounterOrderBill).toHaveBeenCalledWith('o-2');
+      expect(within(dialog).getByText('Bill two')).toBeTruthy();
       expect(screen.queryByRole('heading', { name: 'SL-2' })).toBeNull();
     });
 
-    it('uses a separate request key for each order, and a fresh one after a bill printed', async () => {
-      await signIn();
+    it('moves an order to the trash for an administrator, and reloads the list', async () => {
+      await signIn(admin);
       await openList();
-      api.reprintCounterOutput.mockResolvedValue(job('bill', 'pending'));
-      api.dispatchPrintJob.mockResolvedValue(job('bill', 'submitted'));
-      const [first, second] = screen.getAllByRole('button', { name: 'Reprint bill' });
-      fireEvent.click(first);
-      await screen.findByText('Bill SL-1 sent to the printer.');
-      fireEvent.click(second);
-      await waitFor(() => expect(api.reprintCounterOutput).toHaveBeenCalledTimes(2));
-      fireEvent.click(first);
-      await waitFor(() => expect(api.reprintCounterOutput).toHaveBeenCalledTimes(3));
-      const keys = api.reprintCounterOutput.mock.calls.map(call => call[3]);
-      expect(new Set(keys).size).toBe(3);
+      api.trashCounterOrder.mockResolvedValue(undefined);
+      api.searchCounterOrders.mockClear();
+      fireEvent.click(screen.getAllByRole('button', { name: 'Move to trash' })[0]);
+      fireEvent.click(screen.getByRole('button', { name: 'Confirm move to trash' }));
+      await screen.findByText('Order SL-1 moved to the trash.');
+      expect(api.trashCounterOrder).toHaveBeenCalledWith('o-1');
+      await waitFor(() => expect(api.searchCounterOrders).toHaveBeenCalled());
     });
 
-    it('keeps the request key and says what to do when the printer does not take the bill', async () => {
+    it('sends staff trash requests to the owner, and shows a refusal', async () => {
       await signIn();
       await openList();
-      api.reprintCounterOutput.mockResolvedValue(job('bill', 'pending'));
-      api.dispatchPrintJob.mockResolvedValue(job('bill', 'failed'));
-      fireEvent.click(screen.getAllByRole('button', { name: 'Reprint bill' })[0]);
-      expect((await screen.findByRole('alert')).textContent).toContain('did not print');
+      api.requestCounterOrderTrash.mockRejectedValueOnce(new Error('Already asked.'));
+      fireEvent.click(screen.getAllByRole('button', { name: 'Mark for trash' })[1]);
+      fireEvent.change(screen.getByLabelText('Why should this bill be trashed?'), { target: { value: 'Entered twice' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Send to the owner' }));
+      expect((await screen.findByRole('alert')).textContent).toBe('Already asked.');
+      api.requestCounterOrderTrash.mockResolvedValue(undefined);
+      fireEvent.click(screen.getByRole('button', { name: 'Send to the owner' }));
+      await screen.findByText('Order SL-2 was sent to the owner to be trashed. It still counts in sales until they approve.');
+      expect(api.requestCounterOrderTrash).toHaveBeenLastCalledWith('o-2', 'Entered twice');
     });
+  });
 
-    it('says in plain words when the reprint cannot be requested, and retries with the same key', async () => {
-      await signIn();
-      await openList();
-      api.reprintCounterOutput.mockRejectedValueOnce(new Error('database is busy'));
-      fireEvent.click(screen.getAllByRole('button', { name: 'Reprint bill' })[0]);
-      expect((await screen.findByRole('alert')).textContent).toBe('The bill could not be printed: database is busy. Press Reprint bill again to retry.');
-      api.reprintCounterOutput.mockResolvedValue(job('bill', 'pending'));
-      api.dispatchPrintJob.mockResolvedValue(job('bill', 'submitted'));
-      fireEvent.click(screen.getAllByRole('button', { name: 'Reprint bill' })[0]);
-      await screen.findByText('Bill SL-1 sent to the printer.');
-      const keys = api.reprintCounterOutput.mock.calls.map(call => call[3]);
-      expect(keys[0]).toBe(keys[1]);
-    });
+  it('goes back to the list after trashing the open order', async () => {
+    await signIn(admin);
+    await openOrdersAndFirstOrder();
+    api.trashCounterOrder.mockResolvedValue(undefined);
+    fireEvent.click(screen.getByRole('button', { name: 'Move to trash' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm move to trash' }));
+    await screen.findByText('Order SL-1 moved to the trash.');
+    expect(await screen.findByRole('heading', { name: 'Orders / Pickup' })).toBeTruthy();
+  });
+
+  it('asks the owner from the order page for staff, and stays on it', async () => {
+    await signIn();
+    await openOrdersAndFirstOrder();
+    api.requestCounterOrderTrash.mockResolvedValue(undefined);
+    fireEvent.click(screen.getByRole('button', { name: 'Mark for trash' }));
+    fireEvent.change(screen.getByLabelText('Why should this bill be trashed?'), { target: { value: 'Wrong customer' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send to the owner' }));
+    await screen.findByText(/sent to the owner/);
+    expect(screen.getByRole('heading', { name: 'SL-1' })).toBeTruthy();
   });
 
   it('opens the print progress from the order page, and Back returns to the order', async () => {
@@ -1278,7 +1225,7 @@ describe('Orders / Pickup', () => {
     fireEvent.click(screen.getByRole('button', { name: '← Order' }));
     api.getCounterOrder.mockResolvedValue(savedOrder({ pieces: mixed.map(piece => ({ ...piece, tagged: false })) }));
     nav('Orders / Pickup');
-    fireEvent.click(await screen.findByRole('button', { name: 'Open' }));
+    fireEvent.click(await screen.findByRole('button', { name: /^Open bill/ }));
     await screen.findByRole('heading', { name: 'SL-1' });
     await openPrintProgress();
     expect(screen.queryAllByRole('checkbox')).toHaveLength(0);
@@ -1314,7 +1261,7 @@ describe('Orders / Pickup', () => {
     nav('Orders / Pickup');
     await screen.findByText('SL-1');
     expect(searchBox().value).toBe('');
-    expect(screen.getByRole('button', { name: /^Ready/ }).getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByRole('button', { name: /^Not collected/ }).getAttribute('aria-pressed')).toBe('true');
   });
 });
 
