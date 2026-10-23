@@ -694,7 +694,7 @@ All colors MUST be HSL.
 .counter-pickup-lines li{display:grid;grid-template-columns:minmax(0,1fr) auto 7rem;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid #edf1ef;font-size:15px}
 .counter-pickup-lines li:last-child{border-bottom:0}
 .counter-pickup-lines label{display:flex;align-items:center;gap:12px;min-width:0}
-.counter-pickup-lines input{width:22px;height:22px;flex:none}
+.counter-pickup-lines input,.counter-pickup-spacer{width:22px;height:22px;flex:none}
 .counter-pickup-lines strong{font-variant-numeric:tabular-nums}
 .counter-pickup-lines small{color:#5f6f68;font-size:12px;text-align:right}
 
@@ -825,6 +825,8 @@ All colors MUST be HSL.
 
 /* Order page: the always-visible actions, and the trash confirmation under them. */
 .counter-detail-actions{display:flex;flex-wrap:wrap;align-items:flex-start;gap:10px;margin-top:10px}
+.counter-detail-head>.counter-detail-actions{display:flex;flex:1 1 100%;margin-top:0}
+.counter-order-detail{max-width:1100px}
 .counter-trash-confirm{display:grid;gap:8px;max-width:420px;padding:12px 14px;border:1px solid #e8c9bf;border-radius:12px;background:#fff7f4}
 .counter-trash-confirm p{margin:0;font-size:14px}
 /* The Trash page. */

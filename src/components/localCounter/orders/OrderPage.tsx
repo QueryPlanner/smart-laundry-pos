@@ -51,7 +51,7 @@ export const OrderPage = ({ order, isAdmin, busy, backLabel, onBack, onOrder, on
   const working = busy || pickup.busy;
 
   return (
-    <section className="counter-order-detail" aria-label="Order detail">
+    <section className="counter-page counter-order-detail" aria-label="Order detail">
       <header className="counter-detail-head">
         <Button variant="outline" className="counter-touch" onClick={onBack}>{`← ${backLabel}`}</Button>
         <div>
@@ -83,7 +83,9 @@ export const OrderPage = ({ order, isAdmin, busy, backLabel, onBack, onOrder, on
           return (
             <li key={line.itemId}>
               <label>
-                {open && left > 0 && <input type="checkbox" aria-label={`Hand over ${label}`} checked={pickup.chosen.includes(line.itemId)} disabled={working} onChange={() => pickup.toggle(line.itemId)} />}
+                {open && left > 0
+                  ? <input type="checkbox" aria-label={`Hand over ${label}`} checked={pickup.chosen.includes(line.itemId)} disabled={working} onChange={() => pickup.toggle(line.itemId)} />
+                  : <span className="counter-pickup-spacer" aria-hidden="true" />}
                 <span>{label}</span>
               </label>
               <strong>{money(line.lineTotalMinor)}</strong>
