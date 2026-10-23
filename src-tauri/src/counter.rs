@@ -1267,6 +1267,92 @@ pub async fn restore_order(
     tx.commit().await.map_err(db_err)
 }
 
+/// The word the owner types to confirm that every order and customer is to be removed.
+pub const CLEAR_ORDERS_CONFIRMATION: &str = "CLEAR";
+
+/// What a clear removed, and the backup that still holds it.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClearedOrders {
+    pub orders: i64,
+    pub customers: i64,
+    pub backup_path: String,
+}
+
+/// The tables emptied by [`clear_all_orders`], children before parents so it does not depend on
+/// foreign-key cascades. Customer discount rules go with their customers; the shop-wide rule stays.
+const CLEARED_TABLES: &[&str] = &[
+    "DELETE FROM piece_matches",
+    "DELETE FROM order_pieces",
+    "DELETE FROM print_job_attempts",
+    "DELETE FROM print_jobs",
+    "DELETE FROM counter_payment_requests",
+    "DELETE FROM counter_collection_requests",
+    "DELETE FROM counter_order_requests",
+    "DELETE FROM payments",
+    "DELETE FROM order_status_history",
+    "DELETE FROM order_items",
+    "DELETE FROM orders",
+    "DELETE FROM order_day_sequences",
+    "DELETE FROM counter_discounts WHERE scope='customer'",
+    "DELETE FROM customers",
+];
+
+/// Starts the shop afresh: removes every order (trashed ones too), its payments, pieces and print
+/// jobs, and every customer, so today's bill numbers start again at 0001. The rate card, staff,
+/// shop settings, expenses, inventory and machines stay. A verified backup is written first and the
+/// clear is refused if it fails, so the removed records can always be brought back with Restore.
+/// Administrator only, and only with the confirmation word typed.
+pub async fn clear_all_orders(
+    db: &DatabaseState,
+    session: &CounterSession,
+    confirmation: &str,
+) -> Result<ClearedOrders, String> {
+    require_admin(session, "clear all orders")?;
+    if confirmation.trim() != CLEAR_ORDERS_CONFIRMATION {
+        return Err(format!(
+            "Type {CLEAR_ORDERS_CONFIRMATION} to confirm clearing every order."
+        ));
+    }
+    let backup_path = db
+        .backup_database()
+        .await
+        .map_err(|error| format!("Nothing was cleared, because the backup failed: {error}"))?;
+    let mut tx = db.begin_counter_write().await?;
+    let actor = require_admin_in_tx(&mut tx, session, "clear all orders").await?;
+    let orders: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM orders")
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(db_err)?;
+    let customers: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM customers")
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(db_err)?;
+    for statement in CLEARED_TABLES {
+        sqlx::query(statement)
+            .execute(&mut *tx)
+            .await
+            .map_err(db_err)?;
+    }
+    let now = Utc::now().to_rfc3339();
+    audit_details(
+        &mut tx,
+        &actor.id,
+        "orders_cleared",
+        "order",
+        "all",
+        &now,
+        &serde_json::json!({ "orders": orders, "customers": customers, "backup": backup_path }),
+    )
+    .await?;
+    tx.commit().await.map_err(db_err)?;
+    Ok(ClearedOrders {
+        orders,
+        customers,
+        backup_path,
+    })
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DiscountRule {
@@ -4563,6 +4649,108 @@ mod counter_tests {
             .await
             .unwrap();
             assert_eq!(audited, 1);
+            cleanup(db, path).await;
+        });
+    }
+
+    #[test]
+    fn clearing_all_orders_backs_up_first_and_keeps_the_shop_setup() {
+        tauri::async_runtime::block_on(async {
+            let path = fixture_path();
+            let db = DatabaseState::open(path.clone()).await;
+            let admin = admin_fixture(&db).await;
+            let staff = staff_fixture(&db).await;
+            let first = save_with(&db, &staff, order_input(1), "first")
+                .await
+                .unwrap();
+            let second = save_with(&db, &staff, order_input(2), "second")
+                .await
+                .unwrap();
+            trash_order(&db, &admin, &second.order_id).await.unwrap();
+            let pool = db.writer_pool().unwrap().clone();
+            let customer_id: String = sqlx::query_scalar("SELECT id FROM customers LIMIT 1")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            set_discount(&db, &admin, None, 500, true, "Shop")
+                .await
+                .unwrap();
+            set_discount(&db, &admin, Some(&customer_id), 1000, true, "Regular")
+                .await
+                .unwrap();
+            let count = |sql: &'static str| {
+                let pool = pool.clone();
+                async move {
+                    sqlx::query_scalar::<_, i64>(sql)
+                        .fetch_one(&pool)
+                        .await
+                        .unwrap()
+                }
+            };
+            let rates_before = count("SELECT COUNT(*) FROM garment_service_rates").await;
+
+            // Staff cannot clear, and nothing happens without the confirmation word.
+            assert!(clear_all_orders(&db, &staff, CLEAR_ORDERS_CONFIRMATION)
+                .await
+                .unwrap_err()
+                .contains("Administrator access"));
+            assert!(clear_all_orders(&db, &admin, "clear please")
+                .await
+                .unwrap_err()
+                .contains("Type CLEAR"));
+            assert_eq!(count("SELECT COUNT(*) FROM orders").await, 2);
+
+            let cleared = clear_all_orders(&db, &admin, " CLEAR ").await.unwrap();
+            assert_eq!((cleared.orders, cleared.customers), (2, 1));
+            // The backup holds what was removed.
+            let backup = sqlx::sqlite::SqlitePoolOptions::new()
+                .connect_with(
+                    sqlx::sqlite::SqliteConnectOptions::new()
+                        .filename(&cleared.backup_path)
+                        .read_only(true),
+                )
+                .await
+                .unwrap();
+            let backed_up: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM orders")
+                .fetch_one(&backup)
+                .await
+                .unwrap();
+            assert_eq!(backed_up, 2);
+            backup.close().await;
+
+            for table in [
+                "SELECT COUNT(*) FROM orders",
+                "SELECT COUNT(*) FROM order_items",
+                "SELECT COUNT(*) FROM order_pieces",
+                "SELECT COUNT(*) FROM payments",
+                "SELECT COUNT(*) FROM print_jobs",
+                "SELECT COUNT(*) FROM customers",
+                "SELECT COUNT(*) FROM order_day_sequences",
+                "SELECT COUNT(*) FROM counter_discounts WHERE scope='customer'",
+            ] {
+                assert_eq!(count(table).await, 0, "{table}");
+            }
+            // The rate card, the shop-wide discount and the staff stay; the clear is audited.
+            assert_eq!(
+                count("SELECT COUNT(*) FROM garment_service_rates").await,
+                rates_before
+            );
+            assert_eq!(
+                count("SELECT COUNT(*) FROM counter_discounts WHERE scope='all'").await,
+                1
+            );
+            assert_eq!(count("SELECT COUNT(*) FROM counter_accounts").await, 2);
+            assert_eq!(
+                count("SELECT COUNT(*) FROM counter_audit WHERE action='orders_cleared'").await,
+                1
+            );
+            assert!(get_saved(&db, &first.order_id).await.unwrap().is_none());
+
+            // The next bill of the day starts again at 0001.
+            let next = save_with(&db, &staff, order_input(1), "after-clear")
+                .await
+                .unwrap();
+            assert!(next.order_number.ends_with("0001"), "{}", next.order_number);
             cleanup(db, path).await;
         });
     }

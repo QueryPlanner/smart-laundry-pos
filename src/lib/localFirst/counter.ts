@@ -154,6 +154,13 @@ export interface CounterTrashedOrder {
 export const listCounterTrashedOrders = (): Promise<CounterTrashedOrder[]> => call('counter_list_trashed_orders');
 /** Admin only. Takes an order out of the trash: lists, sales and customer totals count it again. */
 export const restoreCounterOrder = (orderId: string): Promise<void> => call('counter_restore_order', { orderId });
+/** What "Clear all orders" removed, and the backup written just before that still holds it. */
+export interface CounterClearedOrders { orders: number; customers: number; backupPath: string }
+/** The word an administrator types to confirm "Clear all orders" (the native side checks it too). */
+export const CLEAR_ORDERS_CONFIRMATION = 'CLEAR';
+/** Removes every order and customer after a verified backup. Administrator only. */
+export const clearCounterOrders = (confirmation: string): Promise<CounterClearedOrders> =>
+  call('counter_clear_all_orders', { confirmation });
 /** Admin only. Keeps the bill and clears the request. */
 export const dismissCounterTrashRequest = (orderId: string): Promise<void> => call('counter_dismiss_trash_request', { orderId });
 export const listCounterDiscounts = (): Promise<CounterDiscountRule[]> => call('counter_list_discounts');

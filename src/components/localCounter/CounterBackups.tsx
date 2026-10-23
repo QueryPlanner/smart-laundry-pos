@@ -3,6 +3,7 @@ import { confirm, open } from '@tauri-apps/plugin-dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { ClearOrders } from './ClearOrders';
 import { getCounterBackupSettings, restoreCounterBackup, runCounterBackup, setCounterBackupMirror, type CounterBackupSettings } from '@/lib/localFirst/counter';
 
 interface Props { onError: (error: unknown) => void; onNotice: (message: string) => void; onRestoreStaged: () => void }
@@ -65,6 +66,7 @@ export const CounterBackups = ({ onError, onNotice, onRestoreStaged }: Props) =>
       <h3>Restore from a backup</h3>
       <p>Choose a backup file to bring the shop back to how it was then. It is applied when the app is closed and opened again, and the current data is saved first. Accounts and PINs come back too, including staff who were deactivated since that backup.</p>
       <Button variant="outline" disabled={busy} onClick={() => void restore()}>Restore from backup…</Button>
+      <ClearOrders onError={onError} onNotice={notice => { onNotice(notice); void getCounterBackupSettings().then(show).catch(onError); }} />
     </div>
   );
 };

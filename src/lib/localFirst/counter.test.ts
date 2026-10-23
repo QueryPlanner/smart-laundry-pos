@@ -52,6 +52,7 @@ const table: Array<[string, () => Promise<unknown>, string, Record<string, unkno
   ['previewCounterOrderBill', () => counter.previewCounterOrderBill('o'), 'counter_preview_order_bill', { orderId: 'o' }],
   ['listCounterTrashedOrders', () => counter.listCounterTrashedOrders(), 'counter_list_trashed_orders', undefined],
   ['restoreCounterOrder', () => counter.restoreCounterOrder('o'), 'counter_restore_order', { orderId: 'o' }],
+  ['clearCounterOrders', () => counter.clearCounterOrders('CLEAR'), 'counter_clear_all_orders', { confirmation: 'CLEAR' }],
   ['collectCounterOrder', () => counter.collectCounterOrder('o', ['p'], 'r'), 'counter_collect_order', { orderId: 'o', pieceIds: ['p'], requestId: 'r', payment: undefined }],
   ['collectCounterOrder with payment', () => counter.collectCounterOrder('o', ['p'], 'r', { amountMinor: 500, method: 'upi', reference: 'UTR1', idempotencyKey: 'k' }), 'counter_collect_order', { orderId: 'o', pieceIds: ['p'], requestId: 'r', payment: { amountMinor: 500, method: 'upi', reference: 'UTR1', idempotencyKey: 'k' } }],
   ['enumeratePrinters', () => counter.enumeratePrinters(), 'counter_enumerate_printers', undefined],
