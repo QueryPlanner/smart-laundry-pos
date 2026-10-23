@@ -1,6 +1,7 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { GARMENT_PICTURES, pictureSrc } from './garmentPictures';
 
 /**
  * Picture drift guard. The counter shows /garments/<image_key>-transparent.png for every garment the
@@ -37,5 +38,17 @@ describe('garment pictures', () => {
     const config = readFileSync(`${root}vite.desktop.config.ts`, 'utf8');
     expect(config).toContain("readdir(garmentSource)");
     expect(readdirSync(`${root}public/garments`).filter(name => name.endsWith('-transparent.png')).length).toBeGreaterThanOrEqual(28);
+  });
+
+  it('offers the administrator every bundled picture, each once, and each with a file', () => {
+    const files = readdirSync(`${root}public/garments`).filter(name => name.endsWith('-transparent.png')).map(name => name.replace('-transparent.png', '')).sort();
+    const listed = GARMENT_PICTURES.map(picture => picture.key);
+    expect(new Set(listed).size).toBe(listed.length);
+    expect([...listed].sort()).toEqual(files);
+    for (const { key, label } of GARMENT_PICTURES) {
+      expect(key, key).toMatch(/^[a-z0-9-]{1,40}$/);
+      expect(label.trim().length, key).toBeGreaterThan(0);
+      expect(existsSync(`${root}public${pictureSrc(key)}`), key).toBe(true);
+    }
   });
 });
