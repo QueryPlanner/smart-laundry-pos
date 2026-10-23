@@ -399,9 +399,8 @@ async fn counter_preview_draft_bill(
     state: State<'_, DatabaseState>,
     session: State<'_, CounterSession>,
     input: counter::OrderInput,
-    advance_minor: Option<i64>,
 ) -> Result<printing::BillPreview, String> {
-    counter::preview_draft_bill(&state, &session, &input, advance_minor).await
+    counter::preview_draft_bill(&state, &session, &input).await
 }
 #[tauri::command]
 async fn counter_preview_order_bill(

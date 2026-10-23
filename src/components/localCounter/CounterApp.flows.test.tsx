@@ -3,7 +3,6 @@ import React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { CounterApp } from './CounterApp';
-import { ADVANCE_ABOVE_TOTAL, ADVANCE_NOT_AMOUNT } from '@/lib/localFirst/payment';
 import type { CounterAccount, CounterCatalogue, CounterOrderInput, CounterOrderSummary, CounterPiece, CounterPrintJob, CounterSavedOrder } from '@/lib/localFirst/counter';
 
 const api = vi.hoisted(() => ({
@@ -72,7 +71,6 @@ const openPrintProgress = async () => {
   await screen.findByText(/· Print progress/);
 };
 const saveButton = () => screen.getByRole('button', { name: 'Save & Print' }) as HTMLButtonElement;
-const advanceInput = () => screen.getByLabelText('Advance received now') as HTMLInputElement;
 const saveNow = () => fireEvent.click(screen.getByRole('button', { name: 'Save & Print' }));
 const startOrder = async () => {
   fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Rita Joshi' } });
@@ -185,13 +183,12 @@ describe('first run and sign-in', () => {
     }
   });
 
-  it('locks back to the sign-in screen and forgets the draft order', async () => {
+  it('locks back to the sign-in screen and keeps the draft order for the next sign-in', async () => {
     await signIn();
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Rita Joshi' } });
     fireEvent.click(screen.getByRole('button', { name: 'Add Shirt Wash' }));
     api.getCounterBootstrap.mockResolvedValue(unauthenticated());
     fireEvent.click(screen.getByRole('button', { name: /Lock/ }));
-    fireEvent.click(await screen.findByRole('button', { name: 'Discard order' }));
     await screen.findByText('Choose your name and enter your PIN.');
     expect(api.lockCounter).toHaveBeenCalledOnce();
     api.loginCounter.mockResolvedValue(staff);
@@ -199,25 +196,23 @@ describe('first run and sign-in', () => {
     fireEvent.change(screen.getByLabelText('PIN'), { target: { value: '1234' } });
     fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
     await screen.findByLabelText('Garments');
-    expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('');
-    expect(screen.getByText('Tap a service on a garment to add it.')).toBeTruthy();
+    expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('Rita Joshi');
+    expect(screen.getByLabelText('Shirt summary quantity')).toBeTruthy();
   });
 });
 
 const previewData = (text: string) => ({ widthPt: 595.28, heightPt: 419.53, pages: [{ rules: [], lines: [{ text, sizePt: 10, bold: false, xPt: 24, yPt: 30 }] }] });
 
 describe('previewing a bill', () => {
-  it('shows the bill of the order being taken, with the advance typed, and stores nothing', async () => {
+  it('shows the bill of the order being taken, and stores nothing', async () => {
     await signIn();
     await startOrder();
-    fireEvent.change(advanceInput(), { target: { value: '5' } });
     api.previewCounterDraftBill.mockResolvedValue(previewData('NOT SAVED YET'));
     fireEvent.click(screen.getByRole('button', { name: 'Preview bill' }));
     const dialog = await screen.findByRole('dialog', { name: 'Bill preview' });
     expect(within(dialog).getByText('NOT SAVED YET')).toBeTruthy();
     expect(api.previewCounterDraftBill).toHaveBeenCalledWith(
       { customer: { name: 'Rita Joshi', phone: '' }, items: [expect.objectContaining({ quantity: 1 })] },
-      500,
     );
     // A new order has nothing to print yet, so only Close is offered.
     expect(within(dialog).queryByRole('button', { name: 'Print this bill' })).toBeNull();
@@ -292,12 +287,12 @@ describe('giving a discount on one bill', () => {
     fireEvent.change(screen.getByLabelText('Discount on this bill (₹)'), { target: { value: '5' } });
     await waitFor(() => expect(api.quoteCounterOrder).toHaveBeenLastCalledWith(expect.objectContaining({ manualDiscountMinor: 500 })));
     expect((await screen.findByText('Extra discount')).nextSibling?.textContent).toBe('-₹5.00');
-    expect(screen.getByText('Amount to collect').nextSibling?.textContent).toBe('₹15.00');
+    expect(screen.getByText('Total').nextSibling?.textContent).toBe('₹15.00');
 
     api.previewCounterDraftBill.mockResolvedValue(previewData('Discount: -₹5.00'));
     fireEvent.click(screen.getByRole('button', { name: 'Preview bill' }));
     await screen.findByRole('dialog', { name: 'Bill preview' });
-    expect(api.previewCounterDraftBill).toHaveBeenCalledWith(expect.objectContaining({ manualDiscountMinor: 500 }), 0);
+    expect(api.previewCounterDraftBill).toHaveBeenCalledWith(expect.objectContaining({ manualDiscountMinor: 500 }));
     fireEvent.click(screen.getByRole('button', { name: 'Close' }));
 
     saveNow();
@@ -369,9 +364,8 @@ describe('giving a discount on one bill', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Give a discount' }));
     fireEvent.change(screen.getByLabelText('Discount on this bill (₹)'), { target: { value: '5' } });
     await waitFor(() => expect(saveButton().disabled).toBe(false));
-    nav('Orders / Pickup');
-    fireEvent.click(await screen.findByRole('button', { name: 'Discard order' }));
-    nav('New order');
+    fireEvent.click(screen.getByRole('button', { name: 'Clear order' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Yes, clear it' }));
     await screen.findByRole('button', { name: 'Give a discount' });
     expect(screen.queryByLabelText('Discount on this bill (₹)')).toBeNull();
   });
@@ -413,73 +407,10 @@ describe('taking and saving an order', () => {
     expect(screen.getAllByText('Waiting to print').length).toBe(2);
   });
 
-  it('sends no payment when nothing is paid now, including after an advance was typed and cleared', async () => {
+  it('saves with no payment: the customer pays at pickup', async () => {
     await signIn();
     await startOrder();
-    fireEvent.change(advanceInput(), { target: { value: '50' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Nothing now' }));
-    expect(advanceInput().value).toBe('');
-    saveNow();
-    await waitFor(() => expect(api.saveCounterOrder).toHaveBeenCalledTimes(1));
-    expect(api.saveCounterOrder.mock.calls[0][0]).not.toHaveProperty('payment');
-  });
-
-  it('sends the advance in rupees as paise with the method chosen, and nothing else', async () => {
-    await signIn();
-    api.quoteCounterOrder.mockImplementation(async (input: CounterOrderInput) => quoteFor(input, 20000));
-    await startOrder();
-    fireEvent.change(advanceInput(), { target: { value: '100.50' } });
-    fireEvent.click(screen.getByRole('button', { name: 'UPI' }));
-    expect(screen.getByText('Balance to pay at pickup ₹99.50')).toBeTruthy();
-    saveNow();
-    await waitFor(() => expect(api.saveCounterOrder).toHaveBeenCalledTimes(1));
-    expect(api.saveCounterOrder.mock.calls[0][0].payment).toEqual({ amountMinor: 10050, method: 'upi' });
-  });
-
-  it('fills the advance with half of the total when Half is chosen, then saves that amount', async () => {
-    await signIn();
-    api.quoteCounterOrder.mockImplementation(async (input: CounterOrderInput) => quoteFor(input, 1800));
-    await startOrder();
-    fireEvent.click(screen.getByRole('button', { name: 'Half' }));
-    expect(advanceInput().value).toBe('9.00');
-    saveNow();
-    await waitFor(() => expect(api.saveCounterOrder).toHaveBeenCalledTimes(1));
-    expect(api.saveCounterOrder.mock.calls[0][0].payment).toEqual({ amountMinor: 900, method: 'cash' });
-  });
-
-  it('fills the advance with the whole total when Full is chosen, then saves that amount', async () => {
-    await signIn();
-    api.quoteCounterOrder.mockImplementation(async (input: CounterOrderInput) => quoteFor(input, 1800));
-    await startOrder();
-    fireEvent.click(screen.getByRole('button', { name: 'Full' }));
-    expect(advanceInput().value).toBe('18.00');
-    saveNow();
-    await waitFor(() => expect(api.saveCounterOrder).toHaveBeenCalledTimes(1));
-    expect(api.saveCounterOrder.mock.calls[0][0].payment).toEqual({ amountMinor: 1800, method: 'cash' });
-  });
-
-  it('blocks Save while the advance is not an amount or is more than the amount to collect', async () => {
-    await signIn();
-    await startOrder();
-    fireEvent.change(advanceInput(), { target: { value: '12.345' } });
-    expect(screen.getByRole('alert').textContent).toBe(ADVANCE_NOT_AMOUNT);
-    expect(saveButton().disabled).toBe(true);
-    fireEvent.change(advanceInput(), { target: { value: '25' } });
-    expect(screen.getByRole('alert').textContent).toBe(ADVANCE_ABOVE_TOTAL);
-    expect(saveButton().disabled).toBe(true);
-    fireEvent.change(advanceInput(), { target: { value: '20' } });
-    expect(screen.queryByRole('alert')).toBeNull();
-    expect(saveButton().disabled).toBe(false);
-  });
-
-  it('sends no payment for an order with nothing to pay, even if an advance was typed before its total dropped to zero', async () => {
-    await signIn();
-    api.quoteCounterOrder.mockImplementation(async (input: CounterOrderInput) => quoteFor(input, 0));
-    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Rita Joshi' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Add Shirt Wash' }));
-    fireEvent.change(advanceInput(), { target: { value: '5' } });
-    await screen.findByText('No payment due');
-    await waitFor(() => expect(saveButton().disabled).toBe(false));
+    expect(screen.queryByLabelText(/Advance/)).toBeNull();
     saveNow();
     await waitFor(() => expect(api.saveCounterOrder).toHaveBeenCalledTimes(1));
     expect(api.saveCounterOrder.mock.calls[0][0]).not.toHaveProperty('payment');
@@ -503,6 +434,7 @@ describe('small order-screen behaviours', () => {
     await signIn();
     await startOrder();
     fireEvent.click(screen.getByRole('button', { name: 'Add Shirt Wash' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Change price' }));
     const price = await screen.findByLabelText('Shirt price for this bill');
     fireEvent.change(price, { target: { value: '15' } });
     await waitFor(() => expect(api.quoteCounterOrder).toHaveBeenLastCalledWith(expect.objectContaining({ items: [expect.objectContaining({ quantity: 2, unitPriceOverrideMinor: 1500 })] })));
@@ -730,33 +662,28 @@ describe('protecting an order that is being taken', () => {
     expect(screen.getByLabelText('1 added').textContent).toBe('×1');
   });
 
-  it('asks before leaving the order page throws the draft away, and can keep or discard it', async () => {
+  it('keeps the draft while other pages are open, until it is cleared', async () => {
     await signIn();
     await startOrder();
     nav('Orders / Pickup');
-    expect(dialog()?.textContent).toContain('You have an unsaved order. Discard it?');
-    fireEvent.click(screen.getByRole('button', { name: 'Keep editing' }));
     expect(dialog()).toBeNull();
-    expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('Rita Joshi');
     nav('Print queue');
-    fireEvent.click(screen.getByRole('button', { name: 'Discard order' }));
-    expect(dialog()).toBeNull();
-    expect(screen.queryByLabelText('Mobile number')).toBeNull();
     nav('New order');
+    expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('Rita Joshi');
+    expect(screen.getByLabelText('1 added').textContent).toBe('×1');
+    fireEvent.click(screen.getByRole('button', { name: 'Clear order' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Yes, clear it' }));
     expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('');
     expect(screen.getByText('Tap a service on a garment to add it.')).toBeTruthy();
   });
 
-  it('counts a typed mobile number or a lone garment as an order in progress', async () => {
+  it('starts the next order blank once one is saved', async () => {
     await signIn();
-    fireEvent.change(screen.getByLabelText('Mobile number'), { target: { value: '9876543210' } });
-    nav('Print queue');
-    expect(dialog()).not.toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: 'Discard order' }));
+    await startOrder();
+    saveNow();
+    await screen.findByText(/Order SL-1 saved/);
     nav('New order');
-    fireEvent.click(screen.getByRole('button', { name: 'Add Shirt Wash' }));
-    nav('Print queue');
-    expect(dialog()).not.toBeNull();
+    expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('');
   });
 
   it('goes straight to a blank order from another page when nothing was started', async () => {
@@ -767,35 +694,17 @@ describe('protecting an order that is being taken', () => {
     await screen.findByLabelText('Garments');
   });
 
-  it('asks before Lock discards the draft, and locks at once when there is none', async () => {
+  it('locks at once, keeping the draft, and keeps it when locking fails', async () => {
     await signIn();
     await startOrder();
+    api.lockCounter.mockRejectedValueOnce(new Error('session store unavailable'));
     fireEvent.click(screen.getByRole('button', { name: /Lock/ }));
-    expect(dialog()).not.toBeNull();
-    expect(api.lockCounter).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole('button', { name: 'Keep editing' }));
-    expect(api.lockCounter).not.toHaveBeenCalled();
+    expect((await screen.findByRole('alert')).textContent).toContain('could not be locked');
     expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('Rita Joshi');
-    cleanup();
-    vi.clearAllMocks();
-    api.getCounterCatalogue.mockResolvedValue(catalogue);
-    api.listPrintJobs.mockResolvedValue([]);
-    api.lockCounter.mockResolvedValue(undefined);
-    await signIn();
     api.getCounterBootstrap.mockResolvedValue(unauthenticated());
     fireEvent.click(screen.getByRole('button', { name: /Lock/ }));
     await screen.findByText('Choose your name and enter your PIN.');
-    expect(api.lockCounter).toHaveBeenCalledOnce();
-  });
-
-  it('keeps the draft when locking fails after it was confirmed', async () => {
-    await signIn();
-    await startOrder();
-    api.lockCounter.mockRejectedValue(new Error('session store unavailable'));
-    fireEvent.click(screen.getByRole('button', { name: /Lock/ }));
-    fireEvent.click(screen.getByRole('button', { name: 'Discard order' }));
-    expect((await screen.findByRole('alert')).textContent).toContain('could not be locked');
-    expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('Rita Joshi');
+    expect(api.lockCounter).toHaveBeenCalledTimes(2);
   });
 
   it('locks the whole order-entry area while a save is in flight, so nothing typed is silently lost', async () => {
@@ -831,10 +740,10 @@ describe('saving failures that need a clear next step', () => {
     let quoteCalls = 0;
     api.quoteCounterOrder.mockImplementation(async (input: CounterOrderInput) => quoteFor(input, ++quoteCalls === 1 ? 2000 : 2400));
     await startOrder();
-    expect(screen.getByText('Amount to collect').nextSibling?.textContent).toBe('₹20.00');
+    expect(screen.getByText('Total').nextSibling?.textContent).toBe('₹20.00');
     api.saveCounterOrder.mockRejectedValueOnce('Rates or the promised time changed. Review the refreshed quote before saving.');
     fireEvent.click(screen.getByRole('button', { name: 'Save & Print' }));
-    await waitFor(() => expect(screen.getByText('Amount to collect').nextSibling?.textContent).toBe('₹24.00'));
+    await waitFor(() => expect(screen.getByText('Total').nextSibling?.textContent).toBe('₹24.00'));
     expect(quoteCalls).toBe(2);
     expect(screen.getByRole('alert').textContent).toBe('Rates or the promised time changed. Review the refreshed quote before saving.');
     await waitFor(() => expect((screen.getByRole('button', { name: 'Save & Print' }) as HTMLButtonElement).disabled).toBe(false));
@@ -856,7 +765,7 @@ describe('saving failures that need a clear next step', () => {
   });
 });
 
-describe('the advance and the request key of a new order', () => {
+describe('the request key of a new order', () => {
   type RequestKey = ReturnType<typeof crypto.randomUUID>;
   let uuidSpy: { mockRestore: () => void } | null = null;
   // Until issueFreshKeys is called every key is 'stale-key', so a test can see whether a key was replaced.
@@ -873,7 +782,7 @@ describe('the advance and the request key of a new order', () => {
     uuidSpy = null;
   });
 
-  it('keeps the request key from sign-in when nothing about the payment is changed before saving', async () => {
+  it('keeps the request key from sign-in when nothing about the bill is changed before saving', async () => {
     stubRequestKeys();
     await signIn();
     await startOrder();
@@ -882,70 +791,19 @@ describe('the advance and the request key of a new order', () => {
     expect(api.saveCounterOrder.mock.calls[0][0].idempotencyKey).toBe('stale-key');
   });
 
-  it('issues a new request key when the advance changes before any save', async () => {
+  it('starts the next order with a new request key after a successful save', async () => {
     stubRequestKeys();
     await signIn();
     await startOrder();
     issueFreshKeys();
-    fireEvent.change(advanceInput(), { target: { value: '5' } });
-    saveNow();
-    await waitFor(() => expect(api.saveCounterOrder).toHaveBeenCalledTimes(1));
-    expect(api.saveCounterOrder.mock.calls[0][0].idempotencyKey).not.toBe('stale-key');
-  });
-
-  it('issues a new request key when the method changes before any save', async () => {
-    stubRequestKeys();
-    await signIn();
-    await startOrder();
-    issueFreshKeys();
-    fireEvent.change(advanceInput(), { target: { value: '5' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Card' }));
-    saveNow();
-    await waitFor(() => expect(api.saveCounterOrder).toHaveBeenCalledTimes(1));
-    expect(api.saveCounterOrder.mock.calls[0][0].payment).toEqual({ amountMinor: 500, method: 'card' });
-    expect(api.saveCounterOrder.mock.calls[0][0].idempotencyKey).not.toBe('stale-key');
-  });
-
-  it('keeps the request key after a failed save, so a changed advance is sent with the same key and reported as possibly saved', async () => {
-    stubRequestKeys();
-    await signIn();
-    await startOrder();
-    issueFreshKeys();
-    fireEvent.change(advanceInput(), { target: { value: '5' } });
-    api.saveCounterOrder.mockRejectedValueOnce(new Error('This request key was already used for a different order draft.'));
-    saveNow();
-    expect((await screen.findByRole('alert')).textContent).toBe(SAVED_BUT_QUIET);
-    fireEvent.change(advanceInput(), { target: { value: '6' } });
-    api.saveCounterOrder.mockRejectedValueOnce(new Error('This request key was already used for a different order draft.'));
-    saveNow();
-    await waitFor(() => expect(api.saveCounterOrder).toHaveBeenCalledTimes(2));
-    await waitFor(() => expect(screen.getByRole('alert').textContent).toBe(SAVED_BUT_QUIET));
-    const [first, second] = api.saveCounterOrder.mock.calls.map(call => call[0]);
-    expect(second.idempotencyKey).toBe(first.idempotencyKey);
-    expect(first.payment).toEqual({ amountMinor: 500, method: 'cash' });
-    expect(second.payment).toEqual({ amountMinor: 600, method: 'cash' });
-  });
-
-  it('clears the advance and the method after a successful save, and starts the next order with no advance', async () => {
-    stubRequestKeys();
-    await signIn();
-    await startOrder();
-    issueFreshKeys();
-    fireEvent.change(advanceInput(), { target: { value: '5' } });
-    fireEvent.click(screen.getByRole('button', { name: 'UPI' }));
     saveNow();
     await screen.findByText(/Order SL-1 saved/);
     nav('New order');
-    await screen.findByLabelText('Garments');
-    expect(advanceInput().value).toBe('');
-    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Asha Rao' } });
+    fireEvent.change(await screen.findByLabelText('Name'), { target: { value: 'Asha Rao' } });
     fireEvent.click(screen.getByRole('button', { name: 'Add Shirt Wash' }));
     await waitFor(() => expect(saveButton().disabled).toBe(false));
-    expect(advanceInput().value).toBe('');
-    expect(screen.queryByRole('group', { name: 'Payment method' })).toBeNull();
     saveNow();
     await waitFor(() => expect(api.saveCounterOrder).toHaveBeenCalledTimes(2));
-    expect(api.saveCounterOrder.mock.calls[1][0]).not.toHaveProperty('payment');
     expect(api.saveCounterOrder.mock.calls[1][0].idempotencyKey).not.toBe(api.saveCounterOrder.mock.calls[0][0].idempotencyKey);
   });
 });
@@ -959,10 +817,10 @@ describe('quotes that arrive late', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Add Shirt Wash' }));
     await waitFor(() => expect(api.quoteCounterOrder).toHaveBeenCalledTimes(1));
     fireEvent.click(screen.getByRole('button', { name: 'Add Shirt Wash' }));
-    await waitFor(() => expect(screen.getByText('Amount to collect').nextSibling?.textContent).toBe('₹40.00'));
+    await waitFor(() => expect(screen.getByText('Total').nextSibling?.textContent).toBe('₹40.00'));
     late(quoteFor({ customer: { name: 'Rita Joshi', phone: '' }, items: [{ garmentId: 'shirt', serviceId: 'wash-iron', quantity: 1 }] }));
     await new Promise(resolve => setTimeout(resolve, 20));
-    expect(screen.getByText('Amount to collect').nextSibling?.textContent).toBe('₹40.00');
+    expect(screen.getByText('Total').nextSibling?.textContent).toBe('₹40.00');
   });
 });
 

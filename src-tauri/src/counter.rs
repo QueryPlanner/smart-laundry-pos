@@ -3495,21 +3495,16 @@ fn bill_document(
 }
 
 /// The bill of an order that has not been saved yet, laid out as it would print. Nothing is stored:
-/// the order number is a placeholder and the advance is only shown, never recorded.
+/// the order number is a placeholder and nothing has been paid yet.
 pub async fn preview_draft_bill(
     db: &DatabaseState,
     session: &CounterSession,
     input: &OrderInput,
-    advance_minor: Option<i64>,
 ) -> Result<crate::printing::BillPreview, String> {
     let _ = actor(session)?;
     let pool = db.writer_pool()?;
     let now = Utc::now();
     let quote = quote_at(pool, input, now).await?;
-    let paid = advance_minor.unwrap_or(0);
-    if !(0..=quote.total_minor).contains(&paid) {
-        return Err("The advance cannot be more than the amount to collect.".into());
-    }
     let phone = normalize_phone(&input.customer.phone)?;
     let mut tx = pool.begin().await.map_err(db_err)?;
     let header = crate::shop_settings::load_for_order(&mut tx)
@@ -3523,7 +3518,7 @@ pub async fn preview_draft_bill(
         &quote,
         input.customer.name.trim(),
         &phone,
-        paid,
+        0,
     )?;
     crate::printing::preview_bill(&bill).map_err(|e| e.to_string())
 }
@@ -4404,10 +4399,10 @@ mod counter_tests {
                 .await
                 .unwrap();
 
-            let preview = preview_draft_bill(&db, &staff, &order_input(2), Some(1000))
+            let preview = preview_draft_bill(&db, &staff, &order_input(2))
                 .await
                 .unwrap();
-            // A5 landscape, one page, with the customer, the placeholder bill number and the advance.
+            // A5 landscape, one page, with the customer, the placeholder bill number and nothing paid.
             assert!(
                 (preview.width_pt - 595.28).abs() < 0.1 && (preview.height_pt - 419.53).abs() < 0.1
             );
@@ -4419,47 +4414,24 @@ mod counter_tests {
             );
             assert!(text.contains("NOT SAVED YET"), "{text}");
             assert!(
-                text.contains("Advance paid") && text.contains("\u{20b9}10.00"),
+                text.contains("Paid so far") && text.contains("\u{20b9}0.00"),
                 "{text}"
             );
             assert!(!preview.pages[0].rules.is_empty());
             let line = &preview.pages[0].lines[0];
             assert!(line.size_pt > 0.0 && line.x_pt >= 0.0 && line.y_pt >= 0.0);
 
-            // No advance means nothing paid; the advance cannot exceed what is due or be negative.
-            let none = preview_draft_bill(&db, &staff, &order_input(2), None)
-                .await
-                .unwrap();
-            // Exactly as printed: with a balance left, the money line is the advance, here nothing.
-            let none_text = preview_text(&none).join("\n");
-            assert!(
-                none_text.contains("Advance paid") && none_text.contains("\u{20b9}0.00"),
-                "{none_text}"
-            );
-            assert!(
-                preview_draft_bill(&db, &staff, &order_input(1), Some(99_999_999))
-                    .await
-                    .unwrap_err()
-                    .contains("advance cannot be more")
-            );
-            assert!(preview_draft_bill(&db, &staff, &order_input(1), Some(-1))
-                .await
-                .unwrap_err()
-                .contains("advance cannot be more"));
-
             // The same checks as a real quote: no customer name, no lines, an unknown rate.
             let mut nameless = order_input(1);
             nameless.customer.name = " ".into();
-            assert!(preview_draft_bill(&db, &staff, &nameless, None)
-                .await
-                .is_err());
+            assert!(preview_draft_bill(&db, &staff, &nameless).await.is_err());
             let mut empty = order_input(1);
             empty.items.clear();
-            assert!(preview_draft_bill(&db, &staff, &empty, None).await.is_err());
+            assert!(preview_draft_bill(&db, &staff, &empty).await.is_err());
 
             // Previewing needs a signed-in user and stores nothing.
             assert!(
-                preview_draft_bill(&db, &CounterSession::default(), &order_input(1), None)
+                preview_draft_bill(&db, &CounterSession::default(), &order_input(1))
                     .await
                     .is_err()
             );
@@ -4493,7 +4465,7 @@ mod counter_tests {
                 .unwrap();
             let text = preview_text(&first).join("\n");
             assert!(text.contains(&saved.order_number), "{text}");
-            assert!(text.contains("Advance paid"), "{text}");
+            assert!(text.contains("Paid so far"), "{text}");
 
             // After the balance is paid the same preview says Paid, as a reprint would.
             record_payment(
@@ -4514,7 +4486,7 @@ mod counter_tests {
                 .unwrap();
             let text = preview_text(&settled).join("\n");
             assert!(
-                !text.contains("Advance paid") && text.contains("Paid"),
+                !text.contains("Paid so far") && text.contains("Paid"),
                 "{text}"
             );
 
@@ -4990,7 +4962,7 @@ mod counter_tests {
             assert_eq!(stored, ("percentage".to_string(), 10.0));
 
             // The preview of an order still being taken shows the extra discount too.
-            let draft = preview_draft_bill(&db, &staff, &with(Some(300)), None)
+            let draft = preview_draft_bill(&db, &staff, &with(Some(300)))
                 .await
                 .unwrap();
             assert!(preview_text(&draft)

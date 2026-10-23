@@ -244,61 +244,50 @@ describe('opening an order from another section', () => {
   });
 });
 
-describe('the unsaved-order guard on every section', () => {
+describe('the order being taken is kept while other pages are open', () => {
   const destinations = ['Orders / Pickup', 'Print queue', 'Dashboard', 'Sales', 'Customers', 'Expenses', 'Inventory', 'Machines'];
+  const name = () => (screen.getByLabelText('Name') as HTMLInputElement).value;
+  const newOrderBadge = () => navigation().getByRole('button', { name: 'New order' }).querySelector('.counter-draft-dot');
 
-  it.each(destinations)('asks before %s replaces an order being taken, and Keep editing stays put', async name => {
+  it.each(destinations)('goes to %s at once and finds the draft unchanged on returning', async destination => {
     await signedInAs(staff);
     startDraft();
-    go(name);
-    expect(draftDialog()?.textContent).toContain('You have an unsaved order. Discard it?');
-    fireEvent.click(screen.getByRole('button', { name: 'Keep editing' }));
+    go(destination);
     expect(draftDialog()).toBeNull();
-    expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('Rita Joshi');
-  });
-
-  it.each(['Dashboard', 'Sales', 'Customers', 'Expenses', 'Machines'])('goes to %s after the draft is discarded', async name => {
-    await signedInAs(staff);
-    startDraft();
-    go(name);
-    fireEvent.click(screen.getByRole('button', { name: 'Discard order' }));
-    expect(await screen.findByRole('heading', { name: `${name} page` })).toBeTruthy();
-    expect(draftDialog()).toBeNull();
+    expect(newOrderBadge()?.textContent).toBe('in progress');
     go('New order');
-    expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('');
+    expect(await screen.findByLabelText('Garments')).toBeTruthy();
+    expect(name()).toBe('Rita Joshi');
+    expect(newOrderBadge()).toBeNull();
   });
 
-  it('guards the administrator sections too', async () => {
+  it('keeps it across the administrator sections too', async () => {
     await signedInAs(admin);
     startDraft();
     go('Shop settings');
-    expect(draftDialog()).not.toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: 'Keep editing' }));
     go('Admin');
-    expect(draftDialog()).not.toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: 'Discard order' }));
     expect(await screen.findByText('Rates, staff & printers')).toBeTruthy();
+    go('New order');
+    expect(name()).toBe('Rita Joshi');
   });
 
-  it('moves on at once when there is no draft, and does nothing for New order while already on it', async () => {
+  it('shows no badge without a draft, and does nothing for New order while already on it', async () => {
     await signedInAs(staff);
     go('New order');
-    expect(draftDialog()).toBeNull();
     go('Sales');
-    expect(draftDialog()).toBeNull();
     expect(await screen.findByRole('heading', { name: 'Sales page' })).toBeTruthy();
+    expect(newOrderBadge()).toBeNull();
     go('New order');
     expect(await screen.findByLabelText('Garments')).toBeTruthy();
   });
 
-  it('still guards Lock, and a failed lock keeps the draft', async () => {
+  it('keeps the draft across Lock and the next sign-in, and when locking fails', async () => {
     await signedInAs(staff);
     startDraft();
-    api.lockCounter.mockRejectedValue(new Error('session store unavailable'));
+    api.lockCounter.mockRejectedValueOnce(new Error('session store unavailable'));
     fireEvent.click(screen.getByRole('button', { name: /Lock/ }));
-    fireEvent.click(screen.getByRole('button', { name: 'Discard order' }));
     expect((await screen.findByRole('alert')).textContent).toContain('could not be locked');
-    expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('Rita Joshi');
+    expect(name()).toBe('Rita Joshi');
   });
 
   it('refreshes the print jobs when the queue opens', async () => {
@@ -385,19 +374,17 @@ describe('the Back button', () => {
     expect(await screen.findByRole('heading', { name: 'Machines page' })).toBeTruthy();
   });
 
-  it('asks before leaving an order that is being taken, then goes back or stays', async () => {
+  it('goes back from an order being taken without asking, and keeps it', async () => {
     await signedInAs(staff);
     go('Customers');
     go('New order');
     await screen.findByLabelText('Garments');
     startDraft();
     fireEvent.click(back() as HTMLElement);
-    expect(draftDialog()).not.toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: 'Keep editing' }));
-    expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('Rita Joshi');
-    fireEvent.click(back() as HTMLElement);
-    fireEvent.click(screen.getByRole('button', { name: 'Discard order' }));
+    expect(draftDialog()).toBeNull();
     expect(await screen.findByRole('heading', { name: 'Customers page' })).toBeTruthy();
+    go('New order');
+    expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('Rita Joshi');
   });
 
   it('reloads the print queue when Back returns to it', async () => {

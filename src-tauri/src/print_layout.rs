@@ -286,10 +286,10 @@ pub fn bill_footer_lines(header: &BillHeader) -> Vec<String> {
     }
 }
 
-/// Label for the amount collected so far. While a balance remains, that amount is an advance.
+/// Label for the amount collected so far. While a balance remains, more is still to come.
 pub fn paid_label(balance_minor: i64) -> &'static str {
     if balance_minor > 0 {
-        "Advance paid"
+        "Paid so far"
     } else {
         "Paid"
     }
@@ -1723,14 +1723,14 @@ mod tests {
         partly_paid.balance_minor = 2500;
         let pages = layout_bill(&partly_paid, A4, &FakeMeter).unwrap();
         let lines = texts(&pages[0]);
-        assert!(lines.contains(&"Advance paid: \u{20b9}25.00"), "{lines:?}");
+        assert!(lines.contains(&"Paid so far: \u{20b9}25.00"), "{lines:?}");
         assert!(!lines.contains(&"Paid: \u{20b9}25.00"), "{lines:?}");
         assert!(lines.contains(&"Balance due: \u{20b9}25.00"), "{lines:?}");
 
         let pages = layout_bill(&bill(1), A4, &FakeMeter).unwrap();
         let lines = texts(&pages[0]);
         assert!(lines.contains(&"Paid: \u{20b9}50.00"), "{lines:?}");
-        assert!(!lines.iter().any(|l| l.contains("Advance")), "{lines:?}");
+        assert!(!lines.iter().any(|l| l.contains("so far")), "{lines:?}");
     }
 
     const BILL_SMALL_LANDSCAPE: PageSpec = PageSpec {

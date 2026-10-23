@@ -1975,7 +1975,7 @@ mod tests {
     #[test]
     fn bill_labels_the_payment_as_an_advance_only_while_a_balance_remains() {
         let partly = render_lines(&bill()).concat();
-        assert!(partly.iter().any(|l| l == "Advance paid: \u{20b9}10.00"));
+        assert!(partly.iter().any(|l| l == "Paid so far: \u{20b9}10.00"));
         assert!(!partly.iter().any(|l| l == "Paid: \u{20b9}10.00"));
         let PrintDocument::Bill(mut settled) = bill() else {
             unreachable!()
@@ -1984,7 +1984,7 @@ mod tests {
         settled.balance_minor = 0;
         let settled = render_lines(&PrintDocument::Bill(settled)).concat();
         assert!(settled.iter().any(|l| l == "Paid: \u{20b9}45.00"));
-        assert!(!settled.iter().any(|l| l.contains("Advance")));
+        assert!(!settled.iter().any(|l| l.contains("so far")));
     }
 
     #[test]

@@ -1,22 +1,14 @@
-import { useState } from 'react';
-import { CalendarClock, Minus, Plus, Trash2 } from 'lucide-react';
+import { useRef, useState } from 'react';
+import { Minus, Plus, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import type { CounterCatalogue, CounterPaymentMethod, CounterQuote } from '@/lib/localFirst/counter';
+import type { CounterCatalogue, CounterQuote } from '@/lib/localFirst/counter';
 import { formatPercentBp } from '@/lib/localFirst/discount';
 import { DISCOUNT_PERCENTS, discountProblem, percentOff } from '@/lib/localFirst/manualDiscount';
-import { advanceProblem, halfOf, parsePaymentAmountMinor, rupeesText } from '@/lib/localFirst/payment';
+import { parsePaymentAmountMinor, rupeesText } from '@/lib/localFirst/payment';
 
 const money = (minor: number) => new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR' }).format(minor / 100);
-const promiseFormat = new Intl.DateTimeFormat('en-IN', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Asia/Kolkata' });
-const METHODS: Array<{ value: CounterPaymentMethod; label: string }> = [
-  { value: 'cash', label: 'Cash' },
-  { value: 'upi', label: 'UPI' },
-  { value: 'card', label: 'Card' },
-  { value: 'bank_transfer', label: 'Bank transfer' },
-  { value: 'other', label: 'Other' },
-];
 
 interface OrderSummaryProps {
   catalogue: CounterCatalogue | null;
@@ -25,14 +17,9 @@ interface OrderSummaryProps {
   /** The price request was rejected (as opposed to still being calculated). */
   quoteFailed: boolean;
   customer: { name: string; phone: string };
-  /** The advance the customer pays now, typed in rupees. An empty string means nothing is paid now. */
-  advance: string;
-  onAdvance: (text: string) => void;
   /** An extra discount for this bill, typed in rupees. An empty string means none. */
   discount: string;
   onDiscount: (text: string) => void;
-  paymentMethod: CounterPaymentMethod;
-  onPaymentMethod: (method: CounterPaymentMethod) => void;
   onRemove: (garmentId: string, serviceId: string) => void;
   onQuantity: (garmentId: string, quantity: number, serviceId?: string) => void;
   /** Change the price of one line for this bill only; `undefined` restores the rate-card price. */
@@ -40,14 +27,18 @@ interface OrderSummaryProps {
   onSave: () => void;
   /** Show the bill on screen before saving. Stores nothing. */
   onPreview: () => void;
+  /** Throw the order being taken away, after the operator confirms. */
+  onClear: () => void;
   busy: boolean;
 }
 
 /**
  * Price of one piece for this bill. Anyone at the counter can change it; typing the rate-card price (or
  * clearing the box) puts the line back on the rate card. It keeps its own text so "12." can be typed.
+ * The box stays closed until asked for, so a long order fits without scrolling.
  */
 const PriceField = ({ label, chargedMinor, listMinor, onChange }: { label: string; chargedMinor: number; listMinor: number; onChange: (priceMinor: number | undefined) => void }) => {
+  const [open, setOpen] = useState(false);
   const [text, setText] = useState(rupeesText(chargedMinor));
   const commit = (value: string) => {
     setText(value);
@@ -55,18 +46,23 @@ const PriceField = ({ label, chargedMinor, listMinor, onChange }: { label: strin
     if (value.trim() === '' || minor === null) return;
     onChange(minor === listMinor ? undefined : minor);
   };
+  if (!open) return <button type="button" className="counter-link counter-line-price-toggle" onClick={() => { setText(rupeesText(chargedMinor)); setOpen(true); }}>{chargedMinor !== listMinor ? `Rate card ₹${rupeesText(listMinor)} · change` : 'Change price'}</button>;
   return (
     <label className="counter-line-price">
       <span>₹ each</span>
-      <input aria-label={label} inputMode="decimal" value={text} onChange={event => commit(event.target.value)} onBlur={() => setText(rupeesText(chargedMinor))} />
+      <input aria-label={label} inputMode="decimal" autoFocus value={text} onChange={event => commit(event.target.value)} onBlur={() => { setText(rupeesText(chargedMinor)); setOpen(false); }} />
       {chargedMinor !== listMinor && <small>Rate card ₹{rupeesText(listMinor)}</small>}
     </label>
   );
 };
 
-/** Summary of the order being taken. The customer may pay any advance now, including nothing; the rest is due at pickup. */
-export const OrderSummary = ({ catalogue, lines, quote, quoteFailed, customer, advance, onAdvance, discount, onDiscount, paymentMethod, onPaymentMethod, onRemove, onQuantity, onPrice, onSave, onPreview, busy }: OrderSummaryProps) => {
+/** Summary of the order being taken. Nothing is paid now: the customer pays when collecting. */
+export const OrderSummary = ({ catalogue, lines, quote, quoteFailed, customer, discount, onDiscount, onRemove, onQuantity, onPrice, onSave, onPreview, onClear, busy }: OrderSummaryProps) => {
   const items = Object.entries(lines).filter(([, quantity]) => quantity > 0);
+  // The quote is worked out again after every change. The price box keeps to the last one meanwhile, so
+  // it stays open (and keeps the typing) instead of vanishing until the new price arrives.
+  const lastQuote = useRef(quote);
+  if (quote) lastQuote.current = quote;
   // The automatic discount (a percentage rule) and the extra one given by hand are shown on separate lines.
   const manualMinor = quote?.manualDiscountMinor ?? 0;
   const automaticMinor = quote ? quote.discountMinor - manualMinor : 0;
@@ -74,16 +70,9 @@ export const OrderSummary = ({ catalogue, lines, quote, quoteFailed, customer, a
   const [discountOpen, setDiscountOpen] = useState(false);
   const showDiscount = discountOpen || discount.trim() !== '';
   const extraProblem = discountProblem(discount);
-  const nothingToPay = quote !== null && quote.totalMinor === 0;
+  const [confirmClear, setConfirmClear] = useState(false);
   // Never show 0.00 while there is no price: that reads as "free".
   const amount = (pick: (q: CounterQuote) => number) => (quote ? money(pick(quote)) : '—');
-  const advanceError = quote && !nothingToPay ? advanceProblem(advance, quote.totalMinor) : null;
-  const advanceMinor = parsePaymentAmountMinor(advance);
-  const balanceText = quote && !nothingToPay && advanceError === null ? `Balance to pay at pickup ${money(quote.totalMinor - advanceMinor)}` : null;
-  const methodsShown = !nothingToPay && advanceMinor !== null && advanceMinor > 0;
-  const fillAdvance = (amountOf: (totalMinor: number) => number) => {
-    if (quote) onAdvance(rupeesText(amountOf(quote.totalMinor)));
-  };
   const saveBlocker = (): string => {
     if (!customer.name.trim()) return 'Enter the customer name';
     if (items.length === 0) return 'Add at least one garment';
@@ -91,7 +80,7 @@ export const OrderSummary = ({ catalogue, lines, quote, quoteFailed, customer, a
     return '';
   };
   const blocker = saveBlocker();
-  const cannotSave = busy || !quote || items.length === 0 || !customer.name.trim() || advanceError !== null || extraProblem !== null;
+  const cannotSave = busy || !quote || items.length === 0 || !customer.name.trim() || extraProblem !== null;
   return (
     <section className="counter-summary counter-panel" aria-label="Order summary">
       <div className="counter-summary-head">
@@ -109,26 +98,20 @@ export const OrderSummary = ({ catalogue, lines, quote, quoteFailed, customer, a
           const garment = catalogue?.garments.find(x => x.id === garmentId);
           const service = catalogue?.services.find(x => x.id === serviceId);
           const line = quote?.lines.find(x => x.garmentId === garmentId && x.serviceId === serviceId);
+          const priced = lastQuote.current?.lines.find(x => x.garmentId === garmentId && x.serviceId === serviceId);
           return (
             <div className="counter-summary-line" key={key}>
-              <div><strong>{garment?.nameEn}</strong><span>{service?.name} · {line ? money(line.lineTotalMinor) : 'Quote…'}</span></div>
+              <div><strong>{garment?.nameEn}</strong><span>{service?.name} · {line ? `${quantity} × ${money(line.unitPriceMinor)} = ${money(line.lineTotalMinor)}` : 'Quote…'}</span></div>
               <div className="counter-summary-controls">
                 <button aria-label={`Remove ${garment?.nameEn}`} onClick={() => onRemove(garmentId, serviceId)}><Trash2 /></button>
                 <button aria-label={`Decrease ${garment?.nameEn}`} onClick={() => onQuantity(garmentId, quantity - 1, serviceId)}><Minus /></button>
                 <input aria-label={`${garment?.nameEn} summary quantity`} value={quantity} type="number" min="0" onChange={event => onQuantity(garmentId, Math.max(0, Math.floor(Number(event.target.value) || 0)), serviceId)} />
                 <button aria-label={`Increase ${garment?.nameEn}`} onClick={() => onQuantity(garmentId, quantity + 1, serviceId)}><Plus /></button>
               </div>
-              {line && <PriceField key={`${key}|${line.listPriceMinor}`} label={`${garment?.nameEn} price for this bill`} chargedMinor={line.unitPriceMinor} listMinor={line.listPriceMinor} onChange={price => onPrice(garmentId, serviceId, price)} />}
+              {priced && <PriceField key={`${key}|${priced.listPriceMinor}`} label={`${garment?.nameEn} price for this bill`} chargedMinor={priced.unitPriceMinor} listMinor={priced.listPriceMinor} onChange={price => onPrice(garmentId, serviceId, price)} />}
             </div>
           );
         })}</div>}
-      <div className="counter-promise">
-        <CalendarClock />
-        <div>
-          <strong>Ready by</strong>
-          <span>{quote ? promiseFormat.format(new Date(quote.promisedAt)) : 'Saved date + 2 days, 5:00 PM IST'}</span>
-        </div>
-      </div>
       <div className="counter-discount">
         {showDiscount ? (
           <>
@@ -150,31 +133,18 @@ export const OrderSummary = ({ catalogue, lines, quote, quoteFailed, customer, a
         <div><span>Subtotal</span><strong>{amount(q => q.subtotalMinor)}</strong></div>
         {automaticMinor > 0 && quote && <div><span>Discount ({formatPercentBp(quote.discountPercentBp)}%)</span><strong>-{money(automaticMinor)}</strong></div>}
         {manualMinor > 0 && <div><span>Extra discount</span><strong>-{money(manualMinor)}</strong></div>}
-        <div className="balance"><span>Amount to collect</span><strong>{amount(q => q.totalMinor)}</strong></div>
-      </div>
-      <div className="counter-payment">
-        {nothingToPay
-          ? <p>No payment due</p>
-          : <>
-            <p>Any amount can be paid now. The rest is due at pickup.</p>
-            <Label htmlFor="advance-received">Advance received now</Label>
-            <Input id="advance-received" inputMode="decimal" placeholder="0.00" value={advance} onChange={event => onAdvance(event.target.value)} />
-            <div className="flex flex-wrap gap-2" role="group" aria-label="Quick amounts">
-              <button type="button" className="counter-touch" onClick={() => onAdvance('')}>Nothing now</button>
-              <button type="button" className="counter-touch" disabled={!quote} onClick={() => fillAdvance(halfOf)}>Half</button>
-              <button type="button" className="counter-touch" disabled={!quote} onClick={() => fillAdvance(total => total)}>Full</button>
-            </div>
-            {advanceError && <p role="alert" className="text-sm font-semibold text-red-700">{advanceError}</p>}
-            {balanceText && <p>{balanceText}</p>}
-            {methodsShown && <div className="flex flex-wrap gap-2" role="group" aria-label="Payment method">
-              {METHODS.map(method => <button key={method.value} type="button" className="counter-touch" aria-pressed={paymentMethod === method.value} onClick={() => onPaymentMethod(method.value)}>{method.label}</button>)}
-            </div>}
-          </>}
+        <div className="balance"><span>Total</span><strong>{amount(q => q.totalMinor)}</strong></div>
       </div>
       <Button className="counter-save" disabled={cannotSave} onClick={onSave}>{busy ? 'Saving and dispatching…' : 'Save & Print'}</Button>
       <Button variant="outline" className="counter-touch counter-preview-button" disabled={cannotSave} onClick={onPreview}>Preview bill</Button>
       {blocker && <p className="counter-save-reason">{blocker}</p>}
-      <p className="counter-summary-note">Saves the order and independently dispatches the customer bill and garment tags.</p>
+      {(items.length > 0 || customer.name.trim() !== '' || customer.phone.trim() !== '') && (confirmClear
+        ? <div className="counter-clear-draft" role="group" aria-label="Clear this order">
+          <span>Throw this order away?</span>
+          <Button variant="destructive" size="sm" onClick={() => { setConfirmClear(false); setDiscountOpen(false); onClear(); }}>Yes, clear it</Button>
+          <Button variant="outline" size="sm" onClick={() => setConfirmClear(false)}>No</Button>
+        </div>
+        : <button type="button" className="counter-link" onClick={() => setConfirmClear(true)}>Clear order</button>)}
     </section>
   );
 };

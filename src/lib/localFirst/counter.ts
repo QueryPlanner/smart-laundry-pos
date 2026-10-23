@@ -185,8 +185,8 @@ export interface BillPreviewPage { rules: BillPreviewRule[]; lines: BillPreviewL
 /** A bill laid out for the screen with the same layout the printer uses (text widths are approximate). */
 export interface BillPreviewData { widthPt: number; heightPt: number; pages: BillPreviewPage[] }
 /** The bill of an order still being taken, with the advance typed so far. Stores nothing. */
-export const previewCounterDraftBill = (input: CounterOrderInput, advanceMinor?: number): Promise<BillPreviewData> =>
-  call('counter_preview_draft_bill', { input, advanceMinor });
+export const previewCounterDraftBill = (input: CounterOrderInput): Promise<BillPreviewData> =>
+  call('counter_preview_draft_bill', { input });
 /** The bill of a saved order as a reprint would print it now. */
 export const previewCounterOrderBill = (orderId: string): Promise<BillPreviewData> => call('counter_preview_order_bill', { orderId });
 export const getOrderPieces = (orderId: string): Promise<CounterPiece[]> => call('counter_get_order_pieces', { orderId });
