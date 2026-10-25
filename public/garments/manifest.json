@@ -45,6 +45,7 @@
     {"key":"quilt","file":"quilt-transparent.png","labelEn":"Quilt / razai"},
     {"key":"table-cloth","file":"table-cloth-transparent.png","labelEn":"Table cloth"},
     {"key":"shawl","file":"shawl-transparent.png","labelEn":"Shawl"},
-    {"key":"baby-clothes","file":"baby-clothes-transparent.png","labelEn":"Baby clothes"}
+    {"key":"baby-clothes","file":"baby-clothes-transparent.png","labelEn":"Baby clothes"},
+    {"key":"apron","file":"apron-transparent.png","labelEn":"Apron"}
   ]
 }

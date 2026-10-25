@@ -38,6 +38,7 @@ export const GARMENT_PICTURES: GarmentPicture[] = [
   { key: 'dress', label: 'Dress / frock' },
   { key: 'uniform', label: 'School uniform' },
   { key: 'baby-clothes', label: 'Baby clothes' },
+  { key: 'apron', label: 'Apron' },
   { key: 'shoes', label: 'Shoes' },
   { key: 'bedsheet-single', label: 'Single bedsheet' },
   { key: 'bedsheet-double', label: 'Double bedsheet' },
