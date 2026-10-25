@@ -52,11 +52,17 @@ Admin > Staff. Type a name and a first PIN, press **Create staff**. Each person 
 
 ## Prices (Rate card)
 
-Admin > Rate card lists every garment with each service. There are five to start with: Iron, Wash only, Wash + Press, Dry Clean and Starch. **Wash only has no prices until you set them**: type a price for each garment you wash without pressing. Type the price in rupees in the Rate box and press **Save** on that row. When you type a first price for a combination that has none, **Available** is ticked for you; untick it if you do not want to sell it yet. Untick Available to stop selling a combination. A garment and service with no price cannot be sold. A rate cannot be more than Rs 10,000. A new price applies to orders taken after you save it; saved orders keep their old price. Shoes are priced per pair and can only be washed, so the other services stay switched off for shoes. Each price change is recorded with the old and new price.
+Admin > Rate card is one table: garments down the side and services across the top. There are five services to start with: Iron, Wash only, Wash + Press, Dry Clean and Starch. **Wash only has no prices until you set them**: type a price for each garment you wash without pressing.
 
-**Services** (the sections of the New order screen) are listed at the top of the Rate card. **Add service** adds one, for example "Steam press"; it shows on the counter once you give it a price on at least one garment. **Remove** takes a service off the counter: bills already saved keep it, and **Bring back** (or adding the same name again) returns it with its old prices. One service must always stay.
+Everything is changed in the table and saved together with the one **Save** button at the bottom, which says how many changes are waiting. **Undo changes** throws them away. Nothing reaches the counter until you press Save, and if anything is wrong (for example a price typed as `12,5`) Save stays off and the reason is shown.
 
-**New garment** adds a garment that is not in the list. Choose a **picture** for it from the pictures shown (shirts, sarees, churidar suits, sherwanis, uniforms, bedsheets, quilts, towels and more), or **No picture** to show its first letter. Then give it a price on each service it is sold with.
+- **Prices**: type the price in rupees, for example `150` or `12.50`. An empty box means the garment is not sold for that service. A rate cannot be more than Rs 10,000. A new price applies to orders taken after you save; saved orders keep their old price. Shoes are priced per pair and are never ironed, so their Iron and Starch boxes are switched off.
+- **Names**: type over a garment's or a service's name. Bills already saved keep the name they were printed with. A renamed garment no longer shows its Marathi name.
+- **Pictures**: tap a garment's picture to choose another one, or **No picture** to show its first letter. The pictures include shirts, sarees, churidar suits, sherwanis, uniforms, aprons, bedsheets, quilts and towels.
+- **Remove**: the button at the end of a garment's row, or under a service's name, takes it off the counter when you save (**Keep** changes your mind). Bills already saved keep it. Adding the same name again brings it back with its old prices; the names removed earlier are listed under the table. One garment and one service must always stay.
+- **New garment** and **New service** add a row or a column. A new garment opens its picture choice straight away. A new service shows on the counter once it has a price on at least one garment.
+
+Each change is recorded: every price with the old and new price, and every name, picture, removal and addition.
 
 ## Discounts
 

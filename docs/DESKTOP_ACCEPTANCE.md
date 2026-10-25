@@ -102,6 +102,7 @@ Do this on the real laptop with the real Canon and TSC, using an installer built
 - [ ] Create a staff account. Staff sees New order, Orders / Pickup, Print queue, Dashboard, Sales, Customers, Expenses, Inventory and Machines, but no Admin or Shop settings, and cannot reach rates, discounts, printers, staff, backups, restore, clear all orders, shop settings, or any Delete button.
 - [ ] Enter five wrong PINs for the staff account: it locks for five minutes and the message says so. Confirm it unlocks after five minutes, and that Activate or Reset PIN by the admin also unlocks it.
 - [ ] As admin, review every starter rate and replace them with the shop's real prices.
+- [ ] As admin, in Admin > Rate card change several prices, rename a garment, remove one, add a new garment with a picture and a new service, and press Save once: New order shows all of it, an older bill reprints with its old names, and a price typed as `12,5` keeps Save switched off.
 
 **Orders and bill**
 - [ ] Take an order with several garments and services including shoes (wash, dry clean). Confirm Iron is unavailable for shoes and the phone number is required in several spellings (`98765 43210`, `+91 98765 43210`).
