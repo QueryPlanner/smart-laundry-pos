@@ -165,6 +165,7 @@ where
             insights::counter_sales_orders,
             insights::counter_sales_transactions,
             insights::counter_sales_staff_options,
+            insights::counter_export_sales_csv,
             counter_restore_backup
         ])
 }
