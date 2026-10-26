@@ -8,7 +8,7 @@ Download the latest Windows, macOS or Linux installer at **https://laundry.lordp
 
 - **New order:** every garment is on screen at once; each card has buttons for the services it is priced for (Iron, Wash only, Wash + Press, Dry Clean, Starch) with their prices. Any user can change one line's price for one bill.
 - **Orders / Pickup, Print queue:** orders by day, hand-over in parts with any payment (the last items need the bill paid), bill preview and reprints, a customer's bills from their name, and trash (staff mark, admin approves).
-- **Dashboard, Sales, Customers, Expenses, Inventory, Machines.**
+- **Dashboard, Sales, Daily report (print or export to CSV), Customers, Expenses, Inventory, Machines.**
 - **Admin and Shop settings** (admins only): rate card, discounts, staff accounts, printers, backups.
 
 Documents: [docs/DESKTOP.md](docs/DESKTOP.md) (architecture and commands), [docs/OPERATIONS.md](docs/OPERATIONS.md) (owner's guide), [docs/PRINTING_WINDOWS.md](docs/PRINTING_WINDOWS.md), [docs/DESKTOP_ACCEPTANCE.md](docs/DESKTOP_ACCEPTANCE.md) (what is and is not verified).

@@ -95,6 +95,14 @@ It shows six cards (orders, billed, discounts, collected, expenses, profit), a g
 
 Shop > **Customers** lists everyone who has left laundry, with their orders, total billed and last order; type in the search box to find one. **Add customer** takes a name and a 10-digit mobile number (spaces, dashes and +91 are accepted); address, alternate mobile, customer type and notes are optional. Opening a customer shows their details and their recent orders; click one to open it in Orders / Pickup. The same person is one customer if the mobile number and the name both match, so two people can share a number. A customer who has an automatic discount is marked, and only the admin can change that customer's name or mobile number (so a discount cannot be handed to someone else). The admin can **Delete** a customer who has no orders; a customer with orders cannot be deleted, and the program says so. The customer's own discount rule is deleted with them and recorded in the audit.
 
+## Daily report
+
+**Daily report** (staff and admin) lists every payment taken on the chosen days, one row each: order date, payment date, bill number, customer name, address (from the customer's record), mobile number, amount, payment mode and who took it. A cancelled payment shows as a red refund row with a minus amount. The cards above add up what was received, refunded and kept, and how much came in by each mode.
+
+- Choose **From** and **To** (both days included; **Today** goes back to today), a **Payment mode**, who took the payment (**Taken by**), or search a customer name, phone or bill number.
+- **Print** prints the table and totals without the menus.
+- **Export to Excel (CSV)** asks where to save a `.csv` file (for example `sales-2026-10-26.csv`) that opens in Excel. It holds every row, even when the screen shows only the newest 2,000. A refund is a negative amount, so adding the Amount column gives the money kept.
+
 ## Expenses
 
 Shop > **Expenses** lists what you spent, with a total for the dates and category you choose (there are quick choices for **This month** and **All time**). **Add expense** takes a date, category, amount, how it was paid and optional description and notes. Dates are shop dates and both the first and last day of a range are included. Only the admin can **Delete** an expense. Deleting an expense changes the profit figure for the day it was dated, including a past day, and the delete box says so before asking for a reason.

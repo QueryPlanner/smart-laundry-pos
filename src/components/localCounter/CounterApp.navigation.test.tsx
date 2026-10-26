@@ -31,6 +31,7 @@ const stand = vi.hoisted(() => (name: string) => (props: SectionProps) => {
 });
 vi.mock('./DashboardPage', () => ({ DashboardPage: stand('Dashboard') }));
 vi.mock('./SalesPage', () => ({ SalesPage: stand('Sales') }));
+vi.mock('./DailyReportPage', () => ({ DailyReportPage: stand('Daily report') }));
 vi.mock('./CustomersPage', () => ({ CustomersPage: stand('Customers') }));
 vi.mock('./ExpensesPage', () => ({ ExpensesPage: stand('Expenses') }));
 vi.mock('./InventoryPage', () => ({ InventoryPage: stand('Inventory') }));
@@ -83,7 +84,7 @@ describe('navigation registry', () => {
   it('lists the groups in the order the shell shows them', () => {
     expect(NAV_GROUPS.map(group => group.label)).toEqual(['Counter', 'Insights', 'Shop', 'Admin']);
     expect(NAV_GROUPS.flatMap(group => group.sections.map(section => section.label))).toEqual([
-      'New order', 'Orders / Pickup', 'Print queue', 'Dashboard', 'Sales', 'Customers', 'Expenses', 'Inventory', 'Machines', 'Admin', 'Shop settings', 'Trash',
+      'New order', 'Orders / Pickup', 'Print queue', 'Dashboard', 'Sales', 'Daily report', 'Customers', 'Expenses', 'Inventory', 'Machines', 'Admin', 'Shop settings', 'Trash',
     ]);
   });
 
@@ -95,6 +96,7 @@ describe('navigation registry', () => {
     expect(canOpen('trash', 'staff')).toBe(false);
     expect(canOpen('trash', 'admin')).toBe(true);
     expect(canOpen('sales', 'staff')).toBe(true);
+    expect(canOpen('report', 'staff')).toBe(true);
     expect(canOpen('settings', 'admin')).toBe(true);
   });
 });
@@ -102,7 +104,7 @@ describe('navigation registry', () => {
 describe('role-filtered navigation', () => {
   it('shows staff the counter, insights and shop sections but never Admin or Shop settings', async () => {
     await signedInAs(staff);
-    expect(labels()).toEqual(['New order', 'Orders / Pickup', 'Print queue', 'Dashboard', 'Sales', 'Customers', 'Expenses', 'Inventory', 'Machines']);
+    expect(labels()).toEqual(['New order', 'Orders / Pickup', 'Print queue', 'Dashboard', 'Sales', 'Daily report', 'Customers', 'Expenses', 'Inventory', 'Machines']);
     expect(screen.queryByRole('button', { name: 'Admin' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Shop settings' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Trash' })).toBeNull();
@@ -111,7 +113,7 @@ describe('role-filtered navigation', () => {
 
   it('shows administrators every section in four labelled groups', async () => {
     await signedInAs(admin);
-    expect(labels()).toHaveLength(12);
+    expect(labels()).toHaveLength(13);
     expect(navigation().getByRole('button', { name: 'Admin' })).toBeTruthy();
     expect(navigation().getByRole('button', { name: 'Shop settings' })).toBeTruthy();
     for (const group of ['Counter', 'Insights', 'Shop', 'Admin']) expect(navigation().getByRole('group', { name: group })).toBeTruthy();
@@ -139,7 +141,7 @@ describe('role-filtered navigation', () => {
 
 describe('section pages', () => {
   const pages: Array<[nav: string, heading: string]> = [
-    ['Dashboard', 'Dashboard page'], ['Sales', 'Sales page'], ['Customers', 'Customers page'], ['Expenses', 'Expenses page'],
+    ['Dashboard', 'Dashboard page'], ['Sales', 'Sales page'], ['Daily report', 'Daily report page'], ['Customers', 'Customers page'], ['Expenses', 'Expenses page'],
     ['Machines', 'Machines page'], ['Inventory', 'Inventory page'],
   ];
 
@@ -240,7 +242,7 @@ describe('opening an order from another section', () => {
 });
 
 describe('the order being taken is kept while other pages are open', () => {
-  const destinations = ['Orders / Pickup', 'Print queue', 'Dashboard', 'Sales', 'Customers', 'Expenses', 'Inventory', 'Machines'];
+  const destinations = ['Orders / Pickup', 'Print queue', 'Dashboard', 'Sales', 'Daily report', 'Customers', 'Expenses', 'Inventory', 'Machines'];
   const name = () => (screen.getByLabelText('Name') as HTMLInputElement).value;
   const newOrderBadge = () => navigation().getByRole('button', { name: 'New order' }).querySelector('.counter-draft-dot');
 
