@@ -6,8 +6,9 @@ import type { CounterCatalogue, CounterGarment, CounterRate, CounterService } fr
 const isForbidden = (garment: CounterGarment, service: CounterService) =>
   garment.billingUnit === 'pair' && (service.key === 'iron' || service.key === 'wash_iron');
 
+/** A garment is offered for a service only with a price above zero; no price or 0 means not sold. */
 const isSellable = (garment: CounterGarment, service: CounterService, rate: CounterRate | undefined) =>
-  !!rate?.available && !!rate.configured && !isForbidden(garment, service);
+  !!rate?.available && !!rate.configured && (rate.priceMinor ?? 0) > 0 && !isForbidden(garment, service);
 
 /** True when no active garment can be sold under any active service, for example before the owner has set any rate. */
 const nothingIsSellable = (catalogue: CounterCatalogue, services: CounterService[]) =>
@@ -41,7 +42,8 @@ const ALL = 'all';
  * example Iron, Wash only, Wash + Press, Dry Clean, Starch) as buttons along the bottom of its card, each
  * with its price. A section (one service) shows only the garments priced for it, each with that one
  * button. One tap adds one piece; a count with a minus button appears once something has been added, and
- * each section tab counts the pieces added in it. A service the garment has no price for is not shown.
+ * each section tab counts the pieces added in it. A service the garment has no price for (or a price of 0)
+ * is not shown, and a garment with nothing to sell is not shown at all.
  */
 export const GarmentGrid = ({ catalogue, lines, onAdd, onQuantity }: GarmentGridProps) => {
   const [section, setSection] = useState(ALL);
@@ -76,16 +78,15 @@ export const GarmentGrid = ({ catalogue, lines, onAdd, onQuantity }: GarmentGrid
           const rate = catalogue?.rates.find(r => r.garmentId === garment.id && r.serviceId === service.id);
           return isSellable(garment, service, rate) ? [{ service, rate: rate as CounterRate, quantity: lines[`${garment.id}|${service.id}`] || 0 }] : [];
         });
-        // Inside a section, a garment that is not sold there is left out rather than greyed out.
-        if (chosen && offered.length === 0) return null;
+        // A garment with nothing to sell (no price, or 0) is left out, in a section and under All.
+        if (offered.length === 0) return null;
         return (
-          <article className={`counter-garment ${offered.length > 0 ? '' : 'unavailable'}`} key={garment.id}>
+          <article className="counter-garment" key={garment.id}>
             <div className="counter-garment-picture">
               <GarmentPicture src={`/garments/${garment.imageKey || garment.key}-transparent.png`} label={garment.nameEn} />
             </div>
             <div className="counter-garment-name"><strong>{garment.nameEn}</strong><span lang="mr">{garment.nameMr}</span></div>
             <div className="counter-service-buttons" role="group" aria-label={`${garment.nameEn} services`}>
-              {offered.length === 0 && <p className="counter-garment-none">No price set</p>}
               {offered.map(({ service, rate, quantity }) => (
                 <div className={`counter-service-chip ${quantity > 0 ? 'selected' : ''}`} key={service.id}>
                   {quantity > 0 && (

@@ -79,6 +79,22 @@ describe('RateCard', () => {
     expect(props.onNotice).toHaveBeenCalledWith('Rate card saved. New orders use it now.');
   });
 
+  it('edits a built-in garment’s name and Marathi name, and a price of 0 hides it, all with one Save', async () => {
+    api.saveCounterRateCard.mockResolvedValue(catalogue);
+    setup();
+    expect(box('Marathi name of Shirt').value).toBe('शर्ट');
+    fireEvent.change(box('Name of garment Shirt'), { target: { value: 'Mens shirt' } });
+    fireEvent.change(box('Marathi name of Mens shirt'), { target: { value: 'पुरुष शर्ट' } });
+    fireEvent.change(box('Mens shirt Wash price'), { target: { value: '0' } });
+    // The name and Marathi name are one change to the garment; the price is the other.
+    expect(footer()).toContain('2 changes not saved');
+    fireEvent.click(button('Save'));
+    await waitFor(() => expect(api.saveCounterRateCard).toHaveBeenCalledOnce());
+    const changes = api.saveCounterRateCard.mock.calls[0][0];
+    expect(changes.garments).toEqual([{ id: 'shirt', name: 'Mens shirt', nameMr: 'पुरुष शर्ट' }]);
+    expect(changes.prices).toEqual([{ garmentId: 'shirt', serviceId: 'wash', priceMinor: null }]);
+  });
+
   it('changes the picture of a garment, and keeps a removed row with Keep', () => {
     setup();
     fireEvent.click(button('Picture of Shirt'));

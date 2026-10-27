@@ -86,12 +86,12 @@ describe('GarmentGrid', () => {
     expect(document.querySelector('.counter-garment-fallback')?.textContent).toBe('S');
   });
 
-  it('dims a garment that cannot be sold under any service, and says why', () => {
-    setup({}, { rates: catalogue.rates.filter(r => r.garmentId !== 'blank') });
-    expect(screen.getByRole('group', { name: 'Blank services' }).closest('article')?.className).toContain('unavailable');
-    expect(card('Blank').getByText('No price set')).toBeTruthy();
-    expect(card('Blank').queryAllByRole('button')).toHaveLength(0);
-    expect(screen.getByRole('group', { name: 'Shirt services' }).closest('article')?.className).not.toContain('unavailable');
+  it('leaves out a garment with no price for any service, and a price of 0 counts as no price', () => {
+    setup({}, { rates: [...catalogue.rates.filter(r => r.garmentId !== 'blank' && !(r.garmentId === 'shirt' && r.serviceId === 'wash')), rate('blank', 'iron', 0), rate('blank', 'starch', null, { configured: true, available: true }), rate('shirt', 'wash', 0)] });
+    expect(screen.queryByRole('group', { name: 'Blank services' })).toBeNull();
+    expect(screen.queryByText('Blank')).toBeNull();
+    expect(card('Shirt').getAllByRole('button').map(button => button.textContent)).toEqual(['Iron₹10', 'Starch₹50']);
+    expect(screen.queryByText('No price set')).toBeNull();
   });
 
   it('says so when no garment can be sold under any service, and not when something can', () => {

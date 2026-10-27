@@ -30,7 +30,7 @@ const edit = (change: (draft: RateCardDraft) => void) => {
 describe('rate card draft', () => {
   it('shows active rows, the prices that sell, and pictures only when bundled', () => {
     const draft = draftFromCatalogue(catalogue);
-    expect(draft.garments.map(g => [g.id, g.picture, g.pair])).toEqual([['shirt', 'shirt', false], ['shoe', 'shoes', true], ['mine', null, false]]);
+    expect(draft.garments.map(g => [g.id, g.nameMr, g.picture, g.pair])).toEqual([['shirt', 'शर्ट', 'shirt', false], ['shoe', '', 'shoes', true], ['mine', '', null, false]]);
     expect(draft.services.map(s => s.id)).toEqual(['wash', 'iron']);
     // A price that is switched off is shown as not sold.
     expect(draft.prices).toEqual({ 'shirt|wash': '15', 'shirt|iron': '12.50' });
@@ -74,18 +74,33 @@ describe('rate card draft', () => {
 
   it('sends new rows by their ref with their prices, and forgets a new row removed again', () => {
     const plan = edit(d => {
-      d.garments.push({ id: 'new:g', name: ' Apron ', picture: 'apron', pair: false, isNew: true, removed: false });
-      d.garments.push({ id: 'new:h', name: 'Cap', picture: null, pair: false, isNew: true, removed: false });
-      d.garments.push({ id: 'new:x', name: 'Oops', picture: null, pair: false, isNew: true, removed: true });
+      d.garments.push({ id: 'new:g', name: ' Apron ', nameMr: ' ॲप्रन ', picture: 'apron', pair: false, isNew: true, removed: false });
+      d.garments.push({ id: 'new:h', name: 'Cap', nameMr: '', picture: null, pair: false, isNew: true, removed: false });
+      d.garments.push({ id: 'new:x', name: 'Oops', nameMr: '', picture: null, pair: false, isNew: true, removed: true });
       d.services.push({ id: 'new:s', key: '', name: 'Steam', isNew: true, removed: false });
       d.prices['new:g|new:s'] = '40';
       d.prices['new:g|wash'] = '30';
       d.prices['new:x|wash'] = '30';
     });
-    expect(plan.changes.newGarments).toEqual([{ ref: 'new:g', name: 'Apron', picture: 'apron' }, { ref: 'new:h', name: 'Cap' }]);
+    expect(plan.changes.newGarments).toEqual([{ ref: 'new:g', name: 'Apron', picture: 'apron', nameMr: 'ॲप्रन' }, { ref: 'new:h', name: 'Cap' }]);
     expect(plan.changes.newServices).toEqual([{ ref: 'new:s', name: 'Steam' }]);
     expect(plan.changes.prices).toEqual([{ garmentId: 'new:g', serviceId: 'wash', priceMinor: 3000 }, { garmentId: 'new:g', serviceId: 'new:s', priceMinor: 4000 }]);
     expect(plan.count).toBe(5);
+  });
+
+  it('treats a price of 0 as not sold: an empty box on screen, and cleared when typed', () => {
+    const zero: CounterCatalogue = { ...catalogue, rates: [...catalogue.rates, { garmentId: 'mine', serviceId: 'iron', priceMinor: 0, configured: true, available: true, version: 1 }] };
+    expect(draftFromCatalogue(zero).prices['mine|iron']).toBeUndefined();
+    const draft = draftFromCatalogue(zero);
+    draft.prices['mine|iron'] = '0';
+    draft.prices['shirt|wash'] = '0.00';
+    expect(planRateCard(zero, draft).changes.prices).toEqual([{ garmentId: 'shirt', serviceId: 'wash', priceMinor: null }]);
+  });
+
+  it('sends a Marathi name change for a built-in garment, tidied, and nothing when typed back', () => {
+    const plan = edit(d => { d.garments[0].nameMr = '  नवा   शर्ट '; d.garments[1].nameMr = ''; d.garments[2].nameMr = ' '; });
+    expect(plan.changes.garments).toEqual([{ id: 'shirt', nameMr: 'नवा शर्ट' }]);
+    expect(edit(d => { d.garments[0].nameMr = 'शर्ट '; }).count).toBe(0);
   });
 
   it('says what is wrong before Save can be pressed', () => {
