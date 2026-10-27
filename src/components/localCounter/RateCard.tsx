@@ -40,7 +40,7 @@ export const RateCard = ({ catalogue, onCatalogue, onError, onNotice }: Props) =
 
   const addGarment = () => {
     const id = newRef();
-    setDraft(d => ({ ...d, garments: [...d.garments, { id, name: garmentName.trim(), picture: null, pair: false, isNew: true, removed: false }] }));
+    setDraft(d => ({ ...d, garments: [...d.garments, { id, name: garmentName.trim(), nameMr: '', picture: null, pair: false, isNew: true, removed: false }] }));
     setGarmentName('');
     setPicking(id);
   };
@@ -59,7 +59,7 @@ export const RateCard = ({ catalogue, onCatalogue, onError, onNotice }: Props) =
 
   return <div className="counter-rates">
     <p className="counter-rate-warning">The starting prices are estimates. Check every price before using the app with customers.</p>
-    <p>Type a price to sell a garment for a service, or leave the box empty to not sell it. Change names and pictures here too. Nothing changes until you press <strong>Save</strong>.</p>
+    <p>Type a price to sell a garment for a service. Leave the box empty or type 0 and it does not show on New order. Every name, including the built-in ones, can be changed here, with its Marathi name and picture. Nothing changes until you press <strong>Save</strong>.</p>
     <div className="counter-rate-table-wrap">
       <table className="counter-rate-table">
         <thead>
@@ -82,7 +82,10 @@ export const RateCard = ({ catalogue, onCatalogue, onError, onNotice }: Props) =
                   <button type="button" className="counter-rate-picture" aria-label={`Picture of ${g.name || 'new garment'}`} aria-expanded={picking === g.id} disabled={g.removed} onClick={() => setPicking(picking === g.id ? null : g.id)}>
                     {g.picture ? <img src={pictureSrc(g.picture)} alt="" /> : <span aria-hidden="true">{g.name.trim().charAt(0).toUpperCase()}</span>}
                   </button>
-                  <Input aria-label={`Name of garment ${g.name || 'new'}`} value={g.name} maxLength={40} disabled={g.removed} onChange={e => garment(g.id, { name: e.target.value })} />
+                  <div className="counter-rate-names">
+                    <Input aria-label={`Name of garment ${g.name || 'new'}`} value={g.name} maxLength={40} disabled={g.removed} onChange={e => garment(g.id, { name: e.target.value })} />
+                    <Input aria-label={`Marathi name of ${g.name || 'new garment'}`} lang="mr" placeholder="मराठी नाव" value={g.nameMr} maxLength={60} disabled={g.removed} onChange={e => garment(g.id, { nameMr: e.target.value })} />
+                  </div>
                 </div>
               </th>
               {services.map(s => {

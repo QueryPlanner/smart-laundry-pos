@@ -146,10 +146,12 @@ export interface CounterRateCardRowEdit {
   name?: string;
   /** Garments only: a picture key, '' for no picture; leave out to keep it. */
   picture?: string;
+  /** Garments only: a new Marathi name, '' for none; leave out to keep it. */
+  nameMr?: string;
   removed?: boolean;
 }
 /** A garment or service added on the rate card. Prices for it name it by `ref`. */
-export interface CounterRateCardNewRow { ref: string; name: string; picture?: string }
+export interface CounterRateCardNewRow { ref: string; name: string; picture?: string; nameMr?: string }
 /** One price; null means the garment is not sold for that service. */
 export interface CounterRateCardPrice { garmentId: string; serviceId: string; priceMinor: number | null }
 export interface CounterRateCardChanges {
