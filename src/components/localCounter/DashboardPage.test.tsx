@@ -20,7 +20,7 @@ const series = {
 };
 
 const setup = () => {
-  const props = { account: staff, onError: vi.fn(), onNotice: vi.fn(), onOpenOrder: vi.fn() };
+  const props = { account: staff, onError: vi.fn(), onNotice: vi.fn(), onOpenOrder: vi.fn(), onOpenSales: vi.fn() };
   const view = render(<DashboardPage {...props} />);
   return { props, ...view };
 };
@@ -57,6 +57,21 @@ describe('DashboardPage', () => {
     expect(screen.getByRole('img').getAttribute('aria-label')).toContain('Sales for the last 14 days');
     expect(api.getSalesSeries).toHaveBeenCalledWith({ from: '2026-03-02T00:00', to: '2026-03-16T00:00' }, 'day');
     expect(screen.queryByText(/Advance|Balance received|Ready to collect|In process|Ready and waiting/)).toBeNull();
+  });
+
+  it('opens the customers behind the orders and collected figures, for today and for the month', async () => {
+    const { props } = setup();
+    await screen.findByText('Figures for today, 15 Mar 2026, and the month so far.');
+    const today = screen.getByRole('heading', { name: 'Today' }).nextElementSibling as HTMLElement;
+    const month = screen.getByRole('heading', { name: 'This month' }).nextElementSibling as HTMLElement;
+    fireEvent.click(stat(today, 'Orders'));
+    fireEvent.click(stat(today, 'Collected'));
+    fireEvent.click(stat(month, 'Orders'));
+    fireEvent.click(stat(month, 'Collected'));
+    expect(props.onOpenSales.mock.calls).toEqual([
+      [{ preset: 'today', tab: 'orders' }], [{ preset: 'today', tab: 'transactions' }],
+      [{ preset: 'month', tab: 'orders' }], [{ preset: 'month', tab: 'transactions' }],
+    ]);
   });
 
   it('lists recent orders and opens one', async () => {

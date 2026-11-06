@@ -27,7 +27,7 @@ import { TrashRequestsPanel } from './orders/TrashRequestsPanel';
 import { OrderPage } from './orders/OrderPage';
 import { PrintProgress, PrintQueue } from './PrintJobs';
 import { JOB_STATE_LABEL } from './printJobState';
-import { canOpen, NAV_GROUPS, visibleNavGroups, type SectionId, type SectionProps } from './sections';
+import { canOpen, NAV_GROUPS, visibleNavGroups, type SalesView, type SectionId, type SectionProps } from './sections';
 import { DashboardPage } from './DashboardPage';
 import { SalesPage } from './SalesPage';
 import { CustomersPage } from './CustomersPage';
@@ -79,6 +79,7 @@ export const CounterApp = () => {
   const [account, setAccount] = useState<CounterAccount | null>(null);
   const [catalogue, setCatalogue] = useState<CounterCatalogue | null>(null);
   const [page, setPage] = useState<Page>('order');
+  const [salesView, setSalesView] = useState<SalesView | null>(null);
   /** The screens visited before this one, newest last, for the Back button. */
   const [trail, setTrail] = useState<Page[]>([]);
   const [error, setError] = useState('');
@@ -317,7 +318,8 @@ export const CounterApp = () => {
   const logout = async () => { try { await lockCounter(); } catch (e) { setError(`The counter could not be locked: ${problem(e)}`); return; } setNotice(''); setSaved(null); setPreview(null); setJobs([]); orderList.reset(); setSelectedReprintPieces([]); setAccount(null); setCatalogue(null); setPage('order'); setTrail([]); setBootstrap(await getCounterBootstrap()); };
 
   /** Shows a page and remembers the one being left, so Back can return to it. */
-  const navigate = (next: Page) => { setTrail(current => pushTrail(current, page, next)); setPage(next); };
+  const navigate = (next: Page) => { setSalesView(null); setTrail(current => pushTrail(current, page, next)); setPage(next); };
+  const openSales = (view: SalesView) => { navigate('sales'); setSalesView(view); };
   /** Moves to a page, doing whatever that page needs loaded first. */
   const arrive = (destination: Destination) => {
     if (destination === 'lock') { void logout(); return; }
@@ -357,7 +359,7 @@ export const CounterApp = () => {
 
   // An order's own pages (detail, hand-over, print progress) belong to Orders / Pickup in the navigation.
   const activeSection: Page = page === 'detail' || page === 'prints' ? 'orders' : page;
-  const sectionProps: SectionProps = { account, onError: reportError, onNotice: setNotice, onOpenOrder };
+  const sectionProps: SectionProps = { account, onError: reportError, onNotice: setNotice, onOpenOrder, onOpenSales: openSales };
   const showing = (section: SectionId) => page === section && canOpen(section, account.role);
 
   return <div className="counter-shell">
@@ -380,10 +382,10 @@ export const CounterApp = () => {
     {page === 'order' && <fieldset className="counter-fieldset" disabled={busy}><div className="counter-layout"><main className="counter-main"><CustomerEntry customer={customer} onChange={setCustomer} search={searchCounterCustomers} /><section className="counter-panel"><GarmentGrid catalogue={catalogue} lines={lines} onAdd={addGarment} onQuantity={setQuantity} /></section></main><aside className="counter-aside"><OrderSummary catalogue={catalogue} lines={lines} quote={quote} quoteFailed={quoteError !== ''} customer={customer} discount={discount} onDiscount={changeDiscount} onRemove={(id, sid) => setQuantity(id, 0, sid)} onQuantity={setQuantity} onPrice={setLinePrice} onSave={() => void save()} onPreview={() => void previewDraft()} onClear={clearDraft} busy={busy} /></aside></div></fieldset>}
     {page === 'orders' && admin && <TrashRequestsPanel onError={reportError} onNotice={setNotice} onChanged={orderList.reload} />}
     {page === 'orders' && <OrdersPage query={orderList.query} onQuery={orderList.setQuery} segment={orderList.segment} onSegment={orderList.setSegment} today={orderList.today} counts={orderList.counts} results={orderList.results} loading={orderList.loading} hasMore={orderList.hasMore} onLoadMore={orderList.loadMore} isAdmin={admin} onOpen={id => void openOrder(id)} onCustomer={showCustomer} onPreviewBill={(orderId, orderNumber) => void previewSaved({ orderId, orderNumber })} onTrash={(id, number) => void trash(id, number)} onRequestTrash={(id, number, reason) => void trash(id, number, reason)} busy={busy} />}
-    {page === 'detail' && saved && <OrderPage key={saved.orderId} order={saved} isAdmin={admin} busy={busy || reprintBusy} backLabel={origin.label} onBack={() => arrive(origin.page)} onOrder={replaceOrder} onError={reportError} onNotice={setNotice} onCustomer={showCustomer} onReprintBill={() => void reprint(saved.orderId, 'bill')} onPreviewBill={() => void previewSaved(saved)} onReprintTags={() => void reprint(saved.orderId, 'tags', saved.pieces.filter(piece => piece.tagged).map(piece => piece.shortId))} onOpenPrints={() => { void refreshJobs(saved.orderId); navigate('prints'); }} onTrash={() => void trash(saved.orderId, saved.orderNumber)} onRequestTrash={reason => void trash(saved.orderId, saved.orderNumber, reason)} />}
+    {page === 'detail' && saved && <OrderPage key={saved.orderId} order={saved} isAdmin={admin} catalogue={catalogue} busy={busy || reprintBusy} backLabel={origin.label} onBack={() => arrive(origin.page)} onOrder={replaceOrder} onError={reportError} onNotice={setNotice} onCustomer={showCustomer} onReprintBill={() => void reprint(saved.orderId, 'bill')} onPreviewBill={() => void previewSaved(saved)} onReprintTags={() => void reprint(saved.orderId, 'tags', saved.pieces.filter(piece => piece.tagged).map(piece => piece.shortId))} onOpenPrints={() => { void refreshJobs(saved.orderId); navigate('prints'); }} onTrash={() => void trash(saved.orderId, saved.orderNumber)} onRequestTrash={reason => void trash(saved.orderId, saved.orderNumber, reason)} />}
     {showing('admin') && <CounterAdmin catalogue={catalogue} onCatalogue={setCatalogue} printers={printers} onReloadPrinters={openPrinterSettings} onError={reportError} onNotice={setNotice} onRestoreStaged={() => setRestoreStaged(true)} />}
     {showing('dashboard') && <DashboardPage {...sectionProps} />}
-    {showing('sales') && <SalesPage {...sectionProps} />}
+    {showing('sales') && <SalesPage {...sectionProps} initialView={salesView} />}
     {showing('customers') && <CustomersPage {...sectionProps} />}
     {showing('expenses') && <ExpensesPage {...sectionProps} />}
     {showing('inventory') && <InventoryPage {...sectionProps} />}

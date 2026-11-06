@@ -17,7 +17,7 @@ const staff: CounterAccount = { id: 's1', fullName: 'Clerk', role: 'staff', acti
 const KEY: Record<SalesBucket, string> = { hour: '2026-03-15T09:00', day: '2026-03-15', month: '2026-03' };
 
 const setup = () => {
-  const props = { account: staff, onError: vi.fn(), onNotice: vi.fn(), onOpenOrder: vi.fn() };
+  const props = { account: staff, onError: vi.fn(), onNotice: vi.fn(), onOpenOrder: vi.fn(), onOpenSales: vi.fn() };
   const view = render(<SalesPage {...props} />);
   return { props, ...view };
 };
@@ -124,6 +124,22 @@ describe('SalesPage default view', () => {
     setup();
     await waitFor(() => expect(stat('Profit').textContent).toContain(money(-4200)));
     expect(stat('Profit').classList.contains('bad')).toBe(true);
+  });
+});
+
+describe('SalesPage opened from the dashboard', () => {
+  it('starts on the month and the payments when asked, and on today and the orders otherwise', async () => {
+    render(<SalesPage account={staff} onError={vi.fn()} onNotice={vi.fn()} onOpenOrder={vi.fn()} onOpenSales={vi.fn()} initialView={{ preset: 'month', tab: 'transactions' }} />);
+    await waitFor(() => expect(lastFilter()).toMatchObject({ from: '2026-03-01T00:00' }));
+    expect(screen.getByRole('button', { name: 'This month' }).getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByRole('tab', { name: 'Transactions' }).getAttribute('aria-selected')).toBe('true');
+    await waitFor(() => expect(api.listSalesTransactions).toHaveBeenCalled());
+    expect(api.listSalesOrders).not.toHaveBeenCalled();
+    cleanup();
+    setup();
+    await ready();
+    expect(screen.getByRole('button', { name: 'Today' }).getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByRole('tab', { name: 'Orders' }).getAttribute('aria-selected')).toBe('true');
   });
 });
 

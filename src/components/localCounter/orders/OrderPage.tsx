@@ -1,11 +1,13 @@
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import type { CounterPaymentMethod, CounterSavedOrder } from '@/lib/localFirst/counter';
+import { useState } from 'react';
+import type { CounterCatalogue, CounterPaymentMethod, CounterSavedOrder } from '@/lib/localFirst/counter';
 import { pickupLabel, pickupState, remaining } from '@/lib/localFirst/orders/pickup';
 import { useOrderPickup } from '@/lib/localFirst/orders/useOrderPickup';
 import { formatShopDateTime, methodText } from '@/lib/localFirst/salesRange';
 import { money } from '../ui';
+import { EditBill } from './EditBill';
 import { TrashActions } from './TrashActions';
 
 const METHODS: Array<{ value: CounterPaymentMethod; label: string }> = [
@@ -18,6 +20,8 @@ const METHODS: Array<{ value: CounterPaymentMethod; label: string }> = [
 export interface OrderPageProps {
   order: CounterSavedOrder;
   isAdmin: boolean;
+  /** The rate card, for the admin's Edit bill screen. Without it the bill cannot be edited. */
+  catalogue?: CounterCatalogue | null;
   busy: boolean;
   /** Where Back goes, as words: "Orders", "Dashboard" ... */
   backLabel: string;
@@ -42,13 +46,18 @@ export interface OrderPageProps {
  * One order: its lines, what has been paid, and the pickup box. A customer may take some lines now and
  * the rest later, paying any amount each time; the last lines need the whole bill paid.
  */
-export const OrderPage = ({ order, isAdmin, busy, backLabel, onBack, onOrder, onError, onNotice, onCustomer, onPreviewBill, onReprintBill, onReprintTags, onOpenPrints, onTrash, onRequestTrash }: OrderPageProps) => {
+export const OrderPage = ({ order, isAdmin, catalogue = null, busy, backLabel, onBack, onOrder, onError, onNotice, onCustomer, onPreviewBill, onReprintBill, onReprintTags, onOpenPrints, onTrash, onRequestTrash }: OrderPageProps) => {
   const pickup = useOrderPickup({ order, onOrder, onError, onNotice });
+  const [editing, setEditing] = useState(false);
   const pieceCount = order.lines.reduce((sum, line) => sum + line.pieceCount, 0);
   const handedOverCount = order.lines.reduce((sum, line) => sum + line.handedOverCount, 0);
   const state = pickupState({ status: order.status, pieceCount, handedOverCount });
   const open = state === 'waiting' || state === 'part';
   const working = busy || pickup.busy;
+
+  if (editing && catalogue) {
+    return <EditBill order={order} catalogue={catalogue} onSaved={saved => { onOrder(saved); setEditing(false); }} onCancel={() => setEditing(false)} onError={onError} onNotice={onNotice} />;
+  }
 
   return (
     <section className="counter-page counter-order-detail" aria-label="Order detail">
@@ -68,6 +77,7 @@ export const OrderPage = ({ order, isAdmin, busy, backLabel, onBack, onOrder, on
           <Button variant="outline" className="counter-touch" disabled={working} onClick={onReprintBill}>Reprint bill</Button>
           {order.pieces.some(piece => piece.tagged) && <Button variant="outline" className="counter-touch" disabled={working} onClick={onReprintTags}>Reprint tags</Button>}
           <Button variant="outline" className="counter-touch" disabled={working} onClick={onOpenPrints}>Print status</Button>
+          {isAdmin && catalogue && state !== 'cancelled' && <Button variant="outline" className="counter-touch" disabled={working} onClick={() => setEditing(true)}>Edit bill</Button>}
           <TrashActions isAdmin={isAdmin} busy={working} onTrash={onTrash} onRequestTrash={onRequestTrash} />
         </div>
       </header>

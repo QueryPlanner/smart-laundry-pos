@@ -5,11 +5,11 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import type { CounterOrderLine, CounterSavedOrder } from '@/lib/localFirst/counter';
 import { OrderPage, type OrderPageProps } from './OrderPage';
 
-const api = vi.hoisted(() => ({ getCounterOrder: vi.fn(), handOverCounterItems: vi.fn(), recordCounterPayment: vi.fn() }));
+const api = vi.hoisted(() => ({ getCounterOrder: vi.fn(), handOverCounterItems: vi.fn(), recordCounterPayment: vi.fn(), quoteCounterOrder: vi.fn(), editCounterOrder: vi.fn(), voidCounterPayment: vi.fn() }));
 vi.mock('@/lib/localFirst/counter', () => api);
 
 const line = (itemId: string, garment: string, service: string, pieceCount: number, lineTotalMinor: number, handedOverCount = 0): CounterOrderLine => ({
-  itemId, garment, service, quantity: pieceCount, unitPriceMinor: lineTotalMinor / Math.max(1, pieceCount), lineTotalMinor, pieceCount, handedOverCount,
+  itemId, garmentId: itemId, serviceId: 'svc', garment, service, quantity: pieceCount, unitPriceMinor: lineTotalMinor / Math.max(1, pieceCount), lineTotalMinor, pieceCount, handedOverCount,
 });
 const order = (over: Partial<CounterSavedOrder> = {}): CounterSavedOrder => ({
   orderId: 'o-1', orderNumber: '202610170001', customerName: 'Rita Mehta', customerPhone: '9876543210', receivedAt: '2026-10-15T06:00:00Z', promisedAt: '2026-10-17T11:30:00Z',
@@ -27,6 +27,51 @@ const items = () => within(screen.getByRole('list', { name: 'Items' }));
 
 beforeEach(() => { vi.clearAllMocks(); });
 afterEach(cleanup);
+
+const editableCatalogue = { garments: [], services: [], rates: [] };
+
+describe('OrderPage edit bill', () => {
+  it('offers Edit bill to an admin who has the rate card, and returns to the bill from it', () => {
+    api.quoteCounterOrder.mockReturnValue(new Promise(() => undefined));
+    render(<OrderPage {...props({ catalogue: editableCatalogue })} />);
+    fireEvent.click(button('Edit bill'));
+    expect(screen.getByRole('region', { name: 'Edit bill' })).toBeTruthy();
+    fireEvent.click(button('← Back to bill'));
+    expect(screen.getByRole('region', { name: 'Order detail' })).toBeTruthy();
+  });
+
+  it('shows the saved bill again after a save and passes the new order on', async () => {
+    api.quoteCounterOrder.mockResolvedValue({ lines: [], subtotalMinor: 23000, discountPercentBp: 0, discountMinor: 0, manualDiscountMinor: 0, totalMinor: 23000, pieceCount: 5, promisedAt: '', catalogueVersion: '2' });
+    const updated = order({ customerName: 'Rita M' });
+    api.editCounterOrder.mockResolvedValue(updated);
+    const p = props({ catalogue: editableCatalogue, order: order({ lines: [line('iron', 'Shirt', 'Iron', 3, 3000)] }) });
+    render(<OrderPage {...p} />);
+    fireEvent.click(button('Edit bill'));
+    fireEvent.change(screen.getByLabelText('Reason for the change'), { target: { value: 'Fix the name' } });
+    await waitFor(() => expect(button('Save changes').disabled).toBe(false));
+    fireEvent.click(button('Save changes'));
+    await waitFor(() => expect(p.onOrder).toHaveBeenCalledWith(updated));
+    expect(screen.getByRole('region', { name: 'Order detail' })).toBeTruthy();
+  });
+
+  it('never offers Edit bill to staff, without the rate card, or on a cancelled order', () => {
+    const { rerender } = render(<OrderPage {...props({ catalogue: editableCatalogue, isAdmin: false })} />);
+    expect(screen.queryByRole('button', { name: 'Edit bill' })).toBeNull();
+    rerender(<OrderPage {...props({ catalogue: null })} />);
+    expect(screen.queryByRole('button', { name: 'Edit bill' })).toBeNull();
+    rerender(<OrderPage {...props({ catalogue: editableCatalogue, order: order({ status: 'cancelled' }) })} />);
+    expect(screen.queryByRole('button', { name: 'Edit bill' })).toBeNull();
+  });
+
+  it('falls back to the bill if the rate card goes away while editing', () => {
+    api.quoteCounterOrder.mockReturnValue(new Promise(() => undefined));
+    const p = props({ catalogue: editableCatalogue });
+    const { rerender } = render(<OrderPage {...p} />);
+    fireEvent.click(button('Edit bill'));
+    rerender(<OrderPage {...p} catalogue={null} />);
+    expect(screen.getByRole('region', { name: 'Order detail' })).toBeTruthy();
+  });
+});
 
 describe('OrderPage', () => {
   it('shows the bill, the customer, the lines with their amounts and the money', () => {

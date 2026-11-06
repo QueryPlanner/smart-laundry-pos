@@ -1,5 +1,8 @@
 import type { CounterAccount } from '@/lib/localFirst/counter';
 
+/** Which Sales list to open: a period and the list of customers behind it. */
+export interface SalesView { preset: 'today' | 'month'; tab: 'orders' | 'transactions' }
+
 /** Props every workspace section receives from the shell. */
 export interface SectionProps {
   account: CounterAccount;
@@ -9,6 +12,8 @@ export interface SectionProps {
   onNotice: (message: string) => void;
   /** Jump to the Orders / Pickup detail for an order. */
   onOpenOrder: (orderId: string) => void;
+  /** Jump to Sales for a period, showing the orders or the payments behind a figure. */
+  onOpenSales: (view: SalesView) => void;
 }
 
 export type SectionId =
