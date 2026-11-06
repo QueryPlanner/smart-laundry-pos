@@ -12,7 +12,7 @@ import {
 import { EmptyState, FormField, PageHeader, StatCard, count, money } from './ui';
 import { OrderLink, StatusBadge } from './InsightParts';
 import { SalesChart } from './SalesChart';
-import type { SectionProps } from './sections';
+import type { SalesView, SectionProps } from './sections';
 
 const PAGE_SIZE = 25;
 const PRESETS: Array<{ id: SalesPreset; label: string }> = [
@@ -59,9 +59,9 @@ const Breakdown = ({ title, empty, rows }: { title: string; empty: string; rows:
  * Sales query for staff and administrators alike: pick a period and filters, see the figures,
  * the graph, the orders and every payment and refund behind them.
  */
-export const SalesPage = ({ onError, onOpenOrder }: SectionProps) => {
-  const [preset, setPreset] = useState<SalesPreset>('today');
-  const [edges, setEdges] = useState<Edges>(() => edgesOf(presetRange('today', new Date())));
+export const SalesPage = ({ onError, onOpenOrder, initialView }: SectionProps & { initialView?: SalesView | null }) => {
+  const [preset, setPreset] = useState<SalesPreset>(initialView?.preset ?? 'today');
+  const [edges, setEdges] = useState<Edges>(() => edgesOf(presetRange(initialView?.preset ?? 'today', new Date())));
   const [methods, setMethods] = useState<SalesPaymentMethod[]>([]);
   const [staffId, setStaffId] = useState('');
   const [searchText, setSearchText] = useState('');
@@ -69,7 +69,7 @@ export const SalesPage = ({ onError, onOpenOrder }: SectionProps) => {
   const [discountedOnly, setDiscountedOnly] = useState(false);
   const [tick, setTick] = useState(0);
   const [bucketChoice, setBucketChoice] = useState<SalesBucket | null>(null);
-  const [tab, setTab] = useState<Tab>('orders');
+  const [tab, setTab] = useState<Tab>(initialView?.tab ?? 'orders');
   const [offset, setOffset] = useState(0);
   const [staff, setStaff] = useState<SalesStaffOption[]>([]);
   const [summary, setSummary] = useState<SalesSummary | null>(null);

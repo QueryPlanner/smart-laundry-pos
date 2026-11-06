@@ -9,7 +9,7 @@ import type { SectionProps } from './sections';
 
 const GRAPH_DAYS = 14;
 /** Today at a glance: the day's and month's figures, a 14-day graph and the latest orders. */
-export const DashboardPage = ({ onError, onOpenOrder }: SectionProps) => {
+export const DashboardPage = ({ onError, onOpenOrder, onOpenSales }: SectionProps) => {
   const [overview, setOverview] = useState<DashboardOverview | null>(null);
   const [series, setSeries] = useState<SalesSeries | null>(null);
   const [tick, setTick] = useState(0);
@@ -39,9 +39,9 @@ export const DashboardPage = ({ onError, onOpenOrder }: SectionProps) => {
 
       <h2 className="counter-subhead">Today</h2>
       <div className="counter-stats">
-        <StatCard label="Orders" value={today.orders} hint={`${today.pieces} pieces`} />
+        <StatCard label="Orders" value={today.orders} hint={`${today.pieces} pieces · see customers`} onClick={() => onOpenSales({ preset: 'today', tab: 'orders' })} />
         <StatCard label="Billed" value={money(today.netBilledMinor)} hint={today.discountMinor > 0 ? `${money(today.discountMinor)} discount given` : undefined} />
-        <StatCard label="Collected" value={money(today.netCollectedMinor)} hint={today.refundedMinor > 0 ? `After ${money(today.refundedMinor)} refunded` : undefined} tone="good" />
+        <StatCard label="Collected" value={money(today.netCollectedMinor)} hint={today.refundedMinor > 0 ? `After ${money(today.refundedMinor)} refunded` : 'See who paid'} tone="good" onClick={() => onOpenSales({ preset: 'today', tab: 'transactions' })} />
         <StatCard
           label="To collect"
           value={money(receivable.minor)}
@@ -53,9 +53,9 @@ export const DashboardPage = ({ onError, onOpenOrder }: SectionProps) => {
 
       <h2 className="counter-subhead">This month</h2>
       <div className="counter-stats">
-        <StatCard label="Orders" value={monthToDate.orders} hint={`${monthToDate.pieces} pieces`} />
+        <StatCard label="Orders" value={monthToDate.orders} hint={`${monthToDate.pieces} pieces · see customers`} onClick={() => onOpenSales({ preset: 'month', tab: 'orders' })} />
         <StatCard label="Billed" value={money(monthToDate.netBilledMinor)} />
-        <StatCard label="Collected" value={money(monthToDate.netCollectedMinor)} tone="good" />
+        <StatCard label="Collected" value={money(monthToDate.netCollectedMinor)} hint="See who paid" tone="good" onClick={() => onOpenSales({ preset: 'month', tab: 'transactions' })} />
         <StatCard label="Expenses" value={money(monthToDate.expensesMinor)} />
         <StatCard
           label="Profit"

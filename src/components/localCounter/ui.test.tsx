@@ -16,6 +16,14 @@ describe('counter workspace UI kit', () => {
     expect(money(0)).toBe('₹0.00');
   });
 
+  it('makes a stat card a button only when it opens something', () => {
+    const open = vi.fn();
+    render(<><StatCard label="Orders" value={4} /><StatCard label="Collected" value={5} hint="See who paid" tone="good" onClick={open} /></>);
+    expect(screen.getAllByRole('button')).toHaveLength(1);
+    fireEvent.click(screen.getByRole('button', { name: /Collected/ }));
+    expect(open).toHaveBeenCalledOnce();
+  });
+
   it('renders headers, stat cards, empty states and fields', () => {
     render(<>
       <PageHeader title="Sales" subtitle="Today" actions={<button>Export</button>} />

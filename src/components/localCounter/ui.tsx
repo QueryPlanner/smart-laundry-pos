@@ -28,13 +28,13 @@ export const PageHeader = ({ title, subtitle, actions }: { title: string; subtit
 
 export type StatTone = 'neutral' | 'good' | 'warn' | 'bad';
 
-export const StatCard = ({ label, value, hint, tone = 'neutral' }: { label: string; value: ReactNode; hint?: string; tone?: StatTone }) => (
-  <div className={`counter-stat ${tone}`}>
-    <span className="counter-section-label">{label}</span>
-    <strong>{value}</strong>
-    {hint && <small>{hint}</small>}
-  </div>
-);
+/** A figure with its label. With `onClick` the whole card is a button that opens the list behind it. */
+export const StatCard = ({ label, value, hint, tone = 'neutral', onClick }: { label: string; value: ReactNode; hint?: string; tone?: StatTone; onClick?: () => void }) => {
+  const body = <><span className="counter-section-label">{label}</span><strong>{value}</strong>{hint && <small>{hint}</small>}</>;
+  return onClick
+    ? <button type="button" className={`counter-stat ${tone} clickable`} onClick={onClick}>{body}</button>
+    : <div className={`counter-stat ${tone}`}>{body}</div>;
+};
 
 export const EmptyState = ({ children }: { children: ReactNode }) => <p className="counter-empty-state">{children}</p>;
 

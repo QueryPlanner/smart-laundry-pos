@@ -901,3 +901,6 @@ All colors MUST be HSL.
 .counter-edit-save>div:not(.counter-edit-actions){display:flex;justify-content:space-between}
 .counter-edit-actions{display:flex;justify-content:flex-end;gap:10px}
 @media(max-width:620px){.counter-edit-customer{grid-template-columns:1fr}.counter-edit-lines li{grid-template-columns:1fr 1fr}.counter-edit-lines li strong{grid-column:1/-1}}
+button.counter-stat.clickable{font:inherit;text-align:left;cursor:pointer;width:100%;color:inherit}
+button.counter-stat.clickable:hover{border-color:#b4dfce}
+button.counter-stat.clickable:focus-visible{outline:2px solid hsl(var(--ring));outline-offset:2px}

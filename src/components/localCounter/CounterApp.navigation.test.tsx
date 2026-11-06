@@ -24,6 +24,8 @@ const stand = vi.hoisted(() => (name: string) => (props: SectionProps) => {
       <h1>{name} page</h1>
       <p>{`${name} for ${props.account.fullName}`}</p>
       <button onClick={() => props.onOpenOrder('o-7')}>{`Open order from ${name}`}</button>
+      <button onClick={() => props.onOpenSales({ preset: 'month', tab: 'transactions' })}>{`Open sales from ${name}`}</button>
+      <p>{`${name} view ${JSON.stringify((props as { initialView?: unknown }).initialView ?? null)}`}</p>
       <button onClick={() => props.onNotice(`${name} notice`)}>{`Notify from ${name}`}</button>
       <button onClick={() => props.onError(new Error(`${name} failed`))}>{`Fail from ${name}`}</button>
     </section>
@@ -175,6 +177,16 @@ describe('section pages', () => {
     expect((await screen.findByRole('status')).textContent).toBe('Customers notice');
     fireEvent.click(screen.getByRole('button', { name: 'Fail from Customers' }));
     expect((await screen.findByRole('alert')).textContent).toBe('Customers failed');
+  });
+
+  it('opens Sales on the period and list a dashboard figure asks for, and forgets it on the next visit', async () => {
+    await signedInAs(staff);
+    go('Dashboard');
+    fireEvent.click(await screen.findByRole('button', { name: 'Open sales from Dashboard' }));
+    expect(await screen.findByText('Sales view {"preset":"month","tab":"transactions"}')).toBeTruthy();
+    go('Dashboard');
+    go('Sales');
+    expect(await screen.findByText('Sales view null')).toBeTruthy();
   });
 
   it('gives sections callbacks that stay the same across shell renders', async () => {
