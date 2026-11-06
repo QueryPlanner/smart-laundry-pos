@@ -4339,28 +4339,49 @@ pub async fn recover_submitting(db: &DatabaseState) -> Result<(), String> {
     Ok(())
 }
 
+/// Customers matching what the counter typed: a mobile number prefix when the text has digits
+/// only, otherwise a part of the name (any case, extra spaces ignored).
 pub async fn search_customers(
     db: &DatabaseState,
     session: &CounterSession,
-    phone: &str,
+    query: &str,
 ) -> Result<Vec<serde_json::Value>, String> {
     let _ = actor(session)?;
-    // Typed digits are compared as plain ASCII digits whatever script or spacing was used.
-    let digits: String = phone
-        .chars()
-        .filter_map(digit_value)
-        .filter_map(|v| char::from_digit(v, 10))
-        .collect();
-    if digits.len() < 2 {
-        return Ok(Vec::new());
-    }
-    let rows = sqlx::query(
-        "SELECT id,name,phone FROM customers WHERE phone LIKE ? ORDER BY name LIMIT 20",
-    )
-    .bind(format!("{digits}%"))
-    .fetch_all(db.writer_pool()?)
-    .await
-    .map_err(db_err)?;
+    let by_name = query.chars().any(char::is_alphabetic);
+    let (sql, pattern) = if by_name {
+        let key = name_key(query);
+        if key.chars().count() < 2 {
+            return Ok(Vec::new());
+        }
+        // `%`, `_` and the escape character are searched literally, not as wildcards.
+        let escaped = key
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_");
+        (
+            "SELECT id,name,phone FROM customers WHERE lower(name) LIKE ? ESCAPE '\\' ORDER BY name LIMIT 20",
+            format!("%{escaped}%"),
+        )
+    } else {
+        // Typed digits are compared as plain ASCII digits whatever script or spacing was used.
+        let digits: String = query
+            .chars()
+            .filter_map(digit_value)
+            .filter_map(|v| char::from_digit(v, 10))
+            .collect();
+        if digits.len() < 2 {
+            return Ok(Vec::new());
+        }
+        (
+            "SELECT id,name,phone FROM customers WHERE phone LIKE ? ORDER BY name LIMIT 20",
+            format!("{digits}%"),
+        )
+    };
+    let rows = sqlx::query(sql)
+        .bind(pattern)
+        .fetch_all(db.writer_pool()?)
+        .await
+        .map_err(db_err)?;
     Ok(rows.iter().map(row_value).collect())
 }
 
@@ -7393,6 +7414,26 @@ mod counter_tests {
             let customers = search_customers(&db, &staff, "98765 4").await.unwrap();
             assert_eq!(customers.len(), 2, "Rahul and Priya");
             assert!(search_customers(&db, &staff, "9").await.unwrap().is_empty());
+
+            // A name, or any part of one, finds the customer in any case and spacing.
+            for query in ["rahul", "  RAHUL ", "ahu", "Priya"] {
+                let found = search_customers(&db, &staff, query).await.unwrap();
+                assert_eq!(found.len(), 1, "{query}");
+            }
+            assert!(search_customers(&db, &staff, "R").await.unwrap().is_empty());
+            assert!(search_customers(&db, &staff, "zzz")
+                .await
+                .unwrap()
+                .is_empty());
+            for wildcard in ["%", "_a", "ra%", "\\"] {
+                assert!(
+                    search_customers(&db, &staff, wildcard)
+                        .await
+                        .unwrap()
+                        .is_empty(),
+                    "{wildcard}"
+                );
+            }
 
             // Bad numbers are refused with a clear message at quote and at save.
             for bad in ["12345", "abcdefghij", ""] {

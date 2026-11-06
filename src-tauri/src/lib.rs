@@ -242,9 +242,9 @@ async fn counter_get_catalogue(
 async fn counter_search_customers(
     state: State<'_, DatabaseState>,
     session: State<'_, CounterSession>,
-    phone: String,
+    query: String,
 ) -> Result<Vec<serde_json::Value>, String> {
-    counter::search_customers(&state, &session, &phone).await
+    counter::search_customers(&state, &session, &query).await
 }
 #[tauri::command]
 async fn counter_search_orders(

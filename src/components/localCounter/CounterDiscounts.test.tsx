@@ -107,20 +107,28 @@ describe('CounterDiscounts', () => {
     await waitFor(() => expect(second.onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'load failed' })));
   });
 
+  it('finds a customer by name as well as by mobile', async () => {
+    setup();
+    await screen.findByText('Rita Joshi');
+    fireEvent.change(screen.getByLabelText('Customer name or mobile'), { target: { value: 'New Per' } });
+    await waitFor(() => expect(api.searchCounterCustomers).toHaveBeenCalledWith('New Per'));
+    expect(await screen.findByRole('option', { name: /New Person/ })).toBeTruthy();
+  });
+
   it('finds a customer by mobile, selects them and saves their own rule', async () => {
     setup();
     await screen.findByText('Rita Joshi');
     expect((screen.getByRole('button', { name: 'Save customer discount' }) as HTMLButtonElement).disabled).toBe(true);
-    fireEvent.change(screen.getByLabelText('Customer mobile'), { target: { value: '91' } });
+    fireEvent.change(screen.getByLabelText('Customer name or mobile'), { target: { value: '91' } });
     expect(api.searchCounterCustomers).not.toHaveBeenCalled();
-    fireEvent.change(screen.getByLabelText('Customer mobile'), { target: { value: '9111' } });
+    fireEvent.change(screen.getByLabelText('Customer name or mobile'), { target: { value: '9111' } });
     fireEvent.click(await screen.findByRole('option', { name: /New Person/ }));
     expect(screen.getByText(/Selected:/).textContent).toContain('New Person');
     fireEvent.change(screen.getByLabelText('Discount %'), { target: { value: '7.5' } });
     fireEvent.change(screen.getByLabelText('Label (optional)', { selector: '#customer-discount-label' }), { target: { value: 'Friend' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save customer discount' }));
     await waitFor(() => expect(api.setCounterDiscount).toHaveBeenCalledWith('c-9', 750, true, 'Friend'));
-    await waitFor(() => expect((screen.getByLabelText('Customer mobile') as HTMLInputElement).value).toBe(''));
+    await waitFor(() => expect((screen.getByLabelText('Customer name or mobile') as HTMLInputElement).value).toBe(''));
     expect(screen.queryByText(/Selected:/)).toBeNull();
   });
 
@@ -128,7 +136,7 @@ describe('CounterDiscounts', () => {
     api.setCounterDiscount.mockRejectedValue(new Error('nope'));
     const { onError } = setup();
     await screen.findByText('Rita Joshi');
-    fireEvent.change(screen.getByLabelText('Customer mobile'), { target: { value: '9111' } });
+    fireEvent.change(screen.getByLabelText('Customer name or mobile'), { target: { value: '9111' } });
     fireEvent.click(await screen.findByRole('option', { name: /New Person/ }));
     fireEvent.change(screen.getByLabelText('Discount %'), { target: { value: 'x' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save customer discount' }));
@@ -143,13 +151,13 @@ describe('CounterDiscounts', () => {
     api.searchCounterCustomers.mockRejectedValue(new Error('search down'));
     const { onError } = setup();
     await screen.findByText('Rita Joshi');
-    fireEvent.change(screen.getByLabelText('Customer mobile'), { target: { value: '9111' } });
+    fireEvent.change(screen.getByLabelText('Customer name or mobile'), { target: { value: '9111' } });
     await waitFor(() => expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'search down' })));
     let finish: (value: unknown[]) => void = () => undefined;
     api.searchCounterCustomers.mockReturnValue(new Promise(resolve => { finish = resolve as typeof finish; }));
-    fireEvent.change(screen.getByLabelText('Customer mobile'), { target: { value: '9222' } });
+    fireEvent.change(screen.getByLabelText('Customer name or mobile'), { target: { value: '9222' } });
     await waitFor(() => expect(api.searchCounterCustomers).toHaveBeenCalledWith('9222'));
-    fireEvent.change(screen.getByLabelText('Customer mobile'), { target: { value: '9' } });
+    fireEvent.change(screen.getByLabelText('Customer name or mobile'), { target: { value: '9' } });
     finish([{ id: 'late', name: 'Late Person', phone: '9222' }]);
     await new Promise(resolve => setTimeout(resolve, 20));
     expect(screen.queryByRole('option', { name: /Late Person/ })).toBeNull();

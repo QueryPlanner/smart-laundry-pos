@@ -138,7 +138,7 @@ export const setCounterStaffActive = (userId: string, active: boolean): Promise<
 export const resetCounterStaffPin = (userId: string, pin: string): Promise<void> =>
   call('counter_reset_staff_pin', { userId, pin });
 export const getCounterCatalogue = (): Promise<CounterCatalogue> => call('counter_get_catalogue');
-export const searchCounterCustomers = (phone: string): Promise<Array<{id: string; name: string; phone: string}>> => call('counter_search_customers', { phone });
+export const searchCounterCustomers = (query: string): Promise<Array<{id: string; name: string; phone: string}>> => call('counter_search_customers', { query });
 /** A garment or service already on the rate card, as the administrator changed it. */
 export interface CounterRateCardRowEdit {
   id: string;

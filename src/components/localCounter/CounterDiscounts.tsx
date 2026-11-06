@@ -69,7 +69,7 @@ export const CounterDiscounts = ({ onError, onNotice }: Props) => {
       </section>
       <section className="counter-discount-block">
         <h2>Specific customer</h2>
-        <Label htmlFor="discount-customer-phone">Customer mobile<Input id="discount-customer-phone" value={phone} inputMode="tel" onChange={event => { setPhone(event.target.value); setCustomer(null); }} placeholder="Search by mobile number" /></Label>
+        <Label htmlFor="discount-customer-phone">Customer name or mobile<Input id="discount-customer-phone" value={phone} onChange={event => { setPhone(event.target.value); setCustomer(null); }} placeholder="Search by name or mobile number" /></Label>
         {matches.length > 0 && <div role="listbox" aria-label="Matching customers">{matches.map(found => <button key={found.id} type="button" role="option" aria-selected={false} onClick={() => { setCustomer(found); setPhone(found.phone); setMatches([]); }}><strong>{found.name}</strong> <span>{found.phone}</span></button>)}</div>}
         {customer && <p>Selected: <strong>{customer.name}</strong> ({customer.phone})</p>}
         <Label htmlFor="customer-discount">Discount %<Input id="customer-discount" inputMode="decimal" value={customerPercent} onChange={event => setCustomerPercent(event.target.value)} placeholder="0" /></Label>
