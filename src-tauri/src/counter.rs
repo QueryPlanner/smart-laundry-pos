@@ -850,6 +850,9 @@ async fn quote_at(
             .try_get::<Option<i64>, _>("price_minor")
             .map_err(db_err)?
             .ok_or("A rate has not been configured for this garment and service.")?;
+        if rate == 0 {
+            return Err("This garment and service combination is unavailable.".into());
+        }
         let list_price = rate;
         let rate = match item.unit_price_override_minor {
             None => rate,
@@ -927,6 +930,9 @@ async fn set_rate_in_tx(
     if price.is_some_and(|x| x > MAX_RATE_MINOR) {
         return Err("A rate cannot be more than ₹10,000. Check the amount.".into());
     }
+    // A price of 0 means "not sold", the same as no price, so the counter never offers it.
+    let price = price.filter(|x| *x > 0);
+    let available = available && price.is_some();
     let before = sqlx::query("SELECT r.price_minor,r.available,r.version,g.garment_key,s.service_key FROM garment_service_rates r JOIN garments g ON g.id=r.garment_id JOIN service_methods s ON s.id=r.service_id WHERE r.garment_id=? AND r.service_id=?")
         .bind(garment).bind(service).fetch_optional(&mut **tx).await.map_err(db_err)?
         .ok_or("Garment or service not found.")?;
@@ -1163,7 +1169,7 @@ impl RateCardRow {
 }
 
 /// Renames a garment or a service. Past bills keep the name they were printed with, because order
-/// lines store their own copy. A renamed garment loses its Marathi name, which would no longer match.
+/// lines store their own copy. A garment's Marathi name is changed on its own (`set_marathi_in_tx`).
 async fn rename_in_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     actor_id: &str,
@@ -1204,7 +1210,7 @@ async fn rename_in_tx(
         return Err(format!("A {} called {name} already exists.", row.word()));
     }
     let updates: &[&str] = match row {
-        RateCardRow::Garment => &["UPDATE garments SET name_en=?,name_mr='' WHERE id=?"],
+        RateCardRow::Garment => &["UPDATE garments SET name_en=? WHERE id=?"],
         // The older services table carries the same id for the order lines that point at it.
         RateCardRow::Service => &[
             "UPDATE service_methods SET name=? WHERE id=?",
@@ -1227,6 +1233,50 @@ async fn rename_in_tx(
         id,
         now,
         &serde_json::json!({ "oldName": old, "newName": name }),
+    )
+    .await
+}
+
+/// Longest Marathi name a garment may have.
+const MAX_MARATHI_NAME_CHARS: usize = 60;
+
+/// Changes the Marathi name shown under a garment's name on the counter ("" for none).
+async fn set_marathi_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    actor_id: &str,
+    id: &str,
+    name_mr: &str,
+    now: &str,
+) -> Result<(), String> {
+    let name_mr = name_mr.split_whitespace().collect::<Vec<_>>().join(" ");
+    if name_mr.chars().count() > MAX_MARATHI_NAME_CHARS {
+        return Err(format!(
+            "Keep the Marathi name to {MAX_MARATHI_NAME_CHARS} characters."
+        ));
+    }
+    let old: String = sqlx::query_scalar("SELECT name_mr FROM garments WHERE id=?")
+        .bind(id)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(db_err)?
+        .ok_or("The garment was not found.")?;
+    if old == name_mr {
+        return Ok(());
+    }
+    sqlx::query("UPDATE garments SET name_mr=? WHERE id=?")
+        .bind(&name_mr)
+        .bind(id)
+        .execute(&mut **tx)
+        .await
+        .map_err(db_err)?;
+    audit_details(
+        tx,
+        actor_id,
+        "garment_marathi_renamed",
+        "garment",
+        id,
+        now,
+        &serde_json::json!({ "oldName": old, "newName": name_mr }),
     )
     .await
 }
@@ -1367,6 +1417,9 @@ pub struct RateCardRowEdit {
     /// Garments only: a new picture key, "" for no picture, or none to keep it.
     #[serde(default)]
     pub picture: Option<String>,
+    /// Garments only: a new Marathi name, "" for none, or none to keep it.
+    #[serde(default)]
+    pub name_mr: Option<String>,
     #[serde(default)]
     pub removed: bool,
 }
@@ -1381,6 +1434,9 @@ pub struct RateCardNewRow {
     /// Garments only: the picture key, or none for no picture.
     #[serde(default)]
     pub picture: Option<String>,
+    /// Garments only: the Marathi name, if any.
+    #[serde(default)]
+    pub name_mr: Option<String>,
 }
 
 /// One price on the rate card. No price means the garment is not sold for that service.
@@ -1446,6 +1502,9 @@ pub async fn save_rate_card(
             if let (RateCardRow::Garment, Some(picture)) = (row, &edit.picture) {
                 set_picture_in_tx(&mut tx, &actor.id, &edit.id, picture, &now).await?;
             }
+            if let (RateCardRow::Garment, Some(name_mr)) = (row, &edit.name_mr) {
+                set_marathi_in_tx(&mut tx, &actor.id, &edit.id, name_mr, &now).await?;
+            }
         }
     }
     let mut ids = std::collections::HashMap::new();
@@ -1456,6 +1515,9 @@ pub async fn save_rate_card(
     for new in &changes.new_garments {
         let id =
             add_garment_in_tx(&mut tx, &actor.id, &new.name, new.picture.as_deref(), &now).await?;
+        if let Some(name_mr) = &new.name_mr {
+            set_marathi_in_tx(&mut tx, &actor.id, &id, name_mr, &now).await?;
+        }
         ids.insert(new.reference.as_str(), id);
     }
     for price in &changes.prices {
@@ -5075,6 +5137,38 @@ mod counter_tests {
     }
 
     #[test]
+    fn a_price_of_zero_is_never_sold() {
+        tauri::async_runtime::block_on(async {
+            let path = fixture_path();
+            let db = DatabaseState::open(path.clone()).await;
+            let admin = admin_fixture(&db).await;
+            let staff = staff_fixture(&db).await;
+            assert!(quote(&db, &staff, &order_input(1)).await.is_ok());
+            // An older database may hold a configured price of 0: it is not offered or billed.
+            sqlx::query("UPDATE garment_service_rates SET price_minor=0,configured=1,available=1 WHERE garment_id='g-shirt' AND service_id='svc-wash'")
+                .execute(db.writer_pool().unwrap())
+                .await
+                .unwrap();
+            assert_eq!(
+                quote(&db, &staff, &order_input(1)).await.unwrap_err(),
+                "This garment and service combination is unavailable."
+            );
+            // Setting 0 on the rate card stores no price.
+            set_rate(&db, &admin, "g-shirt", "svc-wash", Some(0), true)
+                .await
+                .unwrap();
+            let row = sqlx::query("SELECT price_minor,configured,available FROM garment_service_rates WHERE garment_id='g-shirt' AND service_id='svc-wash'")
+                .fetch_one(db.writer_pool().unwrap())
+                .await
+                .unwrap();
+            assert_eq!(row.get::<Option<i64>, _>("price_minor"), None);
+            assert_eq!(row.get::<i64, _>("configured"), 0);
+            assert_eq!(row.get::<i64, _>("available"), 0);
+            cleanup(db, path).await;
+        });
+    }
+
+    #[test]
     fn the_rate_card_saves_every_change_together_or_none() {
         tauri::async_runtime::block_on(async {
             let path = fixture_path();
@@ -5093,12 +5187,14 @@ mod counter_tests {
                 id: id.into(),
                 name: None,
                 picture: None,
+                name_mr: None,
                 removed: false,
             };
             let new_row = |reference: &str, name: &str, picture: Option<&str>| RateCardNewRow {
                 reference: reference.into(),
                 name: name.into(),
                 picture: picture.map(String::from),
+                name_mr: None,
             };
             let rate = |g: &str, s: &str, p: Option<i64>| RateCardPrice {
                 garment_id: g.into(),
@@ -5120,6 +5216,10 @@ mod counter_tests {
                         ..row("g-shirt")
                     },
                     RateCardRowEdit {
+                        name_mr: Some("  साडी   नवी ".into()),
+                        ..row("g-saree")
+                    },
+                    RateCardRowEdit {
                         removed: true,
                         ..row("g-lungi")
                     },
@@ -5128,11 +5228,15 @@ mod counter_tests {
                     name: Some("Press".into()),
                     ..row("svc-iron")
                 }],
-                new_garments: vec![new_row("new:apron", "Apron", Some("apron"))],
+                new_garments: vec![RateCardNewRow {
+                    name_mr: Some("ॲप्रन".into()),
+                    ..new_row("new:apron", "Apron", Some("apron"))
+                }],
                 new_services: vec![new_row("new:steam", "Steam press", None)],
                 prices: vec![
                     rate("g-shirt", "svc-iron", Some(1500)),
                     rate("g-shirt", "svc-dry-clean", None),
+                    rate("g-shirt", "svc-wash-iron", Some(0)),
                     rate("new:apron", "new:steam", Some(4000)),
                     rate("new:apron", "svc-iron", Some(1000)),
                 ],
@@ -5141,8 +5245,14 @@ mod counter_tests {
             let shirt = cat.garments.iter().find(|g| g["id"] == "g-shirt").unwrap();
             assert_eq!(shirt["nameEn"], "Formal shirt");
             assert_eq!(
-                shirt["nameMr"], "",
-                "a renamed garment drops its Marathi name"
+                shirt["nameMr"], "पुरुष/महिला (शर्ट / टी-शर्ट / पँट)",
+                "renaming keeps the Marathi name"
+            );
+            let saree = cat.garments.iter().find(|g| g["id"] == "g-saree").unwrap();
+            assert_eq!(saree["nameMr"], "साडी नवी");
+            assert_eq!(
+                saree["nameEn"], "Saree",
+                "a built-in garment keeps its name"
             );
             assert_eq!(shirt["imageKey"], "kurta");
             let lungi = cat.garments.iter().find(|g| g["id"] == "g-lungi").unwrap();
@@ -5151,12 +5261,18 @@ mod counter_tests {
             assert_eq!(iron["name"], "Press");
             assert_eq!(price(&cat, "g-shirt", "svc-iron"), (Some(1500), true));
             assert_eq!(price(&cat, "g-shirt", "svc-dry-clean"), (None, false));
+            assert_eq!(
+                price(&cat, "g-shirt", "svc-wash-iron"),
+                (None, false),
+                "a price of 0 is saved as not sold"
+            );
             let apron = cat
                 .garments
                 .iter()
                 .find(|g| g["nameEn"] == "Apron")
                 .unwrap();
             assert_eq!(apron["imageKey"], "apron");
+            assert_eq!(apron["nameMr"], "ॲप्रन");
             let apron = apron["id"].as_str().unwrap();
             let steam = cat
                 .services
@@ -9249,7 +9365,7 @@ mod counter_tests {
             assert!(quote(&db, &admin, &order_input(1))
                 .await
                 .unwrap_err()
-                .contains("not been configured"));
+                .contains("unavailable"));
             set_rate(&db, &admin, "g-shirt", "svc-wash", Some(275), true)
                 .await
                 .unwrap();
