@@ -599,6 +599,10 @@ pub struct TransactionRow {
     pub staff_name: Option<String>,
     pub voided_by_name: Option<String>,
     pub void_reason: Option<String>,
+    /// When the order was taken, for the daily report.
+    pub order_received_at: String,
+    /// The customer's address from their record, if any.
+    pub customer_address: Option<String>,
 }
 
 #[derive(Debug, Serialize, Clone, PartialEq)]
@@ -1225,7 +1229,9 @@ fn transaction_sides(scope: &Scope) -> String {
                     p.method AS method, p.reference_number AS reference, p.order_id AS order_id, \
                     o.order_number AS order_number, o.customer_name AS customer_name, \
                     o.customer_phone AS customer_phone, o.status AS order_status, \
-                    p.recorded_by AS staff_id, p.voided_by AS voided_by, p.void_reason AS void_reason \
+                    p.recorded_by AS staff_id, p.voided_by AS voided_by, p.void_reason AS void_reason, \
+                    o.received_at AS order_received_at, \
+                    (SELECT address FROM customers WHERE id = o.customer_id) AS customer_address \
              FROM payments p JOIN orders o ON o.id = p.order_id WHERE {}",
             epoch(column),
             scope.payment_where(column)
@@ -1274,6 +1280,9 @@ async fn transactions_inner(
                 staff_name: opt_text(row, "staff_name")?,
                 voided_by_name: opt_text(row, "voided_by_name")?,
                 void_reason: opt_text(row, "void_reason")?,
+                order_received_at: text(row, "order_received_at")?,
+                customer_address: opt_text(row, "customer_address")?
+                    .filter(|address| !address.trim().is_empty()),
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
@@ -1528,6 +1537,160 @@ pub async fn sales_transactions(
     .await)
 }
 
+/// Most rows one export writes; far more than a shop takes in a year.
+const MAX_EXPORT_ROWS: u32 = 200_000;
+
+/// One CSV cell. Text that a spreadsheet would read as a formula (=, +, -, @) gets a leading
+/// apostrophe, and a cell with a comma, quote or line break is quoted.
+fn csv_cell(value: &str, is_text: bool) -> String {
+    let value = if is_text && value.starts_with(['=', '+', '-', '@', '\t', '\r']) {
+        format!("'{value}")
+    } else {
+        value.to_string()
+    };
+    if value.contains([',', '"', '\n', '\r']) {
+        format!("\"{}\"", value.replace('"', "\"\""))
+    } else {
+        value
+    }
+}
+
+/// Paise as rupees with two decimals, for example 68600 as "686.00" and -500 as "-5.00".
+fn rupees_text(minor: i64) -> String {
+    let sign = if minor < 0 { "-" } else { "" };
+    let minor = minor.unsigned_abs();
+    format!("{sign}{}.{:02}", minor / 100, minor % 100)
+}
+
+/// A stored timestamp as shop time, "26 Oct 2026 04:49 PM"; kept as stored if unreadable.
+fn shop_time(stored: &str) -> String {
+    DateTime::parse_from_rfc3339(stored)
+        .map(|instant| instant.with_timezone(&Utc))
+        .or_else(|_| {
+            NaiveDateTime::parse_from_str(stored, "%Y-%m-%d %H:%M:%S").map(|naive| naive.and_utc())
+        })
+        .map(|instant| {
+            (instant + Duration::seconds(IST_OFFSET_SECONDS))
+                .format("%d %b %Y %I:%M %p")
+                .to_string()
+        })
+        .unwrap_or_else(|_| stored.to_string())
+}
+
+const CSV_HEADER: [&str; 12] = [
+    "Order date",
+    "Payment date",
+    "Bill number",
+    "Customer name",
+    "Customer address",
+    "Mobile number",
+    "Amount (Rs)",
+    "Payment mode",
+    "Reference",
+    "Taken by",
+    "Type",
+    "Note",
+];
+
+fn method_label(method: &str) -> &str {
+    match method {
+        "cash" => "Cash",
+        "upi" => "UPI",
+        "card" => "Card",
+        "bank_transfer" => "Bank transfer",
+        "credit" => "Credit",
+        "other" => "Other",
+        other => other,
+    }
+}
+
+/// The CSV text of the payments and refunds a filter matches, newest first. A refund is a
+/// negative amount, so the Amount column adds up to the money actually kept.
+fn transactions_csv(rows: &[TransactionRow]) -> String {
+    let mut out = String::from("\u{feff}");
+    out.push_str(&CSV_HEADER.join(","));
+    out.push_str("\r\n");
+    for row in rows {
+        let refund = row.kind == "refund";
+        let note = if refund {
+            format!(
+                "Cancelled by {}{}",
+                row.voided_by_name.as_deref().unwrap_or("unknown"),
+                row.void_reason
+                    .as_deref()
+                    .map(|reason| format!(": {reason}"))
+                    .unwrap_or_default()
+            )
+        } else {
+            String::new()
+        };
+        let amount = if refund {
+            -row.amount_minor
+        } else {
+            row.amount_minor
+        };
+        let cells = [
+            csv_cell(&shop_time(&row.order_received_at), false),
+            csv_cell(&shop_time(&row.at), false),
+            csv_cell(&row.order_number, true),
+            csv_cell(&row.customer_name, true),
+            csv_cell(row.customer_address.as_deref().unwrap_or(""), true),
+            csv_cell(&row.customer_phone, true),
+            rupees_text(amount),
+            csv_cell(method_label(&row.method), true),
+            csv_cell(row.reference.as_deref().unwrap_or(""), true),
+            csv_cell(row.staff_name.as_deref().unwrap_or(""), true),
+            if refund { "Refund" } else { "Payment" }.to_string(),
+            csv_cell(&note, true),
+        ];
+        out.push_str(&cells.join(","));
+        out.push_str("\r\n");
+    }
+    out
+}
+
+/// Every payment and refund the filter matches, read in pages inside one snapshot.
+async fn all_transactions(
+    conn: &mut SqliteConnection,
+    scope: &Scope,
+) -> Result<Vec<TransactionRow>, String> {
+    let mut rows = Vec::new();
+    loop {
+        let page = transactions_inner(conn, scope, rows.len() as u32, MAX_PAGE_SIZE).await?;
+        let done = page.items.len() < MAX_PAGE_SIZE as usize;
+        rows.extend(page.items);
+        if rows.len() as u32 > MAX_EXPORT_ROWS {
+            return Err("More than 200,000 payments match. Choose a shorter period.".into());
+        }
+        if done {
+            return Ok(rows);
+        }
+    }
+}
+
+/// Writes the payments and refunds the filter matches to a CSV file the user chose (it must end
+/// in .csv) and returns how many rows were written. Any signed-in user, like the Sales page.
+pub async fn export_sales_csv(
+    db: &DatabaseState,
+    session: &CounterSession,
+    filter: &SalesFilter,
+    path: &std::path::Path,
+) -> Result<usize, String> {
+    require_actor(session)?;
+    let is_csv = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("csv"));
+    if !is_csv {
+        return Err("Save the report as a .csv file.".into());
+    }
+    let scope = Scope::parse(filter)?;
+    let rows = read_snapshot!(db, session, |conn| all_transactions(conn, &scope).await)?;
+    std::fs::write(path, transactions_csv(&rows))
+        .map_err(|error| format!("The report could not be saved: {error}"))?;
+    Ok(rows.len())
+}
+
 /// Accounts that appear on any order or payment (so the Staff filter only offers people with
 /// sales), names only. Includes deactivated accounts: their history is still searchable.
 pub async fn sales_staff_options(
@@ -1605,6 +1768,16 @@ pub async fn counter_sales_transactions(
     limit: u32,
 ) -> Result<Page<TransactionRow>, String> {
     sales_transactions(&state, &session, &filter, offset, limit).await
+}
+
+#[tauri::command]
+pub async fn counter_export_sales_csv(
+    state: State<'_, DatabaseState>,
+    session: State<'_, CounterSession>,
+    filter: SalesFilter,
+    path: String,
+) -> Result<usize, String> {
+    export_sales_csv(&state, &session, &filter, std::path::Path::new(&path)).await
 }
 
 #[tauri::command]

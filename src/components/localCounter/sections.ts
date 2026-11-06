@@ -12,7 +12,7 @@ export interface SectionProps {
 }
 
 export type SectionId =
-  | 'order' | 'orders' | 'queue' | 'dashboard' | 'sales' | 'customers'
+  | 'order' | 'orders' | 'queue' | 'dashboard' | 'sales' | 'report' | 'customers'
   | 'expenses' | 'inventory' | 'machines' | 'admin' | 'settings' | 'trash';
 
 /**
@@ -26,6 +26,7 @@ export const SECTION_ROLES: Record<SectionId, ReadonlyArray<CounterAccount['role
   queue: ['staff', 'admin'],
   dashboard: ['staff', 'admin'],
   sales: ['staff', 'admin'],
+  report: ['staff', 'admin'],
   customers: ['staff', 'admin'],
   expenses: ['staff', 'admin'],
   inventory: ['staff', 'admin'],
@@ -46,7 +47,7 @@ export interface NavGroup {
 /** The navigation as the shell lays it out, in order. Roles that may not open a section never see it. */
 export const NAV_GROUPS: ReadonlyArray<NavGroup> = [
   { label: 'Counter', sections: [{ id: 'order', label: 'New order' }, { id: 'orders', label: 'Orders / Pickup' }, { id: 'queue', label: 'Print queue' }] },
-  { label: 'Insights', sections: [{ id: 'dashboard', label: 'Dashboard' }, { id: 'sales', label: 'Sales' }] },
+  { label: 'Insights', sections: [{ id: 'dashboard', label: 'Dashboard' }, { id: 'sales', label: 'Sales' }, { id: 'report', label: 'Daily report' }] },
   { label: 'Shop', sections: [{ id: 'customers', label: 'Customers' }, { id: 'expenses', label: 'Expenses' }, { id: 'inventory', label: 'Inventory' }, { id: 'machines', label: 'Machines' }] },
   { label: 'Admin', sections: [{ id: 'admin', label: 'Admin' }, { id: 'settings', label: 'Shop settings' }, { id: 'trash', label: 'Trash' }] },
 ];

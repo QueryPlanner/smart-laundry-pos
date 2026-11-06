@@ -121,6 +121,10 @@ export interface SalesTransaction {
   staffName: string | null;
   voidedByName: string | null;
   voidReason: string | null;
+  /** When the order was taken. */
+  orderReceivedAt: string;
+  /** The customer's address from their record, if any. */
+  customerAddress: string | null;
 }
 
 export interface SalesPage<T> { items: T[]; total: number }
@@ -170,4 +174,10 @@ export const listSalesOrders = (filter: SalesFilter, offset = 0, limit = 25): Pr
   call('counter_sales_orders', { filter, offset, limit });
 export const listSalesTransactions = (filter: SalesFilter, offset = 0, limit = 25): Promise<SalesPage<SalesTransaction>> =>
   call('counter_sales_transactions', { filter, offset, limit });
+/**
+ * Writes every payment and refund the filter matches to a CSV file at `path` (chosen by the user,
+ * ending in .csv) and returns how many rows it wrote.
+ */
+export const exportSalesCsv = (filter: SalesFilter, path: string): Promise<number> =>
+  call('counter_export_sales_csv', { filter, path });
 export const listSalesStaff = (): Promise<SalesStaffOption[]> => call('counter_sales_staff_options');

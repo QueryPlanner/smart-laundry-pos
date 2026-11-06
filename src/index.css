@@ -888,3 +888,19 @@ All colors MUST be HSL.
 .counter-rate-save>span{margin-right:auto;color:#4f6159;font-weight:650}
 .counter-rate-save>span[role=alert]{color:#9a3e2f}
 .counter-rate-save button:last-child{min-width:110px;background:#187553;color:#fff}
+.counter-report-period{margin:0;font-weight:650;color:#4f6159}
+.counter-report-table td,.counter-report-table th{white-space:nowrap}
+.counter-report-table td:nth-child(5){white-space:normal;min-width:140px}
+.counter-report-table tr.counter-report-refund td{color:#9a3e2f}
+.counter-report-table tfoot th,.counter-report-table tfoot td{font-weight:750;border-top:2px solid #cddbd4}
+@media print{
+  .counter-shell:has(.counter-report){background:#fff;padding:0}
+  .counter-shell:has(.counter-report) .counter-topbar,.counter-shell:has(.counter-report) .counter-nav,.counter-shell:has(.counter-report) .counter-notice,.counter-shell:has(.counter-report) .counter-error,.counter-report .counter-page-actions,.counter-report-filters,.counter-report .counter-table-note{display:none!important}
+  .counter-report .counter-panel{box-shadow:none;border:0;padding:0}
+  .counter-report .counter-table-wrap{overflow:visible}
+  .counter-report-table{font-size:9pt}
+  .counter-report-table td:nth-child(5){min-width:0}
+  .counter-report .counter-stats{display:flex;flex-wrap:wrap;gap:6px}
+}
+.counter-report-filters .counter-filters{align-items:end}
+.counter-report-search{display:flex;align-items:end;gap:8px}

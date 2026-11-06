@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, BarChart3, ClipboardList, LayoutDashboard, LockKeyhole, LogOut, Package, Printer, Receipt, Settings, ShieldCheck, ShoppingBasket, Store, Trash2, Users, WashingMachine, Wrench, type LucideIcon } from 'lucide-react';
+import { ArrowLeft, BarChart3, ClipboardList, FileSpreadsheet, LayoutDashboard, LockKeyhole, LogOut, Package, Printer, Receipt, Settings, ShieldCheck, ShoppingBasket, Store, Trash2, Users, WashingMachine, Wrench, type LucideIcon } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -30,6 +30,7 @@ import { JOB_STATE_LABEL } from './printJobState';
 import { canOpen, NAV_GROUPS, visibleNavGroups, type SectionId, type SectionProps } from './sections';
 import { DashboardPage } from './DashboardPage';
 import { SalesPage } from './SalesPage';
+import { DailyReportPage } from './DailyReportPage';
 import { CustomersPage } from './CustomersPage';
 import { ExpensesPage } from './ExpensesPage';
 import { InventoryPage } from './InventoryPage';
@@ -70,7 +71,7 @@ const originLabel = (from: Page): string | undefined => {
 };
 
 const NAV_ICON: Record<SectionId, LucideIcon> = {
-  order: ShoppingBasket, orders: ClipboardList, queue: Printer, dashboard: LayoutDashboard, sales: BarChart3,
+  order: ShoppingBasket, orders: ClipboardList, queue: Printer, dashboard: LayoutDashboard, sales: BarChart3, report: FileSpreadsheet,
   customers: Users, expenses: Receipt, inventory: Package, machines: Wrench, admin: ShieldCheck, settings: Settings, trash: Trash2,
 };
 
@@ -384,6 +385,7 @@ export const CounterApp = () => {
     {showing('admin') && <CounterAdmin catalogue={catalogue} onCatalogue={setCatalogue} printers={printers} onReloadPrinters={openPrinterSettings} onError={reportError} onNotice={setNotice} onRestoreStaged={() => setRestoreStaged(true)} />}
     {showing('dashboard') && <DashboardPage {...sectionProps} />}
     {showing('sales') && <SalesPage {...sectionProps} />}
+    {showing('report') && <DailyReportPage {...sectionProps} />}
     {showing('customers') && <CustomersPage {...sectionProps} />}
     {showing('expenses') && <ExpensesPage {...sectionProps} />}
     {showing('inventory') && <InventoryPage {...sectionProps} />}

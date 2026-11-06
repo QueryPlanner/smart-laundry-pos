@@ -20,6 +20,7 @@ const table: Array<[string, () => Promise<unknown>, string, Record<string, unkno
   ['listSalesOrders defaults', () => insights.listSalesOrders(filter), 'counter_sales_orders', { filter, offset: 0, limit: 25 }],
   ['listSalesTransactions', () => insights.listSalesTransactions(filter, 5, 20), 'counter_sales_transactions', { filter, offset: 5, limit: 20 }],
   ['listSalesTransactions defaults', () => insights.listSalesTransactions(filter), 'counter_sales_transactions', { filter, offset: 0, limit: 25 }],
+  ['exportSalesCsv', () => insights.exportSalesCsv(filter, '/tmp/r.csv'), 'counter_export_sales_csv', { filter, path: '/tmp/r.csv' }],
   ['listSalesStaff', () => insights.listSalesStaff(), 'counter_sales_staff_options', undefined],
 ];
 

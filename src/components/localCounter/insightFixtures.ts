@@ -46,7 +46,8 @@ export const orderRowOf = (over: Partial<SalesOrderRow> = {}): SalesOrderRow => 
 export const transactionOf = (over: Partial<SalesTransaction> = {}): SalesTransaction => ({
   id: 'p1', kind: 'payment', at: '2026-03-15T04:31:00+00:00', amountMinor: 30000, method: 'cash', reference: null,
   orderId: 'o1', orderNumber: 'LA-2026-00001', customerName: 'Rita Joshi', customerPhone: '9876543210', orderStatus: 'ready',
-  staffId: 's1', staffName: 'Asha Patil', voidedByName: null, voidReason: null, ...over,
+  staffId: 's1', staffName: 'Asha Patil', voidedByName: null, voidReason: null,
+  orderReceivedAt: '2026-03-14T06:00:00.000Z', customerAddress: null, ...over,
 });
 
 export const attentionOf = (over: Partial<AttentionOrder> = {}): AttentionOrder => ({

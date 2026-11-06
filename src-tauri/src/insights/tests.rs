@@ -2194,3 +2194,125 @@ fn the_new_figures_use_the_names_the_interface_reads() {
         assert!(overview["receivable"]["minor"].is_i64());
     });
 }
+
+#[test]
+fn the_daily_report_exports_every_payment_and_refund_as_csv() {
+    block_on(async {
+        let shop = Shop::new().await;
+        shop.story().await;
+        shop.run("INSERT INTO customers(id,customer_code,name,phone,address,created_at,updated_at,origin_device_id) VALUES('c1','C1','Rita Joshi','9876543210','Sambhaji nagar, Lane 2','2026-01-01','2026-01-01','test')").await;
+        shop.run("UPDATE orders SET customer_id='c1' WHERE id='o1'")
+            .await;
+        shop.run("UPDATE orders SET customer_name='=HYPERLINK(\"x\")' WHERE id='o2'")
+            .await;
+        let rows = txns_of(&shop, &both()).await;
+        let o1 = rows.items.iter().find(|t| t.order_id == "o1").unwrap();
+        assert_eq!(
+            o1.customer_address.as_deref(),
+            Some("Sambhaji nagar, Lane 2")
+        );
+        assert_eq!(o1.order_received_at, z("2026-01-31T23:30"));
+        assert!(rows
+            .items
+            .iter()
+            .filter(|t| t.order_id != "o1")
+            .all(|t| t.customer_address.is_none()));
+
+        let path = shop._dir.0.join("report.CSV");
+        let written = export_sales_csv(&shop.db, &staff(), &both(), &path)
+            .await
+            .unwrap();
+        assert_eq!(written, rows.total as usize);
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.starts_with("\u{feff}Order date,Payment date,Bill number,"));
+        let lines: Vec<&str> = text.trim_end().split("\r\n").collect();
+        assert_eq!(lines.len(), written + 1);
+        assert!(lines.contains(
+            &"31 Jan 2026 11:30 PM,31 Jan 2026 11:31 PM,LA-o1,Rita Joshi,\"Sambhaji nagar, Lane 2\",9876543210,270.00,Cash,,Asha Patil,Payment,"
+        ));
+        // A refund is a negative amount with who cancelled it and why.
+        assert!(lines.iter().any(|line| line.contains(",-50.00,Cash,")
+            && line.ends_with(",Refund,Cancelled by Meera Shah: order cancelled")));
+        // A name that a spreadsheet would run as a formula is written as text.
+        assert!(text.contains(",\"'=HYPERLINK(\"\"x\"\")\","));
+        // The Amount column adds up to the money kept.
+        let s = summary(&shop, &both()).await;
+        let total: f64 = lines[1..]
+            .iter()
+            .map(|line| {
+                line.split(',')
+                    .find(|cell| cell.parse::<f64>().is_ok() && cell.contains('.'))
+                    .unwrap()
+                    .parse::<f64>()
+                    .unwrap()
+            })
+            .sum();
+        assert_eq!((total * 100.0).round() as i64, s.net_collected_minor);
+
+        // Only a signed-in account, only a .csv file, and nothing written for a bad period.
+        let nobody = CounterSession::default();
+        assert!(export_sales_csv(&shop.db, &nobody, &both(), &path)
+            .await
+            .is_err());
+        let wrong = shop._dir.0.join("report.txt");
+        assert_eq!(
+            export_sales_csv(&shop.db, &admin(), &both(), &wrong)
+                .await
+                .unwrap_err(),
+            "Save the report as a .csv file."
+        );
+        assert!(!wrong.exists());
+        let backwards = filter("2026-03-01T00:00", "2026-01-01T00:00");
+        let other = shop._dir.0.join("other.csv");
+        assert!(export_sales_csv(&shop.db, &admin(), &backwards, &other)
+            .await
+            .is_err());
+        assert!(!other.exists());
+        let missing = shop._dir.0.join("no-such-folder").join("r.csv");
+        assert!(export_sales_csv(&shop.db, &admin(), &both(), &missing)
+            .await
+            .unwrap_err()
+            .starts_with("The report could not be saved"));
+        // An empty period still writes the header.
+        let empty = shop._dir.0.join("empty.csv");
+        let none = filter("2025-01-01T00:00", "2025-01-02T00:00");
+        assert_eq!(
+            export_sales_csv(&shop.db, &admin(), &none, &empty)
+                .await
+                .unwrap(),
+            0
+        );
+        assert_eq!(std::fs::read_to_string(&empty).unwrap().lines().count(), 1);
+    });
+}
+
+#[test]
+fn csv_cells_rupees_and_shop_times_are_written_plainly() {
+    assert_eq!(csv_cell("plain", true), "plain");
+    assert_eq!(csv_cell("a,b", true), "\"a,b\"");
+    assert_eq!(csv_cell("say \"hi\"", true), "\"say \"\"hi\"\"\"");
+    assert_eq!(csv_cell("line\nbreak", true), "\"line\nbreak\"");
+    for formula in ["=1+1", "+91", "-2", "@SUM"] {
+        assert_eq!(csv_cell(formula, true), format!("'{formula}"));
+    }
+    assert_eq!(csv_cell("-2", false), "-2");
+    assert_eq!(rupees_text(68_600), "686.00");
+    assert_eq!(rupees_text(5), "0.05");
+    assert_eq!(rupees_text(-500), "-5.00");
+    assert_eq!(
+        shop_time("2026-10-26T11:19:00.000Z"),
+        "26 Oct 2026 04:49 PM"
+    );
+    assert_eq!(shop_time("2026-10-26 11:19:00"), "26 Oct 2026 04:49 PM");
+    assert_eq!(shop_time("not a time"), "not a time");
+    assert_eq!(method_label("bank_transfer"), "Bank transfer");
+    assert_eq!(method_label("wallet"), "wallet");
+    for (method, label) in [
+        ("upi", "UPI"),
+        ("card", "Card"),
+        ("credit", "Credit"),
+        ("other", "Other"),
+    ] {
+        assert_eq!(method_label(method), label);
+    }
+}
