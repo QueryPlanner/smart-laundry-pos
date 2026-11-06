@@ -534,6 +534,11 @@ pub struct SavedOrder {
     /// When the order was handed over, or None while it has not been collected.
     pub collected_at: Option<String>,
     pub total_minor: i64,
+    pub subtotal_minor: i64,
+    /// Everything taken off the subtotal, automatic and by hand.
+    pub discount_minor: i64,
+    /// The part of the discount given by hand, which an admin can change when editing the bill.
+    pub manual_discount_minor: i64,
     pub paid_minor: i64,
     pub balance_minor: i64,
     /// Money to hand back on a cancelled order (its voided payments). 0 for every other order.
@@ -549,6 +554,8 @@ pub struct SavedOrder {
 #[serde(rename_all = "camelCase")]
 pub struct OrderLine {
     pub item_id: String,
+    pub garment_id: String,
+    pub service_id: String,
     pub garment: String,
     pub service: String,
     pub quantity: i64,
@@ -2279,6 +2286,109 @@ fn submission_hash(input: &SaveInput) -> Result<String, String> {
     Ok(hex(&Sha256::digest(bytes)))
 }
 
+/// The customer an order belongs to: the one selected (it must still exist), else the existing
+/// customer with this phone and name, else a new customer created now.
+async fn customer_id_for_order(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    customer: &CustomerInput,
+    phone: &str,
+    received: &str,
+) -> Result<Option<String>, String> {
+    let customer_id = if let Some(id) = customer.customer_id.as_deref() {
+        let exists: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM customers WHERE id=?")
+            .bind(id)
+            .fetch_one(&mut **tx)
+            .await
+            .map_err(db_err)?;
+        if exists == 0 {
+            return Err("Selected customer no longer exists.".into());
+        }
+        Some(id.to_string())
+    } else {
+        let found = resolve_customer_id(&mut *tx, customer).await?;
+        if let Some(id) = found {
+            Some(id)
+        } else {
+            let id = Uuid::new_v4().to_string();
+            let code = format!("C-{}", &id[..8]);
+            let device: String =
+                sqlx::query_scalar("SELECT value FROM app_settings WHERE key='device_id'")
+                    .fetch_optional(&mut **tx)
+                    .await
+                    .map_err(db_err)?
+                    .unwrap_or_default();
+            sqlx::query("INSERT INTO customers(id,customer_code,name,phone,customer_type,created_at,updated_at,origin_device_id) VALUES(?,?,?,?,'regular',?,?,?)").bind(&id).bind(code).bind(customer.name.trim()).bind(phone).bind(received).bind(received).bind(device).execute(&mut **tx).await.map_err(db_err)?;
+            Some(id)
+        }
+    };
+    Ok(customer_id)
+}
+
+/// Writes one order item per quote line, in quote order, and the pieces that carry the garments.
+/// Returns the pieces and how many of them are tagged.
+///
+/// Tagged pieces (every service except plain ironing) take positions 1..T; untagged pieces (ironing
+/// only) follow at T+1..N, so the tags a customer carries are always numbered 1..T.
+async fn insert_lines_and_pieces(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    order_id: &str,
+    order_no: &str,
+    quote: &Quote,
+    received: &str,
+) -> Result<(Vec<Piece>, u32), String> {
+    // The bill number is the shop day followed by the day's sequence; the piece ids reuse both.
+    let day = &order_no[..8];
+    let seq: i64 = order_no[8..]
+        .parse()
+        .map_err(|_| "Bad order number.".to_string())?;
+    // One order item per quote line, in quote order.
+    let mut item_ids = Vec::new();
+    for line in &quote.lines {
+        let item_id = Uuid::new_v4().to_string();
+        sqlx::query("INSERT INTO order_items(id,order_id,service_id,item_name,service_name,service_type,quantity,weight_kg,rate,line_total,created_at,garment_id,service_method_id,unit_price_minor,line_total_minor,rate_version) VALUES(?,?,?,?,?,'piece',?,0,?,?,?,?,?,?,?,?)")
+    .bind(&item_id).bind(order_id).bind(&line.service_id).bind(&line.garment).bind(&line.service).bind(line.quantity).bind(line.unit_price_minor as f64/100.0).bind(line.line_total_minor as f64/100.0).bind(received).bind(&line.garment_id).bind(&line.service_id).bind(line.unit_price_minor).bind(line.line_total_minor).bind(line.rate_version).execute(&mut **tx).await.map_err(db_err)?;
+        item_ids.push(item_id);
+    }
+    // Tagged pieces (every service except plain ironing) take positions 1..T; untagged pieces
+    // (ironing only) follow at T+1..N, so the tags a customer carries are always numbered 1..T.
+    let tagged_total: u32 = quote
+        .lines
+        .iter()
+        .filter(|line| line.service_key != "iron")
+        .map(|line| line.quantity)
+        .sum();
+    let mut all_pieces = Vec::new();
+    for untagged_pass in [false, true] {
+        for (line, item_id) in quote.lines.iter().zip(&item_ids) {
+            if (line.service_key == "iron") != untagged_pass {
+                continue;
+            }
+            for _ in 0..line.quantity {
+                let pid = Uuid::new_v4().to_string();
+                let position = all_pieces.len() as u32 + 1;
+                let tagged = !untagged_pass;
+                let short = format!("{}{seq:04}-{position}", &day[2..]);
+                all_pieces.push(Piece {
+                    id: pid.clone(),
+                    short_id: short.clone(),
+                    garment_id: line.garment_id.clone(),
+                    garment: line.garment.clone(),
+                    service: line.service.clone(),
+                    position,
+                    total: quote.piece_count,
+                    tagged,
+                    matched: false,
+                    packing_matched: false,
+                    collection_matched: false,
+                });
+                sqlx::query("INSERT INTO order_pieces(id,short_id,order_id,order_item_id,garment_id,service_id,garment_snapshot,service_snapshot,position,total,created_at,tagged) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)")
+           .bind(pid).bind(short).bind(order_id).bind(item_id).bind(&line.garment_id).bind(&line.service_id).bind(&line.garment).bind(&line.service).bind(position).bind(quote.piece_count).bind(received).bind(tagged as i64).execute(&mut **tx).await.map_err(db_err)?;
+            }
+        }
+    }
+    Ok((all_pieces, tagged_total))
+}
+
 pub async fn save_order(
     db: &DatabaseState,
     session: &CounterSession,
@@ -2408,33 +2518,8 @@ async fn save_order_at(
     }
     let received = now.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
     let due = quote.promised_at.clone();
-    let customer_id = if let Some(id) = input.order.customer.customer_id.as_deref() {
-        let exists: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM customers WHERE id=?")
-            .bind(id)
-            .fetch_one(&mut *tx)
-            .await
-            .map_err(db_err)?;
-        if exists == 0 {
-            return Err("Selected customer no longer exists.".into());
-        }
-        Some(id.to_string())
-    } else {
-        let found = resolve_customer_id(&mut tx, &input.order.customer).await?;
-        if let Some(id) = found {
-            Some(id)
-        } else {
-            let id = Uuid::new_v4().to_string();
-            let code = format!("C-{}", &id[..8]);
-            let device: String =
-                sqlx::query_scalar("SELECT value FROM app_settings WHERE key='device_id'")
-                    .fetch_optional(&mut *tx)
-                    .await
-                    .map_err(db_err)?
-                    .unwrap_or_default();
-            sqlx::query("INSERT INTO customers(id,customer_code,name,phone,customer_type,created_at,updated_at,origin_device_id) VALUES(?,?,?,?,'regular',?,?,?)").bind(&id).bind(code).bind(input.order.customer.name.trim()).bind(&phone).bind(&received).bind(&received).bind(device).execute(&mut *tx).await.map_err(db_err)?;
-            Some(id)
-        }
-    };
+    let customer_id =
+        customer_id_for_order(&mut tx, &input.order.customer, &phone, &received).await?;
     // Bill numbers are the shop day (IST) followed by a sequence that restarts each day.
     let day = ist_day_key(now);
     sqlx::query("INSERT INTO order_day_sequences(day,next_number) VALUES(?,2) ON CONFLICT(day) DO UPDATE SET next_number=next_number+1").bind(&day).execute(&mut *tx).await.map_err(db_err)?;
@@ -2454,51 +2539,8 @@ async fn save_order_at(
  .bind(&oid).bind(&order_no).bind(customer_id).bind(input.order.customer.name.trim()).bind(&phone).bind(&received).bind(&due).bind(quote.subtotal_minor as f64/100.0).bind(if quote.manual_discount_minor > 0 { "fixed" } else { "percentage" }).bind(order_discount_value(&quote)).bind(quote.discount_minor as f64/100.0).bind(quote.total_minor as f64/100.0).bind(derive_payment_status(quote.total_minor, paid, false)).bind(&actor.id).bind(&received).bind(&received).bind(device).bind(&input.idempotency_key).execute(&mut *tx).await.map_err(db_err)?;
     sqlx::query("INSERT INTO counter_order_requests(idempotency_key,order_id,payload_hash,created_at) VALUES(?,?,?,?)")
         .bind(&input.idempotency_key).bind(&oid).bind(&payload_hash).bind(&received).execute(&mut *tx).await.map_err(db_err)?;
-    // One order item per quote line, in quote order.
-    let mut item_ids = Vec::new();
-    for line in &quote.lines {
-        let item_id = Uuid::new_v4().to_string();
-        sqlx::query("INSERT INTO order_items(id,order_id,service_id,item_name,service_name,service_type,quantity,weight_kg,rate,line_total,created_at,garment_id,service_method_id,unit_price_minor,line_total_minor,rate_version) VALUES(?,?,?,?,?,'piece',?,0,?,?,?,?,?,?,?,?)")
-    .bind(&item_id).bind(&oid).bind(&line.service_id).bind(&line.garment).bind(&line.service).bind(line.quantity).bind(line.unit_price_minor as f64/100.0).bind(line.line_total_minor as f64/100.0).bind(&received).bind(&line.garment_id).bind(&line.service_id).bind(line.unit_price_minor).bind(line.line_total_minor).bind(line.rate_version).execute(&mut *tx).await.map_err(db_err)?;
-        item_ids.push(item_id);
-    }
-    // Tagged pieces (every service except plain ironing) take positions 1..T; untagged pieces
-    // (ironing only) follow at T+1..N, so the tags a customer carries are always numbered 1..T.
-    let tagged_total: u32 = quote
-        .lines
-        .iter()
-        .filter(|line| line.service_key != "iron")
-        .map(|line| line.quantity)
-        .sum();
-    let mut all_pieces = Vec::new();
-    for untagged_pass in [false, true] {
-        for (line, item_id) in quote.lines.iter().zip(&item_ids) {
-            if (line.service_key == "iron") != untagged_pass {
-                continue;
-            }
-            for _ in 0..line.quantity {
-                let pid = Uuid::new_v4().to_string();
-                let position = all_pieces.len() as u32 + 1;
-                let tagged = !untagged_pass;
-                let short = format!("{}{seq:04}-{position}", &day[2..]);
-                all_pieces.push(Piece {
-                    id: pid.clone(),
-                    short_id: short.clone(),
-                    garment_id: line.garment_id.clone(),
-                    garment: line.garment.clone(),
-                    service: line.service.clone(),
-                    position,
-                    total: quote.piece_count,
-                    tagged,
-                    matched: false,
-                    packing_matched: false,
-                    collection_matched: false,
-                });
-                sqlx::query("INSERT INTO order_pieces(id,short_id,order_id,order_item_id,garment_id,service_id,garment_snapshot,service_snapshot,position,total,created_at,tagged) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)")
-           .bind(pid).bind(short).bind(&oid).bind(item_id).bind(&line.garment_id).bind(&line.service_id).bind(&line.garment).bind(&line.service).bind(position).bind(quote.piece_count).bind(&received).bind(tagged as i64).execute(&mut *tx).await.map_err(db_err)?;
-            }
-        }
-    }
+    let (all_pieces, tagged_total) =
+        insert_lines_and_pieces(&mut tx, &oid, &order_no, &quote, &received).await?;
     if let Some(payment) = &input.payment {
         sqlx::query("INSERT INTO payments(id,order_id,amount,method,reference_number,recorded_at,recorded_by,created_at,updated_at,origin_device_id,kind) VALUES(?,?,?,?,?,?,?,?,?,?,'advance')")
    .bind(Uuid::new_v4().to_string()).bind(&oid).bind(paid as f64/100.0).bind(&payment.method).bind(&payment.reference).bind(&received).bind(&actor.id).bind(&received).bind(&received).bind("counter").execute(&mut *tx).await.map_err(db_err)?;
@@ -2589,10 +2631,338 @@ async fn save_order_at(
         .await?
         .ok_or("Saved order could not be loaded.".into())
 }
+/// The part of an order's discount that was given by hand: what the latest save or edit recorded.
+async fn manual_discount_minor(
+    connection: &mut sqlx::SqliteConnection,
+    order_id: &str,
+) -> Result<i64, String> {
+    let details: Option<String> = sqlx::query_scalar(
+        "SELECT details_json FROM counter_audit WHERE entity_type='order' AND entity_id=? AND action IN ('order_manual_discount','order_edited') ORDER BY created_at DESC,rowid DESC LIMIT 1",
+    )
+    .bind(order_id)
+    .fetch_optional(connection)
+    .await
+    .map_err(db_err)?;
+    Ok(details
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .and_then(|value| value["manualDiscountMinor"].as_i64())
+        .unwrap_or(0))
+}
+
+/// What an admin sends to correct a saved bill: the whole bill as it should now read (customer,
+/// lines, prices, extra discount), why, and the total the admin saw before pressing Save.
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct EditOrderInput {
+    #[serde(flatten)]
+    pub order: OrderInput,
+    pub reason: String,
+    pub reviewed_total_minor: i64,
+}
+
+fn reason_of(text: &str) -> Result<&str, String> {
+    let reason = text.trim();
+    if (3..=200).contains(&reason.chars().count()) {
+        Ok(reason)
+    } else {
+        Err("Give a reason of 3 to 200 characters.".into())
+    }
+}
+
+/// Admin only: rewrites a saved bill. Payments stay as recorded and the balance is recomputed.
+/// Lines whose garments and quantities are unchanged keep their pieces and tags; any other change to
+/// the lines remakes the pieces, which is refused once a piece has been packed or handed over. The
+/// printed bill and tags are queued as new documents but not printed: staff reprint when needed.
+pub async fn edit_order(
+    db: &DatabaseState,
+    session: &CounterSession,
+    order_id: &str,
+    input: EditOrderInput,
+) -> Result<SavedOrder, String> {
+    require_admin(session, "edit a bill")?;
+    let reason = reason_of(&input.reason)?.to_string();
+    let pool = db.writer_pool()?;
+    let now = Utc::now();
+    let quote = quote_at(pool, &input.order, now).await?;
+    if quote.total_minor != input.reviewed_total_minor {
+        return Err(
+            "The total changed (rates or discounts). Review the refreshed total before saving."
+                .into(),
+        );
+    }
+    let phone = normalize_phone(&input.order.customer.phone)?;
+    let mut tx = db.begin_counter_write().await?;
+    let a = require_admin_in_tx(&mut tx, session, "edit a bill").await?;
+    let order = sqlx::query("SELECT order_number,status,trashed_at,received_at,expected_ready_at,customer_name,customer_phone,total_amount FROM orders WHERE id=?")
+        .bind(order_id).fetch_optional(&mut *tx).await.map_err(db_err)?
+        .ok_or("Order not found.".to_string())?;
+    let order_no: String = order.try_get("order_number").map_err(db_err)?;
+    let status: String = order.try_get("status").map_err(db_err)?;
+    let trashed: Option<String> = order.try_get("trashed_at").map_err(db_err)?;
+    if trashed.is_some() {
+        return Err("This order is in the bin. Restore it before editing.".into());
+    }
+    if status == "cancelled" {
+        return Err("A cancelled order cannot be edited.".into());
+    }
+    let received: String = order.try_get("received_at").map_err(db_err)?;
+    let promised: String = order.try_get("expected_ready_at").map_err(db_err)?;
+    let before_name: String = order.try_get("customer_name").map_err(db_err)?;
+    let before_phone: String = order.try_get("customer_phone").map_err(db_err)?;
+    let before_total: f64 = order.try_get("total_amount").map_err(db_err)?;
+    let previous_manual = manual_discount_minor(&mut tx, order_id).await?;
+    let before_lines = order_lines_conn(&mut tx, order_id).await?;
+    let same_lines = before_lines.len() == quote.lines.len()
+        && before_lines.iter().zip(&quote.lines).all(|(old, new)| {
+            old.garment_id == new.garment_id
+                && old.service_id == new.service_id
+                && old.quantity == i64::from(new.quantity)
+        });
+    let edited = chrono::SecondsFormat::Millis;
+    let at = now.to_rfc3339_opts(edited, true);
+    if same_lines {
+        // Only prices changed: the pieces and tags stay as they are.
+        let ids: Vec<String> = sqlx::query_scalar(
+            "SELECT id FROM order_items WHERE order_id=? ORDER BY created_at,rowid",
+        )
+        .bind(order_id)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(db_err)?;
+        for (item_id, line) in ids.iter().zip(&quote.lines) {
+            sqlx::query("UPDATE order_items SET rate=?,line_total=?,unit_price_minor=?,line_total_minor=?,rate_version=? WHERE id=?")
+                .bind(line.unit_price_minor as f64 / 100.0).bind(line.line_total_minor as f64 / 100.0)
+                .bind(line.unit_price_minor).bind(line.line_total_minor).bind(line.rate_version).bind(item_id)
+                .execute(&mut *tx).await.map_err(db_err)?;
+        }
+    } else {
+        let matched: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM piece_matches WHERE order_id=?")
+                .bind(order_id)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(db_err)?;
+        if matched > 0 {
+            return Err("Some items were already packed or handed over, so the items and quantities cannot change. You can still change prices, the customer and payments.".into());
+        }
+        sqlx::query("DELETE FROM order_pieces WHERE order_id=?")
+            .bind(order_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(db_err)?;
+        sqlx::query("DELETE FROM order_items WHERE order_id=?")
+            .bind(order_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(db_err)?;
+        insert_lines_and_pieces(&mut tx, order_id, &order_no, &quote, &received).await?;
+    }
+    let customer_id = customer_id_for_order(&mut tx, &input.order.customer, &phone, &at).await?;
+    sqlx::query("UPDATE orders SET customer_id=?,customer_name=?,customer_phone=?,subtotal=?,discount_type=?,discount_value=?,discount_amount=?,total_amount=?,updated_at=?,version=version+1 WHERE id=?")
+        .bind(customer_id).bind(input.order.customer.name.trim()).bind(&phone)
+        .bind(quote.subtotal_minor as f64 / 100.0)
+        .bind(if quote.manual_discount_minor > 0 { "fixed" } else { "percentage" })
+        .bind(order_discount_value(&quote)).bind(quote.discount_minor as f64 / 100.0)
+        .bind(quote.total_minor as f64 / 100.0).bind(&at).bind(order_id)
+        .execute(&mut *tx).await.map_err(db_err)?;
+    refresh_payment_status_in_tx(&mut tx, order_id, false, &at).await?;
+    queue_edited_documents(
+        &mut tx,
+        order_id,
+        &order_no,
+        &received,
+        &promised,
+        &quote,
+        &input.order.customer.name,
+        &phone,
+        &at,
+    )
+    .await?;
+    audit_details(
+        &mut tx,
+        &a.id,
+        "order_edited",
+        "order",
+        order_id,
+        &at,
+        &serde_json::json!({
+            "reason": reason,
+            "linesChanged": !same_lines,
+            "previousTotalMinor": (before_total * 100.0).round() as i64,
+            "newTotalMinor": quote.total_minor,
+            "previousCustomer": {"name": before_name, "phone": before_phone},
+            "newCustomer": {"name": input.order.customer.name.trim(), "phone": phone},
+            "previousLines": before_lines.iter().map(|l| serde_json::json!({
+                "garment": l.garment, "service": l.service, "quantity": l.quantity, "unitPriceMinor": l.unit_price_minor,
+            })).collect::<Vec<_>>(),
+            "newLines": quote.lines.iter().map(|l| serde_json::json!({
+                "garment": l.garment, "service": l.service, "quantity": l.quantity, "unitPriceMinor": l.unit_price_minor,
+            })).collect::<Vec<_>>(),
+            "previousManualDiscountMinor": previous_manual,
+            "manualDiscountMinor": quote.manual_discount_minor,
+        }),
+    )
+    .await?;
+    tx.commit().await.map_err(db_err)?;
+    get_saved(db, order_id)
+        .await?
+        .ok_or("Order not found.".into())
+}
+
+/// Replaces the order's print documents after an edit: pending jobs are dropped, and the edited bill
+/// and tags are stored as failed jobs so a reprint (and the bill preview) use them, while nothing
+/// prints until staff choose to.
+#[allow(clippy::too_many_arguments)]
+async fn queue_edited_documents(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    order_id: &str,
+    order_no: &str,
+    received: &str,
+    promised: &str,
+    quote: &Quote,
+    customer_name: &str,
+    phone: &str,
+    at: &str,
+) -> Result<(), String> {
+    const NOTE: &str = "The bill was edited. Print it again when needed.";
+    sqlx::query("UPDATE print_jobs SET state='failed',last_error='The bill was edited before this printed.',updated_at=? WHERE order_id=? AND state='pending'")
+        .bind(at).bind(order_id).execute(&mut **tx).await.map_err(db_err)?;
+    // The bill keeps the shop identity it was first printed with.
+    let previous: Option<String> = sqlx::query_scalar("SELECT payload_json FROM print_jobs WHERE order_id=? AND kind='bill' AND source_job_id IS NULL ORDER BY created_at DESC,rowid DESC LIMIT 1")
+        .bind(order_id).fetch_optional(&mut **tx).await.map_err(db_err)?;
+    let print_settings = crate::shop_settings::load_for_order(tx).await?;
+    let header = match previous
+        .and_then(|text| serde_json::from_str::<crate::printing::PrintDocument>(&text).ok())
+    {
+        Some(crate::printing::PrintDocument::Bill(old)) => old.header,
+        _ => print_settings.bill_header(),
+    };
+    let mut quote = quote.clone();
+    quote.promised_at = promised.to_string();
+    let received_at = chrono::DateTime::parse_from_rfc3339(received)
+        .map_err(|e| e.to_string())?
+        .with_timezone(&Utc);
+    let paid = paid_amount_minor(tx, order_id).await?;
+    let bill = bill_document(
+        header,
+        order_no,
+        received_at,
+        &quote,
+        customer_name.trim(),
+        phone,
+        paid,
+    )?;
+    let mut documents = vec![("bill", crate::printing::PrintDocument::Bill(bill))];
+    let pieces = pieces_for_conn(tx, order_id).await?;
+    let tagged: Vec<&Piece> = pieces.iter().filter(|piece| piece.tagged).collect();
+    if !tagged.is_empty() {
+        let tags = crate::printing::TagDocument {
+            order_number: order_no.to_string(),
+            customer_name: tag_customer_name(customer_name),
+            customer_phone: phone.to_string(),
+            pieces: tagged
+                .iter()
+                .map(|piece| crate::printing::TagPiece {
+                    piece_id: piece.short_id.clone(),
+                    garment: piece.garment.clone(),
+                    service: piece.service.clone(),
+                    position: piece.position,
+                    total: tagged.len() as u32,
+                })
+                .collect(),
+            shop_name: print_settings.shop_name.clone(),
+            show_shop_name: print_settings.print_shop_name_on_tags,
+            tag_line: print_settings.tag_line.clone(),
+            tag_length_tenths_mm: print_settings.tag_length_tenths_mm,
+        };
+        documents.push(("tags", crate::printing::PrintDocument::Tags(tags)));
+    }
+    for (kind, doc) in documents {
+        sqlx::query("INSERT INTO print_jobs(id,order_id,kind,state,payload_json,created_at,updated_at,last_error) VALUES(?,?,?,'failed',?,?,?,?)")
+            .bind(Uuid::new_v4().to_string()).bind(order_id).bind(kind)
+            .bind(serde_json::to_string(&doc).map_err(|e| e.to_string())?)
+            .bind(at).bind(at).bind(NOTE).execute(&mut **tx).await.map_err(db_err)?;
+    }
+    Ok(())
+}
+
+/// Admin only: marks one payment as taken back, with a reason. The payment stays in the history,
+/// the balance is recomputed, and money already collected is for the shop to hand back.
+pub async fn void_payment(
+    db: &DatabaseState,
+    session: &CounterSession,
+    order_id: &str,
+    payment_id: &str,
+    reason: &str,
+) -> Result<SavedOrder, String> {
+    require_admin(session, "void a payment")?;
+    let reason = reason_of(reason)?;
+    let mut tx = db.begin_counter_write().await?;
+    let a = require_admin_in_tx(&mut tx, session, "void a payment").await?;
+    let status: String = sqlx::query_scalar("SELECT status FROM orders WHERE id=?")
+        .bind(order_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(db_err)?
+        .ok_or("Order not found.".to_string())?;
+    if status == "cancelled" {
+        return Err("A cancelled order's payments are already voided.".into());
+    }
+    let payment =
+        sqlx::query("SELECT amount,method,voided_at FROM payments WHERE id=? AND order_id=?")
+            .bind(payment_id)
+            .bind(order_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(db_err)?
+            .ok_or("Payment not found on this order.".to_string())?;
+    if payment
+        .try_get::<Option<String>, _>("voided_at")
+        .map_err(db_err)?
+        .is_some()
+    {
+        return Err("This payment is already voided.".into());
+    }
+    let amount: f64 = payment.try_get("amount").map_err(db_err)?;
+    let method: String = payment.try_get("method").map_err(db_err)?;
+    let now = Utc::now().to_rfc3339();
+    sqlx::query(
+        "UPDATE payments SET voided_at=?,voided_by=?,void_reason=?,updated_at=? WHERE id=?",
+    )
+    .bind(&now)
+    .bind(&a.id)
+    .bind(reason)
+    .bind(&now)
+    .bind(payment_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(db_err)?;
+    refresh_payment_status_in_tx(&mut tx, order_id, false, &now).await?;
+    audit_details(
+        &mut tx,
+        &a.id,
+        "payment_voided",
+        "order",
+        order_id,
+        &now,
+        &serde_json::json!({
+            "paymentId": payment_id,
+            "amountMinor": (amount * 100.0).round() as i64,
+            "method": method,
+            "reason": reason,
+        }),
+    )
+    .await?;
+    tx.commit().await.map_err(db_err)?;
+    get_saved(db, order_id)
+        .await?
+        .ok_or("Order not found.".into())
+}
+
 pub async fn get_saved(db: &DatabaseState, id: &str) -> Result<Option<SavedOrder>, String> {
     let p = db.writer_pool()?;
     let o = sqlx::query(
-        "SELECT id,order_number,customer_name,customer_phone,received_at,expected_ready_at,total_amount,status,payment_status FROM orders WHERE id=?",
+        "SELECT id,order_number,customer_name,customer_phone,received_at,expected_ready_at,total_amount,subtotal,discount_amount,status,payment_status FROM orders WHERE id=?",
     )
     .bind(id)
     .fetch_optional(p)
@@ -2622,6 +2992,12 @@ pub async fn get_saved(db: &DatabaseState, id: &str) -> Result<Option<SavedOrder
         .map(|payment| payment.amount_minor)
         .sum();
     let total_minor = (total * 100.0).round() as i64;
+    let subtotal: f64 = o.try_get("subtotal").map_err(db_err)?;
+    let discount: f64 = o.try_get("discount_amount").map_err(db_err)?;
+    let manual_discount_minor = {
+        let mut connection = p.acquire().await.map_err(db_err)?;
+        manual_discount_minor(&mut connection, &id).await?
+    };
     let refund_due_minor = if status == "cancelled" {
         payments
             .iter()
@@ -2645,6 +3021,9 @@ pub async fn get_saved(db: &DatabaseState, id: &str) -> Result<Option<SavedOrder
         payment_status,
         collected_at,
         total_minor,
+        subtotal_minor: (subtotal * 100.0).round() as i64,
+        discount_minor: (discount * 100.0).round() as i64,
+        manual_discount_minor,
         paid_minor,
         balance_minor: total_minor - paid_minor,
         refund_due_minor,
@@ -2657,21 +3036,31 @@ pub async fn get_saved(db: &DatabaseState, id: &str) -> Result<Option<SavedOrder
 
 /// The lines of an order in the order they were entered, with their piece and hand-over counts.
 async fn order_lines(p: &SqlitePool, order: &str) -> Result<Vec<OrderLine>, String> {
+    let mut connection = p.acquire().await.map_err(db_err)?;
+    order_lines_conn(&mut connection, order).await
+}
+
+async fn order_lines_conn(
+    connection: &mut sqlx::SqliteConnection,
+    order: &str,
+) -> Result<Vec<OrderLine>, String> {
     let rows = sqlx::query(
-        "SELECT i.id,i.item_name,i.service_name,CAST(ROUND(i.quantity) AS INTEGER) AS quantity,\
+        "SELECT i.id,COALESCE(i.garment_id,'') AS garment_id,COALESCE(i.service_method_id,'') AS service_id,i.item_name,i.service_name,CAST(ROUND(i.quantity) AS INTEGER) AS quantity,\
 CAST(ROUND(i.rate*100) AS INTEGER) AS unit_minor,CAST(ROUND(i.line_total*100) AS INTEGER) AS total_minor,\
 (SELECT COUNT(*) FROM order_pieces op WHERE op.order_item_id=i.id) AS piece_count,\
 (SELECT COUNT(*) FROM order_pieces op JOIN piece_matches m ON m.piece_id=op.id AND m.stage='collection' WHERE op.order_item_id=i.id) AS handed_over \
 FROM order_items i WHERE i.order_id=? ORDER BY i.created_at,i.rowid",
     )
     .bind(order)
-    .fetch_all(p)
+    .fetch_all(connection)
     .await
     .map_err(db_err)?;
     rows.iter()
         .map(|row| {
             Ok(OrderLine {
                 item_id: row.try_get("id").map_err(db_err)?,
+                garment_id: row.try_get("garment_id").map_err(db_err)?,
+                service_id: row.try_get("service_id").map_err(db_err)?,
                 garment: row.try_get("item_name").map_err(db_err)?,
                 service: row.try_get("service_name").map_err(db_err)?,
                 quantity: row.try_get("quantity").map_err(db_err)?,
@@ -10250,6 +10639,396 @@ mod counter_tests {
                 .await
                 .unwrap();
             assert!(matched.complete);
+            cleanup(db, path).await;
+        });
+    }
+    fn edit_of(order: OrderInput, total_minor: i64, reason: &str) -> EditOrderInput {
+        EditOrderInput {
+            order,
+            reason: reason.into(),
+            reviewed_total_minor: total_minor,
+        }
+    }
+
+    #[test]
+    fn an_admin_edits_prices_and_the_discount_while_pieces_and_payments_stay() {
+        tauri::async_runtime::block_on(async {
+            let path = fixture_path();
+            let db = DatabaseState::open(path.clone()).await;
+            let admin = admin_fixture(&db).await;
+            let staff = staff_fixture(&db).await;
+            let saved = save_with(&db, &staff, order_input(2), "edit-prices")
+                .await
+                .unwrap();
+            assert_eq!((saved.total_minor, saved.paid_minor), (6000, 6000));
+            let id = saved.order_id.clone();
+
+            let mut cheaper = order_input(2);
+            cheaper.items[0].unit_price_override_minor = Some(2500);
+            assert!(edit_order(
+                &db,
+                &staff,
+                &id,
+                edit_of(cheaper.clone(), 5000, "Wrong price")
+            )
+            .await
+            .unwrap_err()
+            .contains("Administrator"));
+            assert!(
+                edit_order(&db, &admin, &id, edit_of(cheaper.clone(), 5000, "x"))
+                    .await
+                    .unwrap_err()
+                    .contains("reason")
+            );
+            assert!(edit_order(
+                &db,
+                &admin,
+                &id,
+                edit_of(cheaper.clone(), 9999, "Wrong price")
+            )
+            .await
+            .unwrap_err()
+            .contains("total changed"));
+            assert!(edit_order(
+                &db,
+                &admin,
+                "missing",
+                edit_of(cheaper.clone(), 5000, "Wrong price")
+            )
+            .await
+            .unwrap_err()
+            .contains("not found"));
+
+            let edited = edit_order(&db, &admin, &id, edit_of(cheaper, 5000, "  Wrong price  "))
+                .await
+                .unwrap();
+            assert_eq!((edited.total_minor, edited.paid_minor), (5000, 6000));
+            assert_eq!(edited.balance_minor, -1000);
+            assert_eq!(edited.payment_status, "overpaid");
+            assert_eq!(edited.lines[0].unit_price_minor, 2500);
+            assert_eq!(edited.lines[0].line_total_minor, 5000);
+            let ids = |order: &SavedOrder| {
+                order
+                    .pieces
+                    .iter()
+                    .map(|piece| piece.id.clone())
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(
+                ids(&edited),
+                ids(&saved),
+                "a price change keeps the pieces and tags"
+            );
+
+            // The extra discount is read back from the last edit, and can be taken off again.
+            let mut discounted = order_input(2);
+            discounted.manual_discount_minor = Some(500);
+            let with_discount = edit_order(
+                &db,
+                &admin,
+                &id,
+                edit_of(discounted, 5500, "Regular customer"),
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                (
+                    with_discount.total_minor,
+                    with_discount.discount_minor,
+                    with_discount.manual_discount_minor,
+                    with_discount.subtotal_minor
+                ),
+                (5500, 500, 500, 6000)
+            );
+            let plain = edit_order(
+                &db,
+                &admin,
+                &id,
+                edit_of(order_input(2), 6000, "Discount removed"),
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                (
+                    plain.total_minor,
+                    plain.manual_discount_minor,
+                    plain.payment_status.as_str()
+                ),
+                (6000, 0, "paid")
+            );
+
+            let audit_row: String = sqlx::query_scalar(
+                "SELECT details_json FROM counter_audit WHERE action='order_edited' ORDER BY created_at,rowid LIMIT 1",
+            )
+            .fetch_one(db.writer_pool().unwrap())
+            .await
+            .unwrap();
+            let details: serde_json::Value = serde_json::from_str(&audit_row).unwrap();
+            assert_eq!(details["reason"], "Wrong price");
+            assert_eq!(details["linesChanged"], false);
+            assert_eq!(details["previousTotalMinor"], 6000);
+            assert_eq!(details["newTotalMinor"], 5000);
+            assert_eq!(details["previousLines"][0]["unitPriceMinor"], 3000);
+            assert_eq!(details["newLines"][0]["unitPriceMinor"], 2500);
+            cleanup(db, path).await;
+        });
+    }
+
+    #[test]
+    fn an_admin_edit_can_change_the_customer_and_lines_and_queues_the_new_bill_unprinted() {
+        tauri::async_runtime::block_on(async {
+            let path = fixture_path();
+            let db = DatabaseState::open(path.clone()).await;
+            let admin = admin_fixture(&db).await;
+            let staff = staff_fixture(&db).await;
+            let saved = save_with(&db, &staff, order_input(2), "edit-lines")
+                .await
+                .unwrap();
+            let id = saved.order_id.clone();
+
+            let mut changed = order_input(3);
+            changed.customer.name = "Renamed Customer".into();
+            changed.customer.phone = "9991112222".into();
+            changed.items.push(LineInput {
+                garment_id: "g-shirt".into(),
+                service_id: "svc-iron".into(),
+                quantity: 1,
+                unit_price_override_minor: None,
+            });
+            let new_quote = quote(&db, &admin, &changed).await.unwrap();
+            let edited = edit_order(
+                &db,
+                &admin,
+                &id,
+                edit_of(changed, new_quote.total_minor, "Customer added a shirt"),
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                (
+                    edited.customer_name.as_str(),
+                    edited.customer_phone.as_str()
+                ),
+                ("Renamed Customer", "9991112222")
+            );
+            assert_eq!(edited.lines.len(), 2);
+            assert_eq!(edited.lines[0].quantity, 3);
+            assert_eq!(edited.pieces.len(), 4);
+            assert_eq!(edited.total_minor, new_quote.total_minor);
+            assert_eq!(edited.payment_status, "partially_paid");
+            assert_eq!(edited.balance_minor, new_quote.total_minor - 6000);
+            assert_eq!(
+                edited.order_number, saved.order_number,
+                "the bill number stays"
+            );
+            assert_eq!(
+                edited.promised_at, saved.promised_at,
+                "the promised time stays"
+            );
+            assert!(edited
+                .pieces
+                .iter()
+                .all(|piece| piece.short_id.starts_with(&saved.pieces[0].short_id[..8])));
+
+            // Nothing prints by itself; the latest bill and tags document the edit for reprints.
+            let pending: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM print_jobs WHERE order_id=? AND state='pending'",
+            )
+            .bind(&id)
+            .fetch_one(db.writer_pool().unwrap())
+            .await
+            .unwrap();
+            assert_eq!(pending, 0);
+            let latest_bill: String = sqlx::query_scalar("SELECT payload_json FROM print_jobs WHERE order_id=? AND kind='bill' AND source_job_id IS NULL ORDER BY created_at DESC,rowid DESC LIMIT 1")
+                .bind(&id).fetch_one(db.writer_pool().unwrap()).await.unwrap();
+            let Ok(crate::printing::PrintDocument::Bill(bill)) = serde_json::from_str(&latest_bill)
+            else {
+                panic!("the latest bill document is a bill");
+            };
+            assert_eq!((bill.items.len(), bill.items[0].quantity), (2, 3));
+            assert_eq!(bill.customer_name, "Renamed Customer");
+            assert_eq!(bill.paid_minor, 6000);
+            let latest_tags: String = sqlx::query_scalar("SELECT payload_json FROM print_jobs WHERE order_id=? AND kind='tags' AND source_job_id IS NULL ORDER BY created_at DESC,rowid DESC LIMIT 1")
+                .bind(&id).fetch_one(db.writer_pool().unwrap()).await.unwrap();
+            let Ok(crate::printing::PrintDocument::Tags(tags)) = serde_json::from_str(&latest_tags)
+            else {
+                panic!("the latest tag document is tags");
+            };
+            assert_eq!(tags.pieces.len(), 3, "the plain iron piece carries no tag");
+            assert!(tags.customer_name.starts_with("Renamed"));
+
+            // Old and removed lines are gone; a line can also be removed down to one.
+            let mut single = order_input(1);
+            single.customer.name = "Renamed Customer".into();
+            single.customer.phone = "9991112222".into();
+            let one = edit_order(&db, &admin, &id, edit_of(single, 3000, "Only one shirt"))
+                .await
+                .unwrap();
+            assert_eq!(
+                (
+                    one.lines.len(),
+                    one.pieces.len(),
+                    one.payment_status.as_str()
+                ),
+                (1, 1, "overpaid")
+            );
+            assert!(
+                edit_order(&db, &admin, &id, edit_of(order_input(0), 0, "Nothing left"))
+                    .await
+                    .unwrap_err()
+                    .contains("quantities")
+            );
+            cleanup(db, path).await;
+        });
+    }
+
+    #[test]
+    fn edits_are_limited_once_items_are_handed_over_and_refused_on_cancelled_or_binned_orders() {
+        tauri::async_runtime::block_on(async {
+            let path = fixture_path();
+            let db = DatabaseState::open(path.clone()).await;
+            let admin = admin_fixture(&db).await;
+            let staff = staff_fixture(&db).await;
+            let saved = ready_order(&db, &staff, order_input(2), "edit-handed", Some(6000)).await;
+            let id = saved.order_id.clone();
+            hand_over_items(&db, &staff, &id, &[saved.lines[0].item_id.clone()])
+                .await
+                .unwrap();
+
+            let refused = edit_order(&db, &admin, &id, edit_of(order_input(3), 9000, "One more"))
+                .await
+                .unwrap_err();
+            assert!(
+                refused.contains("already packed or handed over"),
+                "{refused}"
+            );
+            let still: SavedOrder = get_saved(&db, &id).await.unwrap().unwrap();
+            assert_eq!(still.pieces.len(), 2, "a refused edit changes nothing");
+
+            let mut cheaper = order_input(2);
+            cheaper.items[0].unit_price_override_minor = Some(2000);
+            let priced = edit_order(&db, &admin, &id, edit_of(cheaper, 4000, "Price agreed"))
+                .await
+                .unwrap();
+            assert_eq!(priced.total_minor, 4000, "prices can change after handover");
+
+            let other = save_with(&db, &staff, order_input(1), "edit-cancelled")
+                .await
+                .unwrap();
+            cancel_order(&db, &admin, &other.order_id, "entered twice")
+                .await
+                .unwrap();
+            assert!(edit_order(
+                &db,
+                &admin,
+                &other.order_id,
+                edit_of(order_input(1), 3000, "Too late")
+            )
+            .await
+            .unwrap_err()
+            .contains("cancelled"));
+            let binned = save_with(&db, &staff, order_input(1), "edit-binned")
+                .await
+                .unwrap();
+            trash_order(&db, &admin, &binned.order_id).await.unwrap();
+            assert!(edit_order(
+                &db,
+                &admin,
+                &binned.order_id,
+                edit_of(order_input(1), 3000, "In the bin")
+            )
+            .await
+            .unwrap_err()
+            .contains("bin"));
+            cleanup(db, path).await;
+        });
+    }
+
+    #[test]
+    fn an_admin_can_void_one_payment_and_the_balance_returns() {
+        tauri::async_runtime::block_on(async {
+            let path = fixture_path();
+            let db = DatabaseState::open(path.clone()).await;
+            let admin = admin_fixture(&db).await;
+            let staff = staff_fixture(&db).await;
+            let saved = save_with(&db, &staff, order_input(2), "void-one")
+                .await
+                .unwrap();
+            let id = saved.order_id.clone();
+            let payment = saved.payments[0].id.clone();
+
+            assert!(
+                void_payment(&db, &staff, &id, &payment, "Typed wrong amount")
+                    .await
+                    .unwrap_err()
+                    .contains("Administrator")
+            );
+            assert!(void_payment(&db, &admin, &id, &payment, "no")
+                .await
+                .unwrap_err()
+                .contains("reason"));
+            assert!(
+                void_payment(&db, &admin, "missing", &payment, "Typed wrong amount")
+                    .await
+                    .unwrap_err()
+                    .contains("not found")
+            );
+            assert!(
+                void_payment(&db, &admin, &id, "missing", "Typed wrong amount")
+                    .await
+                    .unwrap_err()
+                    .contains("Payment not found")
+            );
+
+            let voided = void_payment(&db, &admin, &id, &payment, "  Typed wrong amount ")
+                .await
+                .unwrap();
+            assert_eq!((voided.paid_minor, voided.balance_minor), (0, 6000));
+            assert_eq!(voided.payment_status, "unpaid");
+            assert!(
+                voided.payments[0].voided,
+                "the history keeps the voided payment"
+            );
+            assert!(void_payment(&db, &admin, &id, &payment, "Again")
+                .await
+                .unwrap_err()
+                .contains("already voided"));
+            let audit_row: String = sqlx::query_scalar(
+                "SELECT details_json FROM counter_audit WHERE action='payment_voided'",
+            )
+            .fetch_one(db.writer_pool().unwrap())
+            .await
+            .unwrap();
+            let details: serde_json::Value = serde_json::from_str(&audit_row).unwrap();
+            assert_eq!(
+                (details["amountMinor"].as_i64(), details["reason"].as_str()),
+                (Some(6000), Some("Typed wrong amount"))
+            );
+
+            // The right amount can be taken again, and a cancelled order's payments are already void.
+            let again = record_payment(
+                &db,
+                &staff,
+                &id,
+                RecordPaymentInput {
+                    amount_minor: 6000,
+                    method: "upi".into(),
+                    reference: None,
+                    idempotency_key: "retake".into(),
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(again.payment_status, "paid");
+            cancel_order(&db, &admin, &id, "entered twice")
+                .await
+                .unwrap();
+            assert!(
+                void_payment(&db, &admin, &id, &again.payments[1].id, "Late")
+                    .await
+                    .unwrap_err()
+                    .contains("cancelled")
+            );
             cleanup(db, path).await;
         });
     }

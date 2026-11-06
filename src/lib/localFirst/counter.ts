@@ -77,6 +77,11 @@ export interface CounterSavedOrder {
   orderId: string; orderNumber: string; customerName: string; customerPhone: string;
   receivedAt: string; promisedAt: string; status: string;
   totalMinor: number; paidMinor: number; balanceMinor: number;
+  subtotalMinor: number;
+  /** Everything taken off the subtotal, automatic and by hand. */
+  discountMinor: number;
+  /** The part of `discountMinor` given by hand. */
+  manualDiscountMinor: number;
   paymentStatus: CounterPaymentStatus; collectedAt: string | null;
   /** > 0 only on a cancelled order that had payments. */
   refundDueMinor: number;
@@ -87,7 +92,7 @@ export interface CounterSavedOrder {
   pieces: CounterPiece[]; printJobs: CounterPrintJob[];
 }
 export interface CounterOrderLine {
-  itemId: string; garment: string; service: string; quantity: number;
+  itemId: string; garmentId: string; serviceId: string; garment: string; service: string; quantity: number;
   unitPriceMinor: number; lineTotalMinor: number; pieceCount: number; handedOverCount: number;
 }
 export interface CounterOrderSummary {
@@ -240,6 +245,16 @@ export const collectCounterOrder = (orderId: string, pieceIds: string[], request
   call('counter_collect_order', { orderId, pieceIds, requestId, payment });
 /** Admin only. Voids every payment on the order and marks it cancelled; `reason` must be 3 to 200 characters. */
 export const cancelCounterOrder = (orderId: string, reason: string): Promise<CounterSavedOrder> => call('counter_cancel_order', { orderId, reason });
+export interface CounterEditOrderInput extends CounterOrderInput {
+  /** Why the bill is being corrected (3 to 200 characters); kept in the audit trail. */
+  reason: string;
+  /** The total the admin reviewed; the save is refused if rates or discounts moved it. */
+  reviewedTotalMinor: number;
+}
+/** Admin only. Rewrites a saved bill (customer, lines, prices, extra discount); payments stay and the balance is recomputed. */
+export const editCounterOrder = (orderId: string, input: CounterEditOrderInput): Promise<CounterSavedOrder> => call('counter_edit_order', { orderId, input });
+/** Admin only. Marks one payment as taken back; `reason` must be 3 to 200 characters. */
+export const voidCounterPayment = (orderId: string, paymentId: string, reason: string): Promise<CounterSavedOrder> => call('counter_void_payment', { orderId, paymentId, reason });
 export const enumeratePrinters = (): Promise<NativePrinter[]> => call('counter_enumerate_printers');
 export const setPrinterProfiles = (profiles: PrinterProfiles): Promise<void> => call('counter_set_printer_profiles', { profiles });
 export const getPrinterProfiles = (): Promise<PrinterProfiles | null> => call('counter_get_printer_profiles');

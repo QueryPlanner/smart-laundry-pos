@@ -114,6 +114,8 @@ where
             counter_update_order_status,
             counter_collect_order,
             counter_cancel_order,
+            counter_edit_order,
+            counter_void_payment,
             counter_save_rate_card,
             counter_trash_order,
             counter_request_order_trash,
@@ -319,6 +321,27 @@ async fn counter_cancel_order(
     reason: String,
 ) -> Result<counter::SavedOrder, String> {
     counter::cancel_order(&state, &session, &order_id, &reason).await
+}
+
+#[tauri::command]
+async fn counter_edit_order(
+    state: State<'_, DatabaseState>,
+    session: State<'_, CounterSession>,
+    order_id: String,
+    input: counter::EditOrderInput,
+) -> Result<counter::SavedOrder, String> {
+    counter::edit_order(&state, &session, &order_id, input).await
+}
+
+#[tauri::command]
+async fn counter_void_payment(
+    state: State<'_, DatabaseState>,
+    session: State<'_, CounterSession>,
+    order_id: String,
+    payment_id: String,
+    reason: String,
+) -> Result<counter::SavedOrder, String> {
+    counter::void_payment(&state, &session, &order_id, &payment_id, &reason).await
 }
 
 #[tauri::command]
