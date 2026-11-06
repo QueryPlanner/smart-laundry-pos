@@ -139,17 +139,29 @@ export const resetCounterStaffPin = (userId: string, pin: string): Promise<void>
   call('counter_reset_staff_pin', { userId, pin });
 export const getCounterCatalogue = (): Promise<CounterCatalogue> => call('counter_get_catalogue');
 export const searchCounterCustomers = (phone: string): Promise<Array<{id: string; name: string; phone: string}>> => call('counter_search_customers', { phone });
-export const setCounterRate = (garmentId: string, serviceId: string, priceMinor: number | null, available: boolean): Promise<void> =>
-  call('counter_set_rate', { garmentId, serviceId, priceMinor, available });
-/** Admin only. Adds a garment with no rates; it can be sold only for the services priced on the rate card. */
-/** Adds a garment, shown with one of the bundled pictures (`picture` is its key) or its first letter. */
-export const addCounterGarment = (name: string, picture?: string): Promise<void> =>
-  call('counter_add_garment', { name, picture: picture ?? null });
-/** Adds a service (a section of the counter), or brings back a removed one with the same name. */
-export const addCounterService = (name: string): Promise<void> => call('counter_add_service', { name });
-/** Removes a service from the counter (past orders keep it) or brings it back. */
-export const setCounterServiceActive = (serviceId: string, active: boolean): Promise<void> =>
-  call('counter_set_service_active', { serviceId, active });
+/** A garment or service already on the rate card, as the administrator changed it. */
+export interface CounterRateCardRowEdit {
+  id: string;
+  /** A new name; leave out to keep it. */
+  name?: string;
+  /** Garments only: a picture key, '' for no picture; leave out to keep it. */
+  picture?: string;
+  removed?: boolean;
+}
+/** A garment or service added on the rate card. Prices for it name it by `ref`. */
+export interface CounterRateCardNewRow { ref: string; name: string; picture?: string }
+/** One price; null means the garment is not sold for that service. */
+export interface CounterRateCardPrice { garmentId: string; serviceId: string; priceMinor: number | null }
+export interface CounterRateCardChanges {
+  garments: CounterRateCardRowEdit[];
+  services: CounterRateCardRowEdit[];
+  newGarments: CounterRateCardNewRow[];
+  newServices: CounterRateCardNewRow[];
+  prices: CounterRateCardPrice[];
+}
+/** Admin only. Saves every rate card change at once (all or nothing) and returns the new catalogue. */
+export const saveCounterRateCard = (changes: CounterRateCardChanges): Promise<CounterCatalogue> =>
+  call('counter_save_rate_card', { changes });
 /** Admin only. Hides the order from lists, sales and the dashboard. Nothing is deleted. */
 export const trashCounterOrder = (orderId: string): Promise<void> => call('counter_trash_order', { orderId });
 /** A bill staff marked for the trash, waiting for an administrator. */

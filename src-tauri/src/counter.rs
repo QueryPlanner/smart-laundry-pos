@@ -910,53 +910,40 @@ async fn quote_at(
         catalogue_version: "2".into(),
     })
 }
-pub async fn set_rate(
-    db: &DatabaseState,
-    session: &CounterSession,
+/// Writes one rate. An empty price (`None`) makes the pair unsellable; `available` false keeps the
+/// price but hides it. Shoes are never ironed.
+async fn set_rate_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    actor_id: &str,
     garment: &str,
     service: &str,
     price: Option<i64>,
     available: bool,
+    now: &str,
 ) -> Result<(), String> {
-    let actor = actor(session)?;
-    if actor.role != "admin" {
-        return Err("Administrator access is required to change rates.".into());
-    }
     if price.is_some_and(|x| x < 0) {
         return Err("Rates cannot be negative.".into());
     }
     if price.is_some_and(|x| x > MAX_RATE_MINOR) {
         return Err("A rate cannot be more than ₹10,000. Check the amount.".into());
     }
-    let p = db.writer_pool()?;
-    if available {
-        let keys = sqlx::query("SELECT g.garment_key,s.service_key FROM garment_service_rates r JOIN garments g ON g.id=r.garment_id JOIN service_methods s ON s.id=r.service_id WHERE r.garment_id=? AND r.service_id=?")
-            .bind(garment).bind(service).fetch_optional(p).await.map_err(db_err)?
-            .ok_or("Garment or service not found.")?;
-        let garment_key: String = keys.try_get("garment_key").map_err(db_err)?;
-        let service_key: String = keys.try_get("service_key").map_err(db_err)?;
-        if garment_key == "shoes" && matches!(service_key.as_str(), "iron" | "wash_iron") {
-            return Err("Ironing services are unavailable for shoes.".into());
-        }
-    }
-    let mut tx = db.begin_counter_write().await?;
-    require_admin_in_tx(&mut tx, session, "change rates").await?;
-    let before = sqlx::query("SELECT price_minor,available,version FROM garment_service_rates WHERE garment_id=? AND service_id=?")
-        .bind(garment).bind(service).fetch_optional(&mut *tx).await.map_err(db_err)?
+    let before = sqlx::query("SELECT r.price_minor,r.available,r.version,g.garment_key,s.service_key FROM garment_service_rates r JOIN garments g ON g.id=r.garment_id JOIN service_methods s ON s.id=r.service_id WHERE r.garment_id=? AND r.service_id=?")
+        .bind(garment).bind(service).fetch_optional(&mut **tx).await.map_err(db_err)?
         .ok_or("Garment or service not found.")?;
-    let now = Utc::now().to_rfc3339();
-    let result=sqlx::query("UPDATE garment_service_rates SET price_minor=?,configured=?,available=?,version=version+1,updated_at=?,updated_by=? WHERE garment_id=? AND service_id=?")
- .bind(price).bind(price.is_some() as i64).bind(available as i64).bind(&now).bind(&actor.id).bind(garment).bind(service).execute(&mut *tx).await.map_err(db_err)?;
-    if result.rows_affected() != 1 {
-        return Err("Garment or service not found.".into());
+    let garment_key: String = before.try_get("garment_key").map_err(db_err)?;
+    let service_key: String = before.try_get("service_key").map_err(db_err)?;
+    if available && garment_key == "shoes" && matches!(service_key.as_str(), "iron" | "wash_iron") {
+        return Err("Ironing services are unavailable for shoes.".into());
     }
+    sqlx::query("UPDATE garment_service_rates SET price_minor=?,configured=?,available=?,version=version+1,updated_at=?,updated_by=? WHERE garment_id=? AND service_id=?")
+        .bind(price).bind(price.is_some() as i64).bind(available as i64).bind(now).bind(actor_id).bind(garment).bind(service).execute(&mut **tx).await.map_err(db_err)?;
     audit_details(
-        &mut tx,
-        &actor.id,
+        tx,
+        actor_id,
         "rate_changed",
         "rate",
         &format!("{garment}|{service}"),
-        &now,
+        now,
         &serde_json::json!({
             "oldPriceMinor": before.try_get::<Option<i64>, _>("price_minor").map_err(db_err)?,
             "oldAvailable": before.try_get::<i64, _>("available").map_err(db_err)? == 1,
@@ -965,12 +952,39 @@ pub async fn set_rate(
             "newAvailable": available,
         }),
     )
-    .await?;
-    tx.commit().await.map_err(db_err)?;
-    Ok(())
+    .await
 }
-/// Longest name an administrator may give a garment they add to the rate card.
+
+#[cfg(test)]
+pub async fn set_rate(
+    db: &DatabaseState,
+    session: &CounterSession,
+    garment: &str,
+    service: &str,
+    price: Option<i64>,
+    available: bool,
+) -> Result<(), String> {
+    require_admin(session, "change rates")?;
+    let mut tx = db.begin_counter_write().await?;
+    let actor = require_admin_in_tx(&mut tx, session, "change rates").await?;
+    let now = Utc::now().to_rfc3339();
+    set_rate_in_tx(&mut tx, &actor.id, garment, service, price, available, &now).await?;
+    tx.commit().await.map_err(db_err)
+}
+
+/// Longest name an administrator may give a garment on the rate card.
 const MAX_GARMENT_NAME_CHARS: usize = 40;
+/// Longest name an administrator may give a service.
+const MAX_SERVICE_NAME_CHARS: usize = 30;
+
+/// A name with its spaces tidied, refused when empty or longer than `max` characters.
+fn clean_name(name: &str, what: &str, max: usize) -> Result<String, String> {
+    let name = name.split_whitespace().collect::<Vec<_>>().join(" ");
+    if name.is_empty() || name.chars().count() > max {
+        return Err(format!("Give the {what} a name of 1 to {max} characters."));
+    }
+    Ok(name)
+}
 
 /// A picture name: the file `public/garments/<key>-transparent.png`. Kept plain so it can only ever
 /// name a file in that folder.
@@ -981,10 +995,78 @@ fn is_picture_key(key: &str) -> bool {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 }
 
-/// Adds a garment that is not in the default rate card (for example a leather jacket), shown with
-/// the chosen picture (`None` shows the first letter of its name instead). It gets one unset,
-/// unavailable rate for every service, so it can be sold only for the services the administrator
-/// later prices on the rate card.
+/// The stored picture for a garment: the chosen key, or the garment's own id for "no picture" (no
+/// file has that name, so the counter shows the first letter).
+fn picture_for(picture: Option<&str>, garment_id: &str) -> Result<String, String> {
+    match picture {
+        Some(key) if !key.is_empty() => {
+            if !is_picture_key(key) {
+                return Err("Choose one of the pictures shown.".into());
+            }
+            Ok(key.to_string())
+        }
+        _ => Ok(garment_id.to_string()),
+    }
+}
+
+/// Adds a garment that is not on the rate card (for example a leather jacket), with one unset,
+/// unavailable rate for every service. A removed garment with the same name comes back instead,
+/// with its old prices. Returns the garment's id.
+async fn add_garment_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    actor_id: &str,
+    name: &str,
+    picture: Option<&str>,
+    now: &str,
+) -> Result<String, String> {
+    let name = clean_name(name, "garment", MAX_GARMENT_NAME_CHARS)?;
+    let existing = sqlx::query("SELECT id,active FROM garments WHERE LOWER(name_en)=LOWER(?)")
+        .bind(&name)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(db_err)?;
+    let id = if let Some(row) = existing {
+        if row.try_get::<i64, _>("active").map_err(db_err)? == 1 {
+            return Err(format!("A garment called {name} already exists."));
+        }
+        let id: String = row.try_get("id").map_err(db_err)?;
+        sqlx::query("UPDATE garments SET active=1 WHERE id=?")
+            .bind(&id)
+            .execute(&mut **tx)
+            .await
+            .map_err(db_err)?;
+        if picture.is_some() {
+            sqlx::query("UPDATE garments SET image_key=? WHERE id=?")
+                .bind(picture_for(picture, &id)?)
+                .bind(&id)
+                .execute(&mut **tx)
+                .await
+                .map_err(db_err)?;
+        }
+        id
+    } else {
+        let id = format!("g-custom-{}", Uuid::new_v4());
+        let image = picture_for(picture, &id)?;
+        sqlx::query("INSERT INTO garments(id,garment_key,name_en,name_mr,category,image_key,billing_unit,sort_order) VALUES(?1,?1,?2,'','custom',?3,'piece',(SELECT COALESCE(MAX(sort_order),0)+1 FROM garments))")
+            .bind(&id).bind(&name).bind(&image).execute(&mut **tx).await.map_err(db_err)?;
+        sqlx::query("INSERT INTO garment_service_rates(garment_id,service_id,price_minor,configured,available,version,updated_at,updated_by) SELECT ?1,id,NULL,0,0,1,?2,?3 FROM service_methods")
+            .bind(&id).bind(now).bind(actor_id).execute(&mut **tx).await.map_err(db_err)?;
+        id
+    };
+    audit_details(
+        tx,
+        actor_id,
+        "garment_added",
+        "garment",
+        &id,
+        now,
+        &serde_json::json!({ "name": name, "picture": picture }),
+    )
+    .await?;
+    Ok(id)
+}
+
+#[cfg(test)]
 pub async fn add_garment(
     db: &DatabaseState,
     session: &CounterSession,
@@ -992,79 +1074,36 @@ pub async fn add_garment(
     picture: Option<&str>,
 ) -> Result<(), String> {
     require_admin(session, "add a garment")?;
-    let name = name.split_whitespace().collect::<Vec<_>>().join(" ");
-    if name.is_empty() || name.chars().count() > MAX_GARMENT_NAME_CHARS {
-        return Err(format!(
-            "Give the garment a name of 1 to {MAX_GARMENT_NAME_CHARS} characters."
-        ));
-    }
-    if picture.is_some_and(|key| !is_picture_key(key)) {
-        return Err("Choose one of the pictures shown.".into());
-    }
     let mut tx = db.begin_counter_write().await?;
     let actor = require_admin_in_tx(&mut tx, session, "add a garment").await?;
-    let taken: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM garments WHERE LOWER(name_en)=LOWER(?)")
-            .bind(&name)
-            .fetch_one(&mut *tx)
-            .await
-            .map_err(db_err)?;
-    if taken > 0 {
-        return Err("A garment with this name already exists.".into());
-    }
-    let id = format!("g-custom-{}", Uuid::new_v4());
     let now = Utc::now().to_rfc3339();
-    sqlx::query("INSERT INTO garments(id,garment_key,name_en,name_mr,category,image_key,billing_unit,sort_order) VALUES(?1,?1,?2,'','custom',?3,'piece',(SELECT COALESCE(MAX(sort_order),0)+1 FROM garments))")
-        .bind(&id).bind(&name).bind(picture.unwrap_or(id.as_str())).execute(&mut *tx).await.map_err(db_err)?;
-    sqlx::query("INSERT INTO garment_service_rates(garment_id,service_id,price_minor,configured,available,version,updated_at,updated_by) SELECT ?1,id,NULL,0,0,1,?2,?3 FROM service_methods")
-        .bind(&id).bind(&now).bind(&actor.id).execute(&mut *tx).await.map_err(db_err)?;
-    audit_details(
-        &mut tx,
-        &actor.id,
-        "garment_added",
-        "garment",
-        &id,
-        &now,
-        &serde_json::json!({ "name": name, "picture": picture }),
-    )
-    .await?;
+    add_garment_in_tx(&mut tx, &actor.id, name, picture, &now).await?;
     tx.commit().await.map_err(db_err)
 }
 
-/// Longest name an administrator may give a service.
-const MAX_SERVICE_NAME_CHARS: usize = 30;
-
 /// Adds a service (for example "Steam press") as a new section of the counter. Every garment gets an
 /// unset, unavailable rate for it, so it shows only on the garments the administrator prices. A
-/// removed service with the same name is brought back instead, with its old prices.
-pub async fn add_service(
-    db: &DatabaseState,
-    session: &CounterSession,
+/// removed service with the same name comes back instead, with its old prices. Returns its id.
+async fn add_service_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    actor_id: &str,
     name: &str,
-) -> Result<(), String> {
-    require_admin(session, "add a service")?;
-    let name = name.split_whitespace().collect::<Vec<_>>().join(" ");
-    if name.is_empty() || name.chars().count() > MAX_SERVICE_NAME_CHARS {
-        return Err(format!(
-            "Give the service a name of 1 to {MAX_SERVICE_NAME_CHARS} characters."
-        ));
-    }
-    let mut tx = db.begin_counter_write().await?;
-    let actor = require_admin_in_tx(&mut tx, session, "add a service").await?;
-    let now = Utc::now().to_rfc3339();
+    now: &str,
+) -> Result<String, String> {
+    let name = clean_name(name, "service", MAX_SERVICE_NAME_CHARS)?;
     let existing = sqlx::query("SELECT id,active FROM service_methods WHERE LOWER(name)=LOWER(?)")
         .bind(&name)
-        .fetch_optional(&mut *tx)
+        .fetch_optional(&mut **tx)
         .await
         .map_err(db_err)?;
     let id = if let Some(row) = existing {
         if row.try_get::<i64, _>("active").map_err(db_err)? == 1 {
-            return Err("A service with this name already exists.".into());
+            return Err(format!("A service called {name} already exists."));
         }
         let id: String = row.try_get("id").map_err(db_err)?;
         sqlx::query("UPDATE service_methods SET active=1 WHERE id=?")
             .bind(&id)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await
             .map_err(db_err)?;
         id
@@ -1072,29 +1111,228 @@ pub async fn add_service(
         let suffix = Uuid::new_v4().simple().to_string();
         let id = format!("svc-custom-{suffix}");
         sqlx::query("INSERT INTO service_methods(id,service_key,name,active,sort_order) VALUES(?1,?2,?3,1,(SELECT COALESCE(MAX(sort_order),0)+1 FROM service_methods))")
-            .bind(&id).bind(format!("custom_{suffix}")).bind(&name).execute(&mut *tx).await.map_err(db_err)?;
+            .bind(&id).bind(format!("custom_{suffix}")).bind(&name).execute(&mut **tx).await.map_err(db_err)?;
         // Order lines still point at the older services table, so the service is listed there too.
         sqlx::query("INSERT INTO services(id,name,category,price_per_piece,price_per_kg,created_at,updated_at,origin_device_id) VALUES(?1,?2,'laundry',NULL,NULL,?3,?3,'counter')")
-            .bind(&id).bind(&name).bind(&now).execute(&mut *tx).await.map_err(db_err)?;
+            .bind(&id).bind(&name).bind(now).execute(&mut **tx).await.map_err(db_err)?;
         sqlx::query("INSERT INTO garment_service_rates(garment_id,service_id,price_minor,configured,available,version,updated_at,updated_by) SELECT id,?1,NULL,0,0,1,?2,?3 FROM garments")
-            .bind(&id).bind(&now).bind(&actor.id).execute(&mut *tx).await.map_err(db_err)?;
+            .bind(&id).bind(now).bind(actor_id).execute(&mut **tx).await.map_err(db_err)?;
         id
     };
     audit_details(
-        &mut tx,
-        &actor.id,
+        tx,
+        actor_id,
         "service_added",
         "service",
         &id,
-        &now,
+        now,
         &serde_json::json!({ "name": name }),
     )
     .await?;
+    Ok(id)
+}
+
+#[cfg(test)]
+pub async fn add_service(
+    db: &DatabaseState,
+    session: &CounterSession,
+    name: &str,
+) -> Result<(), String> {
+    require_admin(session, "add a service")?;
+    let mut tx = db.begin_counter_write().await?;
+    let actor = require_admin_in_tx(&mut tx, session, "add a service").await?;
+    let now = Utc::now().to_rfc3339();
+    add_service_in_tx(&mut tx, &actor.id, name, &now).await?;
     tx.commit().await.map_err(db_err)
 }
 
-/// Removes a service from the counter (`active` false) or brings it back. Nothing is deleted: past
-/// orders keep their service and the prices stay for when it comes back. One service always stays.
+/// The table of a rate card row: a garment or a service.
+#[derive(Clone, Copy)]
+enum RateCardRow {
+    Garment,
+    Service,
+}
+
+impl RateCardRow {
+    fn word(self) -> &'static str {
+        match self {
+            Self::Garment => "garment",
+            Self::Service => "service",
+        }
+    }
+}
+
+/// Renames a garment or a service. Past bills keep the name they were printed with, because order
+/// lines store their own copy. A renamed garment loses its Marathi name, which would no longer match.
+async fn rename_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    actor_id: &str,
+    row: RateCardRow,
+    id: &str,
+    name: &str,
+    now: &str,
+) -> Result<(), String> {
+    let (max, current_sql, taken_sql) = match row {
+        RateCardRow::Garment => (
+            MAX_GARMENT_NAME_CHARS,
+            "SELECT name_en FROM garments WHERE id=?",
+            "SELECT COUNT(*) FROM garments WHERE LOWER(name_en)=LOWER(?) AND id<>?",
+        ),
+        RateCardRow::Service => (
+            MAX_SERVICE_NAME_CHARS,
+            "SELECT name FROM service_methods WHERE id=?",
+            "SELECT COUNT(*) FROM service_methods WHERE LOWER(name)=LOWER(?) AND id<>?",
+        ),
+    };
+    let name = clean_name(name, row.word(), max)?;
+    let old: String = sqlx::query_scalar(current_sql)
+        .bind(id)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(db_err)?
+        .ok_or_else(|| format!("The {} was not found.", row.word()))?;
+    if old == name {
+        return Ok(());
+    }
+    let taken: i64 = sqlx::query_scalar(taken_sql)
+        .bind(&name)
+        .bind(id)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(db_err)?;
+    if taken > 0 {
+        return Err(format!("A {} called {name} already exists.", row.word()));
+    }
+    let updates: &[&str] = match row {
+        RateCardRow::Garment => &["UPDATE garments SET name_en=?,name_mr='' WHERE id=?"],
+        // The older services table carries the same id for the order lines that point at it.
+        RateCardRow::Service => &[
+            "UPDATE service_methods SET name=? WHERE id=?",
+            "UPDATE services SET name=? WHERE id=?",
+        ],
+    };
+    for sql in updates {
+        sqlx::query(sql)
+            .bind(&name)
+            .bind(id)
+            .execute(&mut **tx)
+            .await
+            .map_err(db_err)?;
+    }
+    audit_details(
+        tx,
+        actor_id,
+        &format!("{}_renamed", row.word()),
+        row.word(),
+        id,
+        now,
+        &serde_json::json!({ "oldName": old, "newName": name }),
+    )
+    .await
+}
+
+/// Changes the picture of a garment ("" for no picture).
+async fn set_picture_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    actor_id: &str,
+    id: &str,
+    picture: &str,
+    now: &str,
+) -> Result<(), String> {
+    let image = picture_for(Some(picture), id)?;
+    let changed = sqlx::query("UPDATE garments SET image_key=? WHERE id=?")
+        .bind(&image)
+        .bind(id)
+        .execute(&mut **tx)
+        .await
+        .map_err(db_err)?;
+    if changed.rows_affected() != 1 {
+        return Err("The garment was not found.".into());
+    }
+    audit_details(
+        tx,
+        actor_id,
+        "garment_picture_changed",
+        "garment",
+        id,
+        now,
+        &serde_json::json!({ "picture": picture }),
+    )
+    .await
+}
+
+/// Removes a garment or a service from the counter (`active` false) or brings it back. Nothing is
+/// deleted: past orders keep it and its prices stay for when it is added again.
+async fn set_active_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    actor_id: &str,
+    row: RateCardRow,
+    id: &str,
+    active: bool,
+    now: &str,
+) -> Result<(), String> {
+    let (select, update) = match row {
+        RateCardRow::Garment => (
+            "SELECT name_en FROM garments WHERE id=?",
+            "UPDATE garments SET active=? WHERE id=?",
+        ),
+        RateCardRow::Service => (
+            "SELECT name FROM service_methods WHERE id=?",
+            "UPDATE service_methods SET active=? WHERE id=?",
+        ),
+    };
+    let name: String = sqlx::query_scalar(select)
+        .bind(id)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(db_err)?
+        .ok_or_else(|| format!("The {} was not found.", row.word()))?;
+    sqlx::query(update)
+        .bind(active as i64)
+        .bind(id)
+        .execute(&mut **tx)
+        .await
+        .map_err(db_err)?;
+    let action = format!(
+        "{}_{}",
+        row.word(),
+        if active { "restored" } else { "removed" }
+    );
+    audit_details(
+        tx,
+        actor_id,
+        &action,
+        row.word(),
+        id,
+        now,
+        &serde_json::json!({ "name": name }),
+    )
+    .await
+}
+
+/// The counter needs at least one garment and one service to sell anything.
+async fn keep_something_to_sell(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+) -> Result<(), String> {
+    for (sql, what) in [
+        (
+            "SELECT COUNT(*) FROM service_methods WHERE active=1",
+            "service",
+        ),
+        ("SELECT COUNT(*) FROM garments WHERE active=1", "garment"),
+    ] {
+        let left: i64 = sqlx::query_scalar(sql)
+            .fetch_one(&mut **tx)
+            .await
+            .map_err(db_err)?;
+        if left == 0 {
+            return Err(format!("Keep at least one {what}."));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
 pub async fn set_service_active(
     db: &DatabaseState,
     session: &CounterSession,
@@ -1104,45 +1342,143 @@ pub async fn set_service_active(
     require_admin(session, "change the services")?;
     let mut tx = db.begin_counter_write().await?;
     let actor = require_admin_in_tx(&mut tx, session, "change the services").await?;
-    let name: String = sqlx::query_scalar("SELECT name FROM service_methods WHERE id=?")
-        .bind(service_id)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(db_err)?
-        .ok_or("Service not found.")?;
-    if !active {
-        let others: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM service_methods WHERE active=1 AND id<>?")
-                .bind(service_id)
-                .fetch_one(&mut *tx)
-                .await
-                .map_err(db_err)?;
-        if others == 0 {
-            return Err("Keep at least one service.".into());
-        }
-    }
-    sqlx::query("UPDATE service_methods SET active=? WHERE id=?")
-        .bind(active as i64)
-        .bind(service_id)
-        .execute(&mut *tx)
-        .await
-        .map_err(db_err)?;
     let now = Utc::now().to_rfc3339();
-    audit_details(
+    set_active_in_tx(
         &mut tx,
         &actor.id,
-        if active {
-            "service_restored"
-        } else {
-            "service_removed"
-        },
-        "service",
+        RateCardRow::Service,
         service_id,
+        active,
         &now,
-        &serde_json::json!({ "name": name }),
     )
     .await?;
+    keep_something_to_sell(&mut tx).await?;
     tx.commit().await.map_err(db_err)
+}
+
+/// A garment or service already on the rate card, as the administrator changed it.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RateCardRowEdit {
+    pub id: String,
+    /// A new name, or none to keep it.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Garments only: a new picture key, "" for no picture, or none to keep it.
+    #[serde(default)]
+    pub picture: Option<String>,
+    #[serde(default)]
+    pub removed: bool,
+}
+
+/// A garment or service added on the rate card. Prices for it name it by `ref` until it has an id.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RateCardNewRow {
+    #[serde(rename = "ref")]
+    pub reference: String,
+    pub name: String,
+    /// Garments only: the picture key, or none for no picture.
+    #[serde(default)]
+    pub picture: Option<String>,
+}
+
+/// One price on the rate card. No price means the garment is not sold for that service.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RateCardPrice {
+    pub garment_id: String,
+    pub service_id: String,
+    pub price_minor: Option<i64>,
+}
+
+/// Everything the administrator changed on the rate card, saved together with one button.
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct RateCardChanges {
+    #[serde(default)]
+    pub garments: Vec<RateCardRowEdit>,
+    #[serde(default)]
+    pub services: Vec<RateCardRowEdit>,
+    #[serde(default)]
+    pub new_garments: Vec<RateCardNewRow>,
+    #[serde(default)]
+    pub new_services: Vec<RateCardNewRow>,
+    #[serde(default)]
+    pub prices: Vec<RateCardPrice>,
+}
+
+/// More changes than one rate card could hold (about 100 garments times 10 services).
+const MAX_RATE_CARD_CHANGES: usize = 2_000;
+
+/// Saves every change to the rate card in one transaction: renamed, re-pictured, removed and added
+/// garments and services, then the prices. Either all of it is saved or none of it. A price names a
+/// garment or service added in the same save by its `ref`. Returns the catalogue as it now is.
+pub async fn save_rate_card(
+    db: &DatabaseState,
+    session: &CounterSession,
+    changes: &RateCardChanges,
+) -> Result<Catalogue, String> {
+    require_admin(session, "change the rate card")?;
+    let total = changes.garments.len()
+        + changes.services.len()
+        + changes.new_garments.len()
+        + changes.new_services.len()
+        + changes.prices.len();
+    if total > MAX_RATE_CARD_CHANGES {
+        return Err("Too many changes at once. Save in parts.".into());
+    }
+    let mut tx = db.begin_counter_write().await?;
+    let actor = require_admin_in_tx(&mut tx, session, "change the rate card").await?;
+    let now = Utc::now().to_rfc3339();
+    for (row, edits) in [
+        (RateCardRow::Service, &changes.services),
+        (RateCardRow::Garment, &changes.garments),
+    ] {
+        for edit in edits {
+            if edit.removed {
+                set_active_in_tx(&mut tx, &actor.id, row, &edit.id, false, &now).await?;
+                continue;
+            }
+            if let Some(name) = &edit.name {
+                rename_in_tx(&mut tx, &actor.id, row, &edit.id, name, &now).await?;
+            }
+            if let (RateCardRow::Garment, Some(picture)) = (row, &edit.picture) {
+                set_picture_in_tx(&mut tx, &actor.id, &edit.id, picture, &now).await?;
+            }
+        }
+    }
+    let mut ids = std::collections::HashMap::new();
+    for new in &changes.new_services {
+        let id = add_service_in_tx(&mut tx, &actor.id, &new.name, &now).await?;
+        ids.insert(new.reference.as_str(), id);
+    }
+    for new in &changes.new_garments {
+        let id =
+            add_garment_in_tx(&mut tx, &actor.id, &new.name, new.picture.as_deref(), &now).await?;
+        ids.insert(new.reference.as_str(), id);
+    }
+    for price in &changes.prices {
+        let garment = ids
+            .get(price.garment_id.as_str())
+            .map_or(price.garment_id.as_str(), String::as_str);
+        let service = ids
+            .get(price.service_id.as_str())
+            .map_or(price.service_id.as_str(), String::as_str);
+        set_rate_in_tx(
+            &mut tx,
+            &actor.id,
+            garment,
+            service,
+            price.price_minor,
+            price.price_minor.is_some(),
+            &now,
+        )
+        .await?;
+    }
+    keep_something_to_sell(&mut tx).await?;
+    tx.commit().await.map_err(db_err)?;
+    catalogue(db, session).await
 }
 
 /// Moves an order to the trash. Nothing is deleted: the order, its payments and its audit trail stay
@@ -4620,7 +4956,7 @@ mod counter_tests {
                 set_service_active(&db, &admin, "nope", false)
                     .await
                     .unwrap_err(),
-                "Service not found."
+                "The service was not found."
             );
             for id in [
                 "svc-iron",
@@ -4675,7 +5011,7 @@ mod counter_tests {
             assert!(add_garment(&db, &admin, &"x".repeat(41), None)
                 .await
                 .is_err());
-            for bad in ["", "../etc", "Saree", "a b", &"x".repeat(41)] {
+            for bad in ["../etc", "Saree", "a b", &"x".repeat(41)] {
                 assert_eq!(
                     add_garment(&db, &admin, "Odd picture", Some(bad))
                         .await
@@ -4734,6 +5070,280 @@ mod counter_tests {
             let quoted = quote(&db, &staff, &order("svc-wash")).await.unwrap();
             assert_eq!(quoted.total_minor, 30000);
             assert!(quote(&db, &staff, &order("svc-iron")).await.is_err());
+            cleanup(db, path).await;
+        });
+    }
+
+    #[test]
+    fn the_rate_card_saves_every_change_together_or_none() {
+        tauri::async_runtime::block_on(async {
+            let path = fixture_path();
+            let db = DatabaseState::open(path.clone()).await;
+            let admin = admin_fixture(&db).await;
+            let staff = staff_fixture(&db).await;
+            let price = |cat: &Catalogue, g: &str, s: &str| {
+                let rate = cat
+                    .rates
+                    .iter()
+                    .find(|r| r["garmentId"] == g && r["serviceId"] == s)
+                    .unwrap();
+                (rate["priceMinor"].as_i64(), rate["available"] == 1)
+            };
+            let row = |id: &str| RateCardRowEdit {
+                id: id.into(),
+                name: None,
+                picture: None,
+                removed: false,
+            };
+            let new_row = |reference: &str, name: &str, picture: Option<&str>| RateCardNewRow {
+                reference: reference.into(),
+                name: name.into(),
+                picture: picture.map(String::from),
+            };
+            let rate = |g: &str, s: &str, p: Option<i64>| RateCardPrice {
+                garment_id: g.into(),
+                service_id: s.into(),
+                price_minor: p,
+            };
+
+            assert!(save_rate_card(&db, &staff, &RateCardChanges::default())
+                .await
+                .unwrap_err()
+                .contains("Administrator access"));
+
+            // One save renames, re-pictures, removes, adds and prices, new rows named by their ref.
+            let changes = RateCardChanges {
+                garments: vec![
+                    RateCardRowEdit {
+                        name: Some(" Formal   shirt ".into()),
+                        picture: Some("kurta".into()),
+                        ..row("g-shirt")
+                    },
+                    RateCardRowEdit {
+                        removed: true,
+                        ..row("g-lungi")
+                    },
+                ],
+                services: vec![RateCardRowEdit {
+                    name: Some("Press".into()),
+                    ..row("svc-iron")
+                }],
+                new_garments: vec![new_row("new:apron", "Apron", Some("apron"))],
+                new_services: vec![new_row("new:steam", "Steam press", None)],
+                prices: vec![
+                    rate("g-shirt", "svc-iron", Some(1500)),
+                    rate("g-shirt", "svc-dry-clean", None),
+                    rate("new:apron", "new:steam", Some(4000)),
+                    rate("new:apron", "svc-iron", Some(1000)),
+                ],
+            };
+            let cat = save_rate_card(&db, &admin, &changes).await.unwrap();
+            let shirt = cat.garments.iter().find(|g| g["id"] == "g-shirt").unwrap();
+            assert_eq!(shirt["nameEn"], "Formal shirt");
+            assert_eq!(
+                shirt["nameMr"], "",
+                "a renamed garment drops its Marathi name"
+            );
+            assert_eq!(shirt["imageKey"], "kurta");
+            let lungi = cat.garments.iter().find(|g| g["id"] == "g-lungi").unwrap();
+            assert_eq!(lungi["active"], 0);
+            let iron = cat.services.iter().find(|s| s["id"] == "svc-iron").unwrap();
+            assert_eq!(iron["name"], "Press");
+            assert_eq!(price(&cat, "g-shirt", "svc-iron"), (Some(1500), true));
+            assert_eq!(price(&cat, "g-shirt", "svc-dry-clean"), (None, false));
+            let apron = cat
+                .garments
+                .iter()
+                .find(|g| g["nameEn"] == "Apron")
+                .unwrap();
+            assert_eq!(apron["imageKey"], "apron");
+            let apron = apron["id"].as_str().unwrap();
+            let steam = cat
+                .services
+                .iter()
+                .find(|s| s["name"] == "Steam press")
+                .unwrap();
+            let steam = steam["id"].as_str().unwrap();
+            assert_eq!(price(&cat, apron, steam), (Some(4000), true));
+            assert_eq!(price(&cat, apron, "svc-iron"), (Some(1000), true));
+            let legacy: String =
+                sqlx::query_scalar("SELECT name FROM services WHERE id='svc-iron'")
+                    .fetch_one(db.writer_pool().unwrap())
+                    .await
+                    .unwrap();
+            assert_eq!(
+                legacy, "Press",
+                "order lines' services table follows the new name"
+            );
+
+            // A bill made before keeps its printed names after the next rename.
+            let saved = save_with_advance(&db, &staff, order_input(1), "before-rename", None)
+                .await
+                .unwrap();
+            let rename_again = RateCardChanges {
+                garments: vec![RateCardRowEdit {
+                    name: Some("Shirt".into()),
+                    picture: Some(String::new()),
+                    ..row("g-shirt")
+                }],
+                ..RateCardChanges::default()
+            };
+            let cat = save_rate_card(&db, &admin, &rename_again).await.unwrap();
+            let shirt = cat.garments.iter().find(|g| g["id"] == "g-shirt").unwrap();
+            assert_eq!(
+                shirt["imageKey"], "g-shirt",
+                "an empty picture means no picture"
+            );
+            let kept = get_saved(&db, &saved.order_id).await.unwrap().unwrap();
+            assert_eq!(kept.lines[0].garment, "Formal shirt");
+
+            // Anything wrong saves nothing: the good price before the bad name is rolled back.
+            let audits = || async {
+                sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM counter_audit")
+                    .fetch_one(db.writer_pool().unwrap())
+                    .await
+                    .unwrap()
+            };
+            let audits_before = audits().await;
+            for (bad, error) in [
+                (
+                    RateCardChanges {
+                        garments: vec![RateCardRowEdit {
+                            name: Some("saree".into()),
+                            ..row("g-shirt")
+                        }],
+                        prices: vec![rate("g-trousers", "svc-iron", Some(9900))],
+                        ..RateCardChanges::default()
+                    },
+                    "A garment called saree already exists.",
+                ),
+                (
+                    RateCardChanges {
+                        prices: vec![
+                            rate("g-trousers", "svc-iron", Some(9900)),
+                            rate("g-trousers", "svc-wash", Some(-1)),
+                        ],
+                        ..RateCardChanges::default()
+                    },
+                    "Rates cannot be negative.",
+                ),
+                (
+                    RateCardChanges {
+                        prices: vec![rate("g-shoes", "svc-iron", Some(1000))],
+                        ..RateCardChanges::default()
+                    },
+                    "Ironing services are unavailable for shoes.",
+                ),
+                (
+                    RateCardChanges {
+                        services: vec![RateCardRowEdit {
+                            name: Some("  ".into()),
+                            ..row("svc-iron")
+                        }],
+                        ..RateCardChanges::default()
+                    },
+                    "Give the service a name of 1 to 30 characters.",
+                ),
+                (
+                    RateCardChanges {
+                        garments: vec![RateCardRowEdit {
+                            picture: Some("../x".into()),
+                            ..row("g-shirt")
+                        }],
+                        ..RateCardChanges::default()
+                    },
+                    "Choose one of the pictures shown.",
+                ),
+                (
+                    RateCardChanges {
+                        garments: vec![RateCardRowEdit {
+                            name: Some("Ghost".into()),
+                            ..row("g-nope")
+                        }],
+                        ..RateCardChanges::default()
+                    },
+                    "The garment was not found.",
+                ),
+                (
+                    RateCardChanges {
+                        garments: vec![RateCardRowEdit {
+                            picture: Some("shirt".into()),
+                            ..row("g-nope")
+                        }],
+                        ..RateCardChanges::default()
+                    },
+                    "The garment was not found.",
+                ),
+                (
+                    RateCardChanges {
+                        garments: cat
+                            .garments
+                            .iter()
+                            .map(|g| RateCardRowEdit {
+                                removed: true,
+                                ..row(g["id"].as_str().unwrap())
+                            })
+                            .collect(),
+                        ..RateCardChanges::default()
+                    },
+                    "Keep at least one garment.",
+                ),
+            ] {
+                assert_eq!(save_rate_card(&db, &admin, &bad).await.unwrap_err(), error);
+            }
+            let cat = catalogue(&db, &admin).await.unwrap();
+            assert_ne!(price(&cat, "g-trousers", "svc-iron").0, Some(9900));
+            assert_eq!(audits().await, audits_before);
+            let too_many = RateCardChanges {
+                prices: (0..=MAX_RATE_CARD_CHANGES)
+                    .map(|_| rate("g-shirt", "svc-iron", None))
+                    .collect(),
+                ..RateCardChanges::default()
+            };
+            assert!(save_rate_card(&db, &admin, &too_many)
+                .await
+                .unwrap_err()
+                .contains("Too many changes"));
+
+            // A removed garment added again by name comes back with its prices and the new picture.
+            let back = RateCardChanges {
+                new_garments: vec![new_row("new:1", "LUNGI", Some("dhoti"))],
+                ..RateCardChanges::default()
+            };
+            let before = price(
+                &catalogue(&db, &admin).await.unwrap(),
+                "g-lungi",
+                "svc-iron",
+            );
+            let cat = save_rate_card(&db, &admin, &back).await.unwrap();
+            let lungi = cat.garments.iter().find(|g| g["id"] == "g-lungi").unwrap();
+            assert_eq!(
+                (lungi["active"].as_i64(), lungi["imageKey"].as_str()),
+                (Some(1), Some("dhoti"))
+            );
+            assert_eq!(price(&cat, "g-lungi", "svc-iron"), before);
+            assert!(save_rate_card(&db, &admin, &back)
+                .await
+                .unwrap_err()
+                .contains("A garment called LUNGI already exists"));
+
+            let actions: Vec<String> = sqlx::query_scalar(
+                "SELECT DISTINCT action FROM counter_audit WHERE action IN ('garment_renamed','service_renamed','garment_picture_changed','garment_removed','garment_added','service_added') ORDER BY action",
+            )
+            .fetch_all(db.writer_pool().unwrap())
+            .await
+            .unwrap();
+            assert_eq!(
+                actions,
+                [
+                    "garment_added",
+                    "garment_picture_changed",
+                    "garment_removed",
+                    "garment_renamed",
+                    "service_added",
+                    "service_renamed"
+                ]
+            );
             cleanup(db, path).await;
         });
     }

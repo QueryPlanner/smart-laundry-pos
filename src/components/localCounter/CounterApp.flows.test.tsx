@@ -11,7 +11,7 @@ const api = vi.hoisted(() => ({
   previewCounterDraftBill: vi.fn(), previewCounterOrderBill: vi.fn(),
   listCounterStaff: vi.fn(), listPrintJobs: vi.fn(), lockCounter: vi.fn(), loginCounter: vi.fn(), matchOrderPieces: vi.fn(), quoteCounterOrder: vi.fn(),
   recordCounterPayment: vi.fn(), reprintCounterOutput: vi.fn(), resetCounterStaffPin: vi.fn(), retryPrintJob: vi.fn(), saveCounterOrder: vi.fn(),
-  searchCounterCustomers: vi.fn(), searchCounterOrders: vi.fn(), setCounterRate: vi.fn(), setCounterStaffActive: vi.fn(), setPrinterProfiles: vi.fn(),
+  searchCounterCustomers: vi.fn(), searchCounterOrders: vi.fn(), saveCounterRateCard: vi.fn(), setCounterStaffActive: vi.fn(), setPrinterProfiles: vi.fn(),
   setupCounterAdmin: vi.fn(), updateCounterOrderStatus: vi.fn(), handOverCounterItems: vi.fn(), trashCounterOrder: vi.fn(), requestCounterOrderTrash: vi.fn(),
 }));
 vi.mock('@/lib/localFirst/counter', () => api);
@@ -637,10 +637,11 @@ describe('administrator entry points', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Staff' }));
     expect((await screen.findByRole('alert')).textContent).toBe('staff list failed');
     fireEvent.click(screen.getByRole('button', { name: 'Rate card' }));
-    api.setCounterRate.mockResolvedValue(undefined);
+    api.saveCounterRateCard.mockResolvedValue(catalogue);
     fireEvent.change(screen.getByLabelText('Shirt Wash price'), { target: { value: '13' } });
-    fireEvent.click(within(screen.getByLabelText('Shirt Wash price').closest('.counter-rate-row') as HTMLElement).getByRole('button', { name: 'Save' }));
-    await screen.findByText('Rate updated for future orders.');
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await screen.findByText('Rate card saved. New orders use it now.');
+    expect(api.saveCounterRateCard).toHaveBeenCalledWith(expect.objectContaining({ prices: [{ garmentId: 'shirt', serviceId: 'wash', priceMinor: 1300 }] }));
   });
 });
 

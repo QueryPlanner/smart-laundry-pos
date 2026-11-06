@@ -4,10 +4,8 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { CounterBackups } from './CounterBackups';
 import { CounterDiscounts } from './CounterDiscounts';
-import { PicturePicker } from './PicturePicker';
-import { ServiceList } from './ServiceList';
-import { parsePaymentAmountMinor } from '@/lib/localFirst/payment';
-import { addCounterGarment, createCounterStaff, enumeratePrinters, getCounterCatalogue, getPrinterProfiles, listCounterStaff, resetCounterStaffPin, setCounterRate, setCounterStaffActive, setPrinterProfiles, type CounterAccount, type CounterCatalogue, type NativePrinter } from '@/lib/localFirst/counter';
+import { RateCard } from './RateCard';
+import { createCounterStaff, enumeratePrinters, getPrinterProfiles, listCounterStaff, resetCounterStaffPin, setCounterStaffActive, setPrinterProfiles, type CounterAccount, type CounterCatalogue, type NativePrinter } from '@/lib/localFirst/counter';
 
 type AdminTab = 'rates' | 'discounts' | 'staff' | 'printers' | 'backups';
 const TAB_LABEL: Record<AdminTab, string> = { rates: 'Rate card', discounts: 'Discounts', staff: 'Staff', printers: 'Printers', backups: 'Backups' };
@@ -27,8 +25,6 @@ export const CounterAdmin = ({ catalogue, onCatalogue, printers, onReloadPrinter
   const [staff, setStaff] = useState<CounterAccount[]>([]);
   const [name, setName] = useState('');
   const [pin, setPin] = useState('');
-  const [garmentName, setGarmentName] = useState('');
-  const [garmentPicture, setGarmentPicture] = useState<string | null>(null);
   const [profiles, setProfiles] = useState({ billPrinterId: '', tagPrinterId: '' });
   const [knownPrinters, setKnownPrinters] = useState<NativePrinter[]>(printers);
 
@@ -43,27 +39,6 @@ export const CounterAdmin = ({ catalogue, onCatalogue, printers, onReloadPrinter
   // "Refresh printer list" reloads the list in the parent; show it without touching the picked printers.
   useEffect(() => { setKnownPrinters(printers); }, [printers]);
 
-  const saveRate = async (garmentId: string, serviceId: string, value: string, available: boolean) => {
-    try {
-      // An empty box clears the rate. Anything else is read digit by digit, never as a float.
-      const priceMinor = value.trim() === '' ? null : parsePaymentAmountMinor(value);
-      if (priceMinor === null && value.trim() !== '') throw new Error('Enter a valid non-negative amount.');
-      await setCounterRate(garmentId, serviceId, priceMinor, available);
-      onCatalogue(await getCounterCatalogue());
-      onNotice('Rate updated for future orders.');
-    } catch (e) { onError(e); }
-  };
-
-  const addGarment = async () => {
-    try {
-      await addCounterGarment(garmentName, garmentPicture ?? undefined);
-      setGarmentName('');
-      setGarmentPicture(null);
-      onCatalogue(await getCounterCatalogue());
-      onNotice('Garment added. Set a rate for each service it should be sold with.');
-    } catch (e) { onError(e); }
-  };
-
   return <section className="counter-panel counter-admin">
     <div className="counter-admin-heading">
       <div><span className="counter-section-label">Admin controls</span><h1>Rates, staff & printers</h1></div>
@@ -71,31 +46,7 @@ export const CounterAdmin = ({ catalogue, onCatalogue, printers, onReloadPrinter
     <div className="counter-admin-tabs">
       {(Object.keys(TAB_LABEL) as AdminTab[]).map(t => <button key={t} className={tab === t ? 'selected' : ''} onClick={() => setTab(t)}>{TAB_LABEL[t]}</button>)}
     </div>
-    {tab === 'rates' && <div className="counter-rates">
-      <p className="counter-rate-warning">The starting prices are estimates. Check every price before using the app with customers.</p>
-      <p>Only administrator-set rates can be sold. Empty rates remain unavailable; changing a rate affects future orders.</p>
-      <ServiceList services={catalogue?.services ?? []} onChanged={async () => onCatalogue(await getCounterCatalogue())} onError={onError} onNotice={onNotice} />
-      <form className="counter-add-garment" onSubmit={e => { e.preventDefault(); void addGarment(); }}>
-        <Label>New garment<Input value={garmentName} maxLength={40} placeholder="For example, Leather jacket" onChange={e => setGarmentName(e.target.value)} /></Label>
-        <PicturePicker value={garmentPicture} onChange={setGarmentPicture} />
-        <Button type="submit" disabled={!garmentName.trim()}>Add garment</Button>
-      </form>
-      <p>A new garment can be sold only for services you give a rate. Leave a service empty to make it unavailable.</p>
-      <div className="counter-rate-head"><span>Garment</span><span>Service</span><span>Rate ₹</span><span>Available</span></div>
-      {catalogue?.garments.filter(g => g.active).flatMap(g => catalogue.services.filter(s => s.active).map(s => {
-        const r = catalogue.rates.find(x => x.garmentId === g.id && x.serviceId === s.id);
-        const shoe = g.billingUnit === 'pair' && (s.key === 'iron' || s.key === 'wash_iron');
-        return <RateEditor
-          key={`${g.id}|${s.id}`}
-          garment={g.nameEn}
-          service={s.name}
-          initial={r?.priceMinor === null || r?.priceMinor === undefined ? '' : (r.priceMinor / 100).toFixed(2)}
-          available={!!r?.available && !!r?.configured && !shoe}
-          locked={shoe}
-          onSave={(v, a) => void saveRate(g.id, s.id, v, a)}
-        />;
-      }))}
-    </div>}
+    {tab === 'rates' && catalogue && <RateCard catalogue={catalogue} onCatalogue={onCatalogue} onError={onError} onNotice={onNotice} />}
     {tab === 'discounts' && <CounterDiscounts onError={onError} onNotice={onNotice} />}
     {tab === 'backups' && <CounterBackups onError={onError} onNotice={onNotice} onRestoreStaged={onRestoreStaged} />}
     {tab === 'staff' && <>
@@ -128,39 +79,6 @@ export const CounterAdmin = ({ catalogue, onCatalogue, printers, onReloadPrinter
       <p className="counter-summary-note">TSC TE244 stock is 50 mm wide. Confirm alignment and feed calibration on the Windows shop computer.</p>
     </>}
   </section>;
-};
-
-interface RateEditorProps {
-  garment: string;
-  service: string;
-  initial: string;
-  available: boolean;
-  locked: boolean;
-  onSave: (value: string, available: boolean) => void;
-}
-
-const RateEditor = ({ garment, service, initial, available, locked, onSave }: RateEditorProps) => {
-  const [price, setPrice] = useState(initial);
-  const [isAvailable, setIsAvailable] = useState(available);
-  const [availabilityTouched, setAvailabilityTouched] = useState(false);
-  useEffect(() => { setPrice(initial); setIsAvailable(available); setAvailabilityTouched(false); }, [initial, available]);
-
-  const changePrice = (next: string) => {
-    // A first price for a rate that was never set should make the garment sellable, otherwise
-    // "Rate updated" appears while the garment stays unavailable. An explicit untick is respected.
-    const firstPrice = initial === '' && price.trim() === '' && next.trim() !== '';
-    setPrice(next);
-    if (firstPrice && !availabilityTouched) setIsAvailable(true);
-  };
-  const changeAvailable = (next: boolean) => { setIsAvailable(next); setAvailabilityTouched(true); };
-
-  return <div className="counter-rate-row">
-    <span>{garment}</span>
-    <span>{service}{locked && <small> · not supported for shoes</small>}</span>
-    <Input aria-label={`${garment} ${service} price`} type="text" inputMode="decimal" disabled={locked} value={price} onChange={e => changePrice(e.target.value)} />
-    <label><input aria-label={`${garment} ${service} available`} type="checkbox" disabled={locked || !price} checked={isAvailable && !locked} onChange={e => changeAvailable(e.target.checked)} /></label>
-    <Button size="sm" disabled={locked} onClick={() => onSave(price, isAvailable)}>Save</Button>
-  </div>;
 };
 
 interface StaffRowProps {

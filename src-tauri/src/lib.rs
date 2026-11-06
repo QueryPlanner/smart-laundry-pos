@@ -114,10 +114,7 @@ where
             counter_update_order_status,
             counter_collect_order,
             counter_cancel_order,
-            counter_set_rate,
-            counter_add_garment,
-            counter_add_service,
-            counter_set_service_active,
+            counter_save_rate_card,
             counter_trash_order,
             counter_request_order_trash,
             counter_list_trash_requests,
@@ -325,49 +322,12 @@ async fn counter_cancel_order(
 }
 
 #[tauri::command]
-async fn counter_set_rate(
+async fn counter_save_rate_card(
     state: State<'_, DatabaseState>,
     session: State<'_, CounterSession>,
-    garment_id: String,
-    service_id: String,
-    price_minor: Option<i64>,
-    available: bool,
-) -> Result<(), String> {
-    counter::set_rate(
-        &state,
-        &session,
-        &garment_id,
-        &service_id,
-        price_minor,
-        available,
-    )
-    .await
-}
-#[tauri::command]
-async fn counter_add_garment(
-    state: State<'_, DatabaseState>,
-    session: State<'_, CounterSession>,
-    name: String,
-    picture: Option<String>,
-) -> Result<(), String> {
-    counter::add_garment(&state, &session, &name, picture.as_deref()).await
-}
-#[tauri::command]
-async fn counter_add_service(
-    state: State<'_, DatabaseState>,
-    session: State<'_, CounterSession>,
-    name: String,
-) -> Result<(), String> {
-    counter::add_service(&state, &session, &name).await
-}
-#[tauri::command]
-async fn counter_set_service_active(
-    state: State<'_, DatabaseState>,
-    session: State<'_, CounterSession>,
-    service_id: String,
-    active: bool,
-) -> Result<(), String> {
-    counter::set_service_active(&state, &session, &service_id, active).await
+    changes: counter::RateCardChanges,
+) -> Result<counter::Catalogue, String> {
+    counter::save_rate_card(&state, &session, &changes).await
 }
 #[tauri::command]
 async fn counter_trash_order(
