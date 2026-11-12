@@ -167,6 +167,8 @@ where
             insights::counter_sales_orders,
             insights::counter_sales_transactions,
             insights::counter_sales_staff_options,
+            insights::counter_daily_report,
+            insights::counter_export_daily_report_csv,
             counter_restore_backup
         ])
 }

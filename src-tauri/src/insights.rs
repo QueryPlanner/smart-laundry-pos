@@ -1,8 +1,10 @@
 //! Read-only insight queries for the counter workspace: the dashboard overview and the sales
 //! query (summary, graph series, order list, transaction list).
 //!
-//! Every command here is open to any signed-in account (staff and administrators see identical
-//! figures) and never writes. All amounts are whole paise.
+//! The historical reports (dashboard, sales summary, graph, orders, transactions and the staff
+//! filter) are administrator-only. The whole-shop daily report and its CSV export are open to any
+//! signed-in account. Every command here is read-only except the CSV export, which writes only the
+//! file the user chose. All amounts are whole paise.
 //!
 //! # Definitions (binding; the Sales screen repeats the important ones as hints)
 //!
@@ -32,6 +34,7 @@
 //! response always come from one consistent snapshot.
 
 use std::collections::BTreeMap;
+use std::path::Path;
 
 use chrono::{DateTime, Datelike, Duration, NaiveDate, NaiveDateTime, Timelike, Utc};
 use serde::{Deserialize, Serialize};
@@ -39,7 +42,8 @@ use sqlx::{Row, SqliteConnection};
 use tauri::State;
 
 use crate::counter::{
-    db_err, digit_value, like_contains, require_actor, strip_country_prefix, CounterSession,
+    db_err, digit_value, like_contains, require_actor, require_admin, strip_country_prefix,
+    CounterSession,
 };
 use crate::storage::DatabaseState;
 
@@ -510,6 +514,38 @@ pub struct SalesSummary {
     pub by_status: Vec<StatusBreakdown>,
     pub by_staff: Vec<StaffBreakdown>,
     pub by_service: Vec<ServiceBreakdown>,
+}
+
+#[derive(Debug, Serialize, Clone, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct DailyReportTotals {
+    pub billed_minor: i64,
+    pub cash_minor: i64,
+    pub upi_minor: i64,
+    pub other_minor: i64,
+    pub refunded_minor: i64,
+    pub net_minor: i64,
+}
+
+#[derive(Debug, Serialize, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct DailyReportRow {
+    pub bill_number: String,
+    pub billed_minor: i64,
+    pub cash_minor: i64,
+    pub upi_minor: i64,
+    pub other_minor: i64,
+    pub refunded_minor: i64,
+    pub net_minor: i64,
+}
+
+#[derive(Debug, Serialize, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct DailyReport {
+    /// The shop date in IST, `YYYY-MM-DD`.
+    pub shop_date: String,
+    pub rows: Vec<DailyReportRow>,
+    pub totals: DailyReportTotals,
 }
 
 #[derive(Debug, Serialize, Clone, PartialEq)]
@@ -1465,6 +1501,7 @@ pub async fn dashboard_overview_at(
     session: &CounterSession,
     now: DateTime<Utc>,
 ) -> Result<DashboardOverview, String> {
+    require_admin(session, "view the dashboard")?;
     read_snapshot!(db, session, |conn| overview_inner(conn, now).await)
 }
 
@@ -1473,7 +1510,7 @@ pub async fn sales_summary(
     session: &CounterSession,
     filter: &SalesFilter,
 ) -> Result<SalesSummary, String> {
-    require_actor(session)?;
+    require_admin(session, "view sales")?;
     let scope = Scope::parse(filter)?;
     read_snapshot!(db, session, |conn| summary_inner(conn, &scope, true).await)
 }
@@ -1484,7 +1521,7 @@ pub async fn sales_series(
     filter: &SalesFilter,
     bucket: &str,
 ) -> Result<SalesSeries, String> {
-    require_actor(session)?;
+    require_admin(session, "view the sales graph")?;
     let bucket = Bucket::parse(bucket)?;
     let scope = Scope::parse(filter)?;
     read_snapshot!(db, session, |conn| series_inner(conn, &scope, bucket).await)
@@ -1497,7 +1534,7 @@ pub async fn sales_orders(
     offset: u32,
     limit: u32,
 ) -> Result<Page<SalesOrderRow>, String> {
-    require_actor(session)?;
+    require_admin(session, "view sales orders")?;
     page_bounds(offset, limit)?;
     let scope = Scope::parse(filter)?;
     read_snapshot!(db, session, |conn| {
@@ -1519,7 +1556,7 @@ pub async fn sales_transactions(
     offset: u32,
     limit: u32,
 ) -> Result<Page<TransactionRow>, String> {
-    require_actor(session)?;
+    require_admin(session, "view sales transactions")?;
     page_bounds(offset, limit)?;
     let scope = Scope::parse(filter)?;
     read_snapshot!(db, session, |conn| transactions_inner(
@@ -1528,12 +1565,209 @@ pub async fn sales_transactions(
     .await)
 }
 
+/// The whole-shop daily report for the current IST day. Every bill with activity today appears
+/// once, with its money grouped by bill. Cancelled and trashed bills follow the Sales definitions:
+/// a cancelled bill is not billed today but its payments and refunds still count, and a trashed
+/// bill counts nowhere.
+async fn daily_report_inner(
+    conn: &mut SqliteConnection,
+    now: DateTime<Utc>,
+) -> Result<DailyReport, String> {
+    let shop_now = now.naive_utc() + Duration::seconds(IST_OFFSET_SECONDS);
+    let today = shop_now.date();
+    let midnight = today
+        .and_hms_opt(0, 0, 0)
+        .ok_or_else(|| "The shop date could not be read.".to_string())?;
+    let from = ist_to_epoch(midnight);
+    let to = from + 86_400;
+    let created = epoch("o.received_at");
+    let paid = epoch("p.recorded_at");
+    let voided = epoch("p.voided_at");
+    let sql = format!(
+        "SELECT o.order_number AS bill_number, \
+                CASE WHEN {created} >= ?1 AND {created} < ?2 AND o.status <> 'cancelled' \
+                     THEN {NET} ELSE 0 END AS billed_minor, \
+                COALESCE(SUM(CASE WHEN {paid} >= ?1 AND {paid} < ?2 AND p.method = 'cash' \
+                                  THEN {AMOUNT} ELSE 0 END), 0) AS cash_minor, \
+                COALESCE(SUM(CASE WHEN {paid} >= ?1 AND {paid} < ?2 AND p.method = 'upi' \
+                                  THEN {AMOUNT} ELSE 0 END), 0) AS upi_minor, \
+                COALESCE(SUM(CASE WHEN {paid} >= ?1 AND {paid} < ?2 \
+                                   AND p.method NOT IN ('cash', 'upi') \
+                                  THEN {AMOUNT} ELSE 0 END), 0) AS other_minor, \
+                COALESCE(SUM(CASE WHEN {voided} >= ?1 AND {voided} < ?2 \
+                                  THEN {AMOUNT} ELSE 0 END), 0) AS refunded_minor \
+         FROM orders o LEFT JOIN payments p ON p.order_id = o.id \
+         WHERE o.trashed_at IS NULL AND ( \
+           ({created} >= ?1 AND {created} < ?2 AND o.status <> 'cancelled') \
+           OR EXISTS (SELECT 1 FROM payments q WHERE q.order_id = o.id AND ( \
+             ({q_paid} >= ?1 AND {q_paid} < ?2) OR ({q_voided} >= ?1 AND {q_voided} < ?2) \
+           )) \
+         ) \
+         GROUP BY o.id, o.order_number, o.received_at, o.status, o.subtotal, \
+                  o.discount_amount, o.total_amount \
+         ORDER BY o.order_number COLLATE NOCASE, o.id",
+        q_paid = epoch("q.recorded_at"),
+        q_voided = epoch("q.voided_at"),
+    );
+    let rows = sqlx::query(&sql)
+        .bind(from)
+        .bind(to)
+        .fetch_all(conn)
+        .await
+        .map_err(db_err)?;
+    let mut report_rows = Vec::with_capacity(rows.len());
+    let mut totals = DailyReportTotals::default();
+    for row in &rows {
+        let billed = int(row, "billed_minor")?;
+        let cash = int(row, "cash_minor")?;
+        let upi = int(row, "upi_minor")?;
+        let other = int(row, "other_minor")?;
+        let refunded = int(row, "refunded_minor")?;
+        let net = cash + upi + other - refunded;
+        totals.billed_minor += billed;
+        totals.cash_minor += cash;
+        totals.upi_minor += upi;
+        totals.other_minor += other;
+        totals.refunded_minor += refunded;
+        totals.net_minor += net;
+        report_rows.push(DailyReportRow {
+            bill_number: text(row, "bill_number")?,
+            billed_minor: billed,
+            cash_minor: cash,
+            upi_minor: upi,
+            other_minor: other,
+            refunded_minor: refunded,
+            net_minor: net,
+        });
+    }
+    Ok(DailyReport {
+        shop_date: today.format("%Y-%m-%d").to_string(),
+        rows: report_rows,
+        totals,
+    })
+}
+
+const CSV_HEADER: [&str; 8] = [
+    "Shop date",
+    "Bill number",
+    "Billed today",
+    "Cash received",
+    "UPI received",
+    "Other received",
+    "Refunds",
+    "Net received",
+];
+
+/// A text CSV cell: formula-looking values get a leading apostrophe so a spreadsheet treats a
+/// bill number as text, and commas, quotes and line breaks are escaped the standard way.
+fn csv_cell(value: &str) -> String {
+    let guarded = if value.starts_with(['=', '+', '-', '@', '\t', '\r']) {
+        format!("'{value}")
+    } else {
+        value.to_string()
+    };
+    if guarded.contains([',', '"', '\n', '\r']) {
+        format!("\"{}\"", guarded.replace('"', "\"\""))
+    } else {
+        guarded
+    }
+}
+
+/// Whole paise as rupees with exactly two decimals, for example 12345 as "123.45".
+fn rupees_text(minor: i64) -> String {
+    let sign = if minor < 0 { "-" } else { "" };
+    let minor = minor.unsigned_abs();
+    format!("{sign}{}.{:02}", minor / 100, minor % 100)
+}
+
+fn csv_amount_row(shop_date: &str, bill_number: &str, amounts: [i64; 6]) -> String {
+    let [billed, cash, upi, other, refunded, net] = amounts;
+    [
+        csv_cell(shop_date),
+        csv_cell(bill_number),
+        rupees_text(billed),
+        rupees_text(cash),
+        rupees_text(upi),
+        rupees_text(other),
+        rupees_text(refunded),
+        rupees_text(net),
+    ]
+    .join(",")
+        + "\r\n"
+}
+
+/// The report as CSV: the same rows, order and totals as the screen, with the totals row marked
+/// `TOTAL`. An empty day still has the header and a zero totals row.
+fn daily_report_csv(report: &DailyReport) -> String {
+    let mut out = String::from("\u{feff}");
+    out.push_str(&CSV_HEADER.join(","));
+    out.push_str("\r\n");
+    for row in &report.rows {
+        out.push_str(&csv_amount_row(
+            &report.shop_date,
+            &row.bill_number,
+            [
+                row.billed_minor,
+                row.cash_minor,
+                row.upi_minor,
+                row.other_minor,
+                row.refunded_minor,
+                row.net_minor,
+            ],
+        ));
+    }
+    let totals = &report.totals;
+    out.push_str(&csv_amount_row(
+        &report.shop_date,
+        "TOTAL",
+        [
+            totals.billed_minor,
+            totals.cash_minor,
+            totals.upi_minor,
+            totals.other_minor,
+            totals.refunded_minor,
+            totals.net_minor,
+        ],
+    ));
+    out
+}
+
+pub async fn daily_report_at(
+    db: &DatabaseState,
+    session: &CounterSession,
+    now: DateTime<Utc>,
+) -> Result<DailyReport, String> {
+    read_snapshot!(db, session, |conn| daily_report_inner(conn, now).await)
+}
+
+/// Writes the current IST day's report to the file the user chose and returns the same snapshot
+/// that was written, so the screen and the file always agree.
+pub async fn export_daily_report_csv_at(
+    db: &DatabaseState,
+    session: &CounterSession,
+    path: &Path,
+    now: DateTime<Utc>,
+) -> Result<DailyReport, String> {
+    let is_csv = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("csv"));
+    if !is_csv {
+        return Err("Save the daily report as a .csv file.".into());
+    }
+    let report = read_snapshot!(db, session, |conn| daily_report_inner(conn, now).await)?;
+    std::fs::write(path, daily_report_csv(&report))
+        .map_err(|error| format!("The daily report could not be saved: {error}"))?;
+    Ok(report)
+}
+
 /// Accounts that appear on any order or payment (so the Staff filter only offers people with
 /// sales), names only. Includes deactivated accounts: their history is still searchable.
 pub async fn sales_staff_options(
     db: &DatabaseState,
     session: &CounterSession,
 ) -> Result<Vec<StaffOption>, String> {
+    require_admin(session, "view the sales staff filter")?;
     read_snapshot!(db, session, |conn| {
         let rows = sqlx::query(
             "SELECT id, full_name FROM counter_accounts \
@@ -1613,6 +1847,23 @@ pub async fn counter_sales_staff_options(
     session: State<'_, CounterSession>,
 ) -> Result<Vec<StaffOption>, String> {
     sales_staff_options(&state, &session).await
+}
+
+#[tauri::command]
+pub async fn counter_daily_report(
+    state: State<'_, DatabaseState>,
+    session: State<'_, CounterSession>,
+) -> Result<DailyReport, String> {
+    daily_report_at(&state, &session, Utc::now()).await
+}
+
+#[tauri::command]
+pub async fn counter_export_daily_report_csv(
+    state: State<'_, DatabaseState>,
+    session: State<'_, CounterSession>,
+    path: String,
+) -> Result<DailyReport, String> {
+    export_daily_report_csv_at(&state, &session, Path::new(&path), Utc::now()).await
 }
 
 #[cfg(test)]

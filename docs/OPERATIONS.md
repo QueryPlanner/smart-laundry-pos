@@ -25,14 +25,15 @@ The first time the program opens it asks you to create the administrator. Type y
 
 The sign-in screen has two buttons, **Staff login** and **Admin**. Pick your name, enter your PIN, press **Sign in**. If a name is missing, press "Refresh account list". Press **Lock** at the top right when you leave the counter. If an order is half-entered, the program asks before it throws it away. Five wrong PINs lock that account for five minutes.
 
-There is one screen layout for everyone. The menu under the title bar has four groups: **Counter** (New order, Orders / Pickup, Print queue), **Insights** (Dashboard, Sales), **Shop** (Customers, Expenses, Inventory, Machines) and, for the admin only, **Admin** (Admin, Shop settings). The program always opens on New order. Staff see everything except the Admin group.
+There is one screen layout for everyone. The menu under the title bar has four groups: **Counter** (New order, Orders / Pickup, Print queue), **Insights** (Dashboard, Sales, Daily report), **Shop** (Customers, Expenses, Inventory, Machines) and, for the admin only, **Admin** (Admin, Shop settings). The program always opens on New order. Staff see the Counter and Shop groups and Insights > Daily report; Dashboard, Sales and the Admin group are for the admin only.
 
 **Who can do what**
 
 | | Staff | Admin |
 | --- | --- | --- |
 | Take orders, take payments, hand garments over (all at once or in parts), reprint bills and tags | Yes | Yes |
-| See Dashboard and Sales (the same figures for both) | Yes | Yes |
+| See Dashboard and Sales (the historical views) | No | Yes |
+| See the whole-shop Daily report and export it as CSV | Yes | Yes |
 | Add or edit customers, record expenses, add inventory items and adjust stock, add machines and record services | Yes | Yes |
 | Set prices (Rate card) and discounts | No | Yes |
 | Change one price on one bill (Current order > ₹ each) | Yes | Yes |
@@ -90,6 +91,12 @@ It shows six cards (orders, billed, discounts, collected, expenses, profit), a g
 - **Billed** counts orders created in the period. **Collected** counts payments taken in the period, whenever the order was made.
 - **Expenses** are counted by the date of the expense, not the time. **Profit** is not shown while filters are on.
 - The **Staff** filter means: orders created by that person, and money taken by that person.
+
+## Daily report
+
+Insights > **Daily report** is the whole shop's current day in one table, for staff and admin alike. Every bill with activity today appears once with its shop date, bill number, what was billed today, cash, UPI and other money received, refunds and net received. **Other** means any method other than cash or UPI (for example card or bank transfer). The day is the shop day in IST: it runs from midnight to just before the next midnight, and this screen has no date range or staff filter.
+
+Press **Refresh** to reload. **Export CSV** asks where to save, suggests `daily-report-YYYY-MM-DD.csv`, and writes every bill, not only the rows on screen. The file is plain UTF-8 CSV and opens in Excel or another spreadsheet without a network connection; the last row is `TOTAL`. An empty day still exports the header and a zero `TOTAL`. A cancelled bill is not counted as billed today, but money taken or refunded on it still counts; a trashed bill counts nowhere. These are the same rules as Sales.
 
 ## Customers
 

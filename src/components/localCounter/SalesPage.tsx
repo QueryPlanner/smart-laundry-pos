@@ -56,8 +56,8 @@ const Breakdown = ({ title, empty, rows }: { title: string; empty: string; rows:
 );
 
 /**
- * Sales query for staff and administrators alike: pick a period and filters, see the figures,
- * the graph, the orders and every payment and refund behind them.
+ * Administrator-only sales query: pick a period and filters, see the figures, the graph, the
+ * orders and every payment and refund behind them.
  */
 export const SalesPage = ({ onError, onOpenOrder, initialView }: SectionProps & { initialView?: SalesView | null }) => {
   const [preset, setPreset] = useState<SalesPreset>(initialView?.preset ?? 'today');
@@ -138,7 +138,7 @@ export const SalesPage = ({ onError, onOpenOrder, initialView }: SectionProps & 
   const active = summary && series && !problem;
   return (
     <section className="counter-page">
-      <PageHeader title="Sales" subtitle="Staff and administrators see the same figures." actions={<Button variant="outline" onClick={refresh}>Refresh</Button>} />
+      <PageHeader title="Sales" subtitle="Historical figures for administrators." actions={<Button variant="outline" onClick={refresh}>Refresh</Button>} />
 
       <section className="counter-panel counter-filter-bar" aria-label="Sales filters">
         <div className="counter-chips" role="group" aria-label="Period">

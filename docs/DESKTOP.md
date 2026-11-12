@@ -9,12 +9,12 @@ The target installation is one Windows laptop in a shop with a Canon laser print
 | Layer | Where | Responsibility |
 | --- | --- | --- |
 | Entry | `src/desktop.tsx`, `src/pages/LocalFirstApp.tsx` | Mounts the one workspace, `CounterApp`. There is no second interface. |
-| Workspace UI | `src/components/localCounter/` | `CounterApp.tsx` is the shell (sign-in, role-filtered navigation, the New order screen and the order, pickup and print screens). `sections.ts` is the registry of sections and which role may open each; the section screens are `DashboardPage`, `SalesPage`, `CustomersPage`, `ExpensesPage`, `InventoryPage`, `MachinesPage` and `ShopSettingsPage`, plus `CounterAdmin` (rate card, discounts, staff, printers, backups and restore). Shared pieces are in `ui.tsx`. |
+| Workspace UI | `src/components/localCounter/` | `CounterApp.tsx` is the shell (sign-in, role-filtered navigation, the New order screen and the order, pickup and print screens). `sections.ts` is the registry of sections and which role may open each; the section screens are `DashboardPage`, `SalesPage`, `DailyReportPage`, `CustomersPage`, `ExpensesPage`, `InventoryPage`, `MachinesPage` and `ShopSettingsPage`, plus `CounterAdmin` (rate card, discounts, staff, printers, backups and restore). Shared pieces are in `ui.tsx`. |
 | Native API wrappers | `src/lib/localFirst/counter.ts`, `office.ts`, `insights.ts`, `shopSettings.ts` | Typed wrappers over the native `counter_*` commands. The UI never sends prices, discounts, roles or SQL. `commands.guard.test.ts` fails if a registered command has no wrapper, a wrapper calls an unregistered command, or any registered command is not named `counter_*`. |
 | Native commands | `src-tauri/src/lib.rs` | Registers the Tauri commands, runs start-up (recover interrupted prints, apply the admin PIN reset file) and starts the backup thread. Every registered command is a `counter_*` command. |
 | Business rules | `src-tauri/src/counter.rs` | Accounts and roles, rate card, discounts, quoting, order save, cancel, pieces, collection, print job state, backup settings, backup restore, PIN reset file. Every command checks the signed-in role here. |
 | Back office | `src-tauri/src/office.rs` | Customers, expenses, inventory and machines: list, create, edit and (admin only) delete, with audit rows. |
-| Insights | `src-tauri/src/insights.rs` | Dashboard overview, sales summary, sales graph series, order list and payment (transaction) list, all read-only. |
+| Insights | `src-tauri/src/insights.rs` | Dashboard overview, sales summary, sales graph series, order list and payment (transaction) list (all admin-only and read-only), plus the whole-shop daily report and its CSV export for any signed-in account. The export writes only the file the user chose. |
 | Shop settings | `src-tauri/src/shop_settings.rs` | Shop identity, bill/tag content choices and tag cut length; snapshots the print options into each new order. |
 | Storage | `src-tauri/src/storage.rs` | SQLite via `sqlx` (one writer connection, four read-only connections), single-instance lock, schema checks, backup, staged restore. |
 | Printing | `src-tauri/src/printing.rs`, `src-tauri/src/print_layout.rs` | Document model and validation, Windows GDI and Linux CUPS adapters, and the pure page layout. Details in [PRINTING_WINDOWS.md](PRINTING_WINDOWS.md). |
@@ -45,7 +45,8 @@ The target installation is one Windows laptop in a shop with a Canon laser print
 | --- | --- | --- |
 | New order, Orders / Pickup, Print queue (take orders, record payment, move status, collect, reprint) | Yes | Yes |
 | Cancel an order (reason 3 to 200 characters) | No | Yes |
-| Dashboard and Sales (all figures, the same for both roles) | Yes | Yes |
+| Dashboard and Sales (historical figures) | No | Yes |
+| Daily report for the current IST day and its CSV export | Yes | Yes |
 | Customers, Expenses, Inventory, Machines: view, create, edit; adjust stock; record a machine's maintenance | Yes | Yes |
 | Delete a customer, expense, inventory item or machine (reason 3 to 200 characters, audited) | No | Yes |
 | Rate card, discounts, staff accounts, printer choice | No | Yes |
@@ -107,7 +108,7 @@ The data folder comes from Tauri's `app_config_dir()` for the identifier in `src
 
 ## Security boundary
 
-The webview can only call the registered `counter_*` commands. Each one checks the session role itself and validates its input; every admin write (rates, discounts, staff, printers, backup folder, cancel order, deletes, shop settings, restore) also re-checks the role against the database inside its transaction. There is no command that runs caller-supplied SQL. The content security policy allows local assets and Tauri IPC only. The window capability (`src-tauri/capabilities/default.json`) grants default core permissions, webview printing, and the dialog plugin (`dialog:default`, `dialog:allow-open`), used by the restore file chooser and confirmation. I did not review whether `core:webview:allow-print` is still needed now that the older workspace is gone. The database file is not encrypted, so none of this protects against someone with access to the computer's files.
+The webview can only call the registered `counter_*` commands. Each one checks the session role itself and validates its input; every admin write (rates, discounts, staff, printers, backup folder, cancel order, deletes, shop settings, restore) also re-checks the role against the database inside its transaction. There is no command that runs caller-supplied SQL. The content security policy allows local assets and Tauri IPC only. The window capability (`src-tauri/capabilities/default.json`) grants default core permissions, webview printing, and the dialog plugin (`dialog:default`, `dialog:allow-open`, `dialog:allow-save`), used by the restore file chooser and confirmation and the daily-report CSV save dialog. I did not review whether `core:webview:allow-print` is still needed now that the older workspace is gone. The database file is not encrypted, so none of this protects against someone with access to the computer's files.
 
 ## Development commands
 
