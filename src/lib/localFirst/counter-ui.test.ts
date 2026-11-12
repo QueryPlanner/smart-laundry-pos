@@ -6,7 +6,7 @@ import { CounterApp } from '../../components/localCounter/CounterApp';
 import type { CounterAccount, CounterCatalogue, CounterPiece, CounterPrintJob, CounterOrderInput, CounterOrderSummary } from '@/lib/localFirst/counter';
 
 const api=vi.hoisted(()=>({
- cancelCounterOrder:vi.fn(), getCounterBootstrap:vi.fn(),loginCounter:vi.fn(),getCounterCatalogue:vi.fn(),quoteCounterOrder:vi.fn(),saveCounterOrder:vi.fn(),dispatchPrintJobs:vi.fn(),dispatchPrintJob:vi.fn(),listPrintJobs:vi.fn(),getOrderPieces:vi.fn(),matchOrderPieces:vi.fn(),lockCounter:vi.fn(),searchCounterCustomers:vi.fn(),searchCounterOrders:vi.fn(),getCounterOrder:vi.fn(),recordCounterPayment:vi.fn(),updateCounterOrderStatus:vi.fn(),collectCounterOrder:vi.fn(),
+ cancelCounterOrder:vi.fn(), getCounterBootstrap:vi.fn(),loginCounter:vi.fn(),getCounterCatalogue:vi.fn(),quoteCounterOrder:vi.fn(),saveCounterOrder:vi.fn(),dispatchPrintJobs:vi.fn(),dispatchPrintJob:vi.fn(),listPrintJobs:vi.fn(),getOrderPieces:vi.fn(),matchOrderPieces:vi.fn(),lockCounter:vi.fn(),searchCounterCustomers:vi.fn(),searchCounterOrders:vi.fn(),getCounterOrder:vi.fn(),recordCounterPayment:vi.fn(),recordCounterSplitPayment:vi.fn(),updateCounterOrderStatus:vi.fn(),collectCounterOrder:vi.fn(),
  createCounterStaff:vi.fn(),listCounterStaff:vi.fn(),setCounterStaffActive:vi.fn(),resetCounterStaffPin:vi.fn(),saveCounterRateCard:vi.fn(),enumeratePrinters:vi.fn(),getPrinterProfiles:vi.fn(),setPrinterProfiles:vi.fn(),retryPrintJob:vi.fn(),reprintCounterOutput:vi.fn(),setupCounterAdmin:vi.fn(),
 }));
 vi.mock('@/lib/localFirst/counter',()=>api);

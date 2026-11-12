@@ -10,7 +10,7 @@ const api = vi.hoisted(() => ({
   getCounterBootstrap: vi.fn(), getCounterCatalogue: vi.fn(), getCounterOrder: vi.fn(), getCounterOrderQueueCounts: vi.fn(), getOrderPieces: vi.fn(), getPrinterProfiles: vi.fn(),
   previewCounterDraftBill: vi.fn(), previewCounterOrderBill: vi.fn(),
   listCounterStaff: vi.fn(), listPrintJobs: vi.fn(), lockCounter: vi.fn(), loginCounter: vi.fn(), matchOrderPieces: vi.fn(), quoteCounterOrder: vi.fn(),
-  recordCounterPayment: vi.fn(), reprintCounterOutput: vi.fn(), resetCounterStaffPin: vi.fn(), retryPrintJob: vi.fn(), saveCounterOrder: vi.fn(),
+  recordCounterPayment: vi.fn(), recordCounterSplitPayment: vi.fn(), reprintCounterOutput: vi.fn(), resetCounterStaffPin: vi.fn(), retryPrintJob: vi.fn(), saveCounterOrder: vi.fn(),
   searchCounterCustomers: vi.fn(), searchCounterOrders: vi.fn(), saveCounterRateCard: vi.fn(), setCounterStaffActive: vi.fn(), setPrinterProfiles: vi.fn(),
   setupCounterAdmin: vi.fn(), updateCounterOrderStatus: vi.fn(), handOverCounterItems: vi.fn(), trashCounterOrder: vi.fn(), requestCounterOrderTrash: vi.fn(),
 }));
@@ -1100,6 +1100,34 @@ describe('Orders / Pickup', () => {
     expect(api.handOverCounterItems).toHaveBeenCalledWith('o-1', ['i-1']);
     expect(await screen.findByText('Part collected')).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Receive ₹10.00 and hand over 1 piece' })).toBeTruthy();
+  });
+
+  it('takes a Cash + UPI split and shows both entries in the payment history', async () => {
+    await signIn();
+    const twoLines = savedOrder({ status: 'received', totalMinor: 50000, balanceMinor: 50000, lines: [
+      { itemId: 'i-1', garment: 'Shirt', service: 'Iron', quantity: 3, unitPriceMinor: 1000, lineTotalMinor: 3000, pieceCount: 3, handedOverCount: 0 },
+      { itemId: 'i-2', garment: 'Saree', service: 'Dry Clean', quantity: 1, unitPriceMinor: 1000, lineTotalMinor: 1000, pieceCount: 1, handedOverCount: 0 },
+    ] });
+    api.getCounterOrder.mockResolvedValue(twoLines);
+    await openOrdersAndFirstOrder();
+    const paid = {
+      ...twoLines, paidMinor: 50000, balanceMinor: 0, paymentStatus: 'paid' as const,
+      payments: [
+        { id: 'p-cash', at: '2026-10-15T06:10:00Z', method: 'cash' as const, amountMinor: 20000, reference: null, kind: 'settlement' as const, voided: false },
+        { id: 'p-upi', at: '2026-10-15T06:10:00Z', method: 'upi' as const, amountMinor: 30000, reference: null, kind: 'settlement' as const, voided: false },
+      ],
+    };
+    api.recordCounterSplitPayment.mockResolvedValue(paid);
+    api.handOverCounterItems.mockResolvedValue({ ...paid, status: 'collected', lines: paid.lines.map(line => ({ ...line, handedOverCount: line.pieceCount })) });
+    fireEvent.click(screen.getByRole('button', { name: 'Cash + UPI' }));
+    fireEvent.change(screen.getByLabelText('Cash amount (₹)'), { target: { value: '200' } });
+    fireEvent.change(screen.getByLabelText('UPI amount (₹)'), { target: { value: '300' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Receive ₹200.00 Cash + ₹300.00 UPI and hand over 4 pieces' }));
+    await screen.findByText('Received ₹500.00 (₹200.00 Cash + ₹300.00 UPI). 4 pieces handed over. Order collected.');
+    expect(api.recordCounterSplitPayment).toHaveBeenCalledWith('o-1', expect.objectContaining({ cashMinor: 20000, upiMinor: 30000 }));
+    expect(api.recordCounterPayment).not.toHaveBeenCalled();
+    expect(within(screen.getByRole('list', { name: 'Payment history' })).getAllByRole('listitem')).toHaveLength(2);
+    expect(screen.getByText('Collected')).toBeTruthy();
   });
 
   it('returns to where the order was opened from', async () => {

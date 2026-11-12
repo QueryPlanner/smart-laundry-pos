@@ -107,6 +107,8 @@ export interface CounterOrderSummary {
   handedOverCount: number;
 }
 export interface CounterRecordPaymentInput { amountMinor: number; method: CounterPaymentMethod; reference?: string; idempotencyKey: string }
+/** One Cash + UPI split. Both amounts are whole paise and positive; the native writer checks their sum. */
+export interface CounterRecordSplitPaymentInput { cashMinor: number; upiMinor: number; reference?: string; idempotencyKey: string }
 /** The ready-made lists of the Orders screen, each with a count. */
 export type CounterOrderSegment = 'all' | 'open' | 'collected' | 'ready' | 'balance_due' | 'overdue' | 'in_process' | 'today';
 /** What the native search filters by: a list above, or every order received on one shop day (`day:2026-10-17`). */
@@ -233,6 +235,8 @@ export const searchCounterOrders = (query: string, offset = 0, limit = 50, filte
 export const getCounterOrderQueueCounts = (): Promise<CounterQueueCounts> => call('counter_order_queue_counts');
 export const getCounterOrder = (orderId: string): Promise<CounterSavedOrder | null> => call('counter_get_order', { orderId });
 export const recordCounterPayment = (orderId: string, input: CounterRecordPaymentInput): Promise<CounterSavedOrder> => call('counter_record_payment', { orderId, input });
+/** Records one Cash + UPI split as two settlements in one native transaction. */
+export const recordCounterSplitPayment = (orderId: string, input: CounterRecordSplitPaymentInput): Promise<CounterSavedOrder> => call('counter_record_split_payment', { orderId, input });
 export const updateCounterOrderStatus = (orderId: string, status: CounterProcessingStatus): Promise<CounterSavedOrder> => call('counter_update_order_status', { orderId, status });
 /**
  * When `payment` is present it is recorded as a settlement in the same transaction as the collection,
