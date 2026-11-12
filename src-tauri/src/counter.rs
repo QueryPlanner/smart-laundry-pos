@@ -407,6 +407,10 @@ pub struct CustomerInput {
     pub name: String,
     pub phone: String,
     pub customer_id: Option<String>,
+    /// Optional address for a customer being created, or the first address for one that has none.
+    /// An existing saved address is never overwritten from the counter.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub address: Option<String>,
 }
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -734,11 +738,22 @@ async fn resolve_customer_id(
     customer: &CustomerInput,
 ) -> Result<Option<String>, String> {
     if let Some(id) = customer.customer_id.as_deref() {
-        return sqlx::query_scalar("SELECT id FROM customers WHERE id=?")
+        // A selection only stands while the typed name and mobile still describe that customer.
+        // Editing either one at the counter must not charge another person's discount or history.
+        let row = sqlx::query("SELECT name,phone FROM customers WHERE id=?")
             .bind(id)
             .fetch_optional(&mut *conn)
             .await
-            .map_err(db_err);
+            .map_err(db_err)?;
+        if let Some(row) = row {
+            let stored_name: String = row.try_get("name").map_err(db_err)?;
+            let stored_phone: String = row.try_get("phone").map_err(db_err)?;
+            if name_key(&stored_name) == name_key(&customer.name)
+                && normalize_phone(&stored_phone)? == normalize_phone(&customer.phone)?
+            {
+                return Ok(Some(id.to_string()));
+            }
+        }
     }
     let phone = normalize_phone(&customer.phone)?;
     let wanted = name_key(&customer.name);
@@ -827,6 +842,8 @@ async fn quote_at(
     if input.items.is_empty() {
         return Err("Add at least one garment.".into());
     }
+    // The same rule as the Customers screen, so a counter draft cannot carry a longer address.
+    crate::office::optional_text(input.customer.address.as_deref(), "Address", 300)?;
     if input.customer.name.trim().is_empty() {
         return Err("Enter the customer name.".into());
     }
@@ -2294,7 +2311,8 @@ async fn customer_id_for_order(
     phone: &str,
     received: &str,
 ) -> Result<Option<String>, String> {
-    let customer_id = if let Some(id) = customer.customer_id.as_deref() {
+    let address = crate::office::optional_text(customer.address.as_deref(), "Address", 300)?;
+    if let Some(id) = customer.customer_id.as_deref() {
         let exists: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM customers WHERE id=?")
             .bind(id)
             .fetch_one(&mut **tx)
@@ -2303,24 +2321,34 @@ async fn customer_id_for_order(
         if exists == 0 {
             return Err("Selected customer no longer exists.".into());
         }
-        Some(id.to_string())
+    }
+    // The same identity rule as the quote: a selection stands only while the name and mobile still
+    // match it; otherwise the typed pair decides, so an edited draft cannot borrow an old identity.
+    let customer_id = if let Some(id) = resolve_customer_id(&mut *tx, customer).await? {
+        Some(id)
     } else {
-        let found = resolve_customer_id(&mut *tx, customer).await?;
-        if let Some(id) = found {
-            Some(id)
-        } else {
-            let id = Uuid::new_v4().to_string();
-            let code = format!("C-{}", &id[..8]);
-            let device: String =
-                sqlx::query_scalar("SELECT value FROM app_settings WHERE key='device_id'")
-                    .fetch_optional(&mut **tx)
-                    .await
-                    .map_err(db_err)?
-                    .unwrap_or_default();
-            sqlx::query("INSERT INTO customers(id,customer_code,name,phone,customer_type,created_at,updated_at,origin_device_id) VALUES(?,?,?,?,'regular',?,?,?)").bind(&id).bind(code).bind(customer.name.trim()).bind(phone).bind(received).bind(received).bind(device).execute(&mut **tx).await.map_err(db_err)?;
-            Some(id)
-        }
+        let id = Uuid::new_v4().to_string();
+        let code = format!("C-{}", &id[..8]);
+        let device: String =
+            sqlx::query_scalar("SELECT value FROM app_settings WHERE key='device_id'")
+                .fetch_optional(&mut **tx)
+                .await
+                .map_err(db_err)?
+                .unwrap_or_default();
+        sqlx::query("INSERT INTO customers(id,customer_code,name,phone,address,customer_type,created_at,updated_at,origin_device_id) VALUES(?,?,?,?,?,'regular',?,?,?)").bind(&id).bind(code).bind(customer.name.trim()).bind(phone).bind(&address).bind(received).bind(received).bind(device).execute(&mut **tx).await.map_err(db_err)?;
+        Some(id)
     };
+    // An address typed at the counter may fill a returning customer's empty field once, but it
+    // never replaces one already saved (that correction belongs on the Customers screen).
+    if let (Some(id), Some(address)) = (customer_id.as_deref(), address.as_deref()) {
+        sqlx::query("UPDATE customers SET address=?,updated_at=?,version=version+1 WHERE id=? AND (address IS NULL OR trim(address)='')")
+            .bind(address)
+            .bind(received)
+            .bind(id)
+            .execute(&mut **tx)
+            .await
+            .map_err(db_err)?;
+    }
     Ok(customer_id)
 }
 
@@ -4748,7 +4776,7 @@ pub async fn search_customers(
             .replace('%', "\\%")
             .replace('_', "\\_");
         (
-            "SELECT id,name,phone FROM customers WHERE lower(name) LIKE ? ESCAPE '\\' ORDER BY name LIMIT 20",
+            "SELECT id,name,phone,address FROM customers WHERE lower(name) LIKE ? ESCAPE '\\' ORDER BY name LIMIT 20",
             format!("%{escaped}%"),
         )
     } else {
@@ -4762,7 +4790,7 @@ pub async fn search_customers(
             return Ok(Vec::new());
         }
         (
-            "SELECT id,name,phone FROM customers WHERE phone LIKE ? ORDER BY name LIMIT 20",
+            "SELECT id,name,phone,address FROM customers WHERE phone LIKE ? ORDER BY name LIMIT 20",
             format!("{digits}%"),
         )
     };
@@ -4814,6 +4842,7 @@ mod counter_tests {
                 name: "Fixture Customer".into(),
                 phone: "9990000000".into(),
                 customer_id: None,
+                address: None,
             },
             items: vec![LineInput {
                 garment_id: "g-shirt".into(),
@@ -5464,6 +5493,7 @@ mod counter_tests {
                     name: "Fixture Customer".into(),
                     phone: "9990000000".into(),
                     customer_id: None,
+                    address: None,
                 },
                 items: vec![LineInput {
                     garment_id: id.clone(),
@@ -7036,6 +7066,7 @@ mod counter_tests {
                     name: format!("  {}  ", "Ab".repeat(40)),
                     phone: "+91 98765 43210".into(),
                     customer_id: None,
+                    address: None,
                 },
                 items: [("svc-iron", 2), ("svc-wash", 1), ("svc-dry-clean", 1)]
                     .into_iter()
@@ -7837,6 +7868,135 @@ mod counter_tests {
     }
 
     #[test]
+    fn an_address_is_saved_with_a_new_customer_and_fills_an_empty_one_only_once() {
+        tauri::async_runtime::block_on(async {
+            let path = fixture_path();
+            let db = DatabaseState::open(path.clone()).await;
+            let admin = admin_fixture(&db).await;
+            let staff = staff_fixture(&db).await;
+            let pool = db.writer_pool().unwrap();
+            let address_of = |id: &str| {
+                let id = id.to_string();
+                let pool = pool.clone();
+                async move {
+                    sqlx::query_scalar::<_, Option<String>>(
+                        "SELECT address FROM customers WHERE id=?",
+                    )
+                    .bind(id)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap()
+                }
+            };
+            let customer_id_of = |order_id: &str| {
+                let order_id = order_id.to_string();
+                let pool = pool.clone();
+                async move {
+                    sqlx::query_scalar::<_, String>("SELECT customer_id FROM orders WHERE id=?")
+                        .bind(order_id)
+                        .fetch_one(&pool)
+                        .await
+                        .unwrap()
+                }
+            };
+
+            // A new customer keeps the trimmed address, and a blank one is simply no address.
+            let mut asha = customer_order("Asha", "9000000001", "svc-wash", 1);
+            asha.customer.address = Some("  12 MG Road  ".into());
+            let asha_order = save_with(&db, &staff, asha, "asha-1").await.unwrap();
+            let asha_id = customer_id_of(&asha_order.order_id).await;
+            assert_eq!(address_of(&asha_id).await.as_deref(), Some("12 MG Road"));
+
+            let mut blank = customer_order("Bhavna", "9000000002", "svc-wash", 1);
+            blank.customer.address = Some("   ".into());
+            let blank_order = save_with(&db, &staff, blank, "bhavna-1").await.unwrap();
+            let blank_id = customer_id_of(&blank_order.order_id).await;
+            assert_eq!(address_of(&blank_id).await, None);
+
+            // A returning customer with a saved address keeps it when the counter sends a blank one.
+            let mut again = customer_order("Asha", "9000000001", "svc-wash", 1);
+            again.customer.address = Some("".into());
+            let again_order = save_with(&db, &staff, again, "asha-2").await.unwrap();
+            assert_eq!(customer_id_of(&again_order.order_id).await, asha_id);
+            assert_eq!(address_of(&asha_id).await.as_deref(), Some("12 MG Road"));
+
+            // An empty field may be filled once, but a later address never overwrites it.
+            let mut chetan = customer_order("Chetan", "9000000003", "svc-wash", 1);
+            let chetan_order = save_with(&db, &staff, chetan.clone(), "chetan-1")
+                .await
+                .unwrap();
+            let chetan_id = customer_id_of(&chetan_order.order_id).await;
+            assert_eq!(address_of(&chetan_id).await, None);
+            chetan.customer.address = Some("Flat 2, Kothrud".into());
+            save_with(&db, &staff, chetan.clone(), "chetan-2")
+                .await
+                .unwrap();
+            assert_eq!(
+                address_of(&chetan_id).await.as_deref(),
+                Some("Flat 2, Kothrud")
+            );
+            chetan.customer.address = Some("Somewhere else".into());
+            save_with(&db, &staff, chetan, "chetan-3").await.unwrap();
+            assert_eq!(
+                address_of(&chetan_id).await.as_deref(),
+                Some("Flat 2, Kothrud"),
+                "the Customers screen is the place to correct a saved address"
+            );
+
+            // The same address limit as the Customers screen.
+            let mut too_long = customer_order("New Person", "9000000004", "svc-wash", 1);
+            too_long.customer.address = Some("a".repeat(301));
+            assert!(quote(&db, &staff, &too_long).await.is_err());
+
+            // A failed bill save writes no customer and no address.
+            let mut failed = customer_order("Failed Person", "9000000005", "svc-wash", 1);
+            failed.customer.address = Some("Nowhere".into());
+            let reviewed = quote(&db, &staff, &failed).await.unwrap();
+            set_discount(&db, &admin, None, 1000, true, "")
+                .await
+                .unwrap();
+            let error = save_order(
+                &db,
+                &staff,
+                SaveInput {
+                    order: failed,
+                    reviewed_quote: reviewed,
+                    idempotency_key: "failed-person-1".into(),
+                    payment: None,
+                },
+            )
+            .await
+            .unwrap_err();
+            assert!(
+                error.contains("Rates or the promised time changed"),
+                "{error}"
+            );
+            let created: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM customers WHERE name='Failed Person'")
+                    .fetch_one(pool)
+                    .await
+                    .unwrap();
+            assert_eq!(created, 0);
+
+            // A selection only stands while the typed name and mobile still describe it: editing
+            // them cannot give someone else on a shared phone Asha's identity or address.
+            let mut priya = customer_order("Priya Sharma", "9000000001", "svc-wash", 1);
+            priya.customer.customer_id = Some(asha_id.clone());
+            priya.customer.address = Some("Priya's flat".into());
+            let priya_order = save_with(&db, &staff, priya, "priya-1").await.unwrap();
+            let priya_id = customer_id_of(&priya_order.order_id).await;
+            assert_ne!(priya_id, asha_id);
+            assert_eq!(address_of(&priya_id).await.as_deref(), Some("Priya's flat"));
+            assert_eq!(address_of(&asha_id).await.as_deref(), Some("12 MG Road"));
+
+            // Lookup returns the saved address so selecting the customer can show it.
+            let found = search_customers(&db, &staff, "Asha").await.unwrap();
+            assert_eq!(found[0]["address"], "12 MG Road");
+            cleanup(db, path).await;
+        });
+    }
+
+    #[test]
     fn order_search_lists_recent_orders_matches_literally_and_ignores_one_character() {
         tauri::async_runtime::block_on(async {
             let path = fixture_path();
@@ -7887,6 +8047,7 @@ mod counter_tests {
                 name: name.into(),
                 phone: phone.into(),
                 customer_id: None,
+                address: None,
             },
             items: vec![LineInput {
                 garment_id: "g-shirt".into(),

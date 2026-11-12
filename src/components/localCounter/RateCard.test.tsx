@@ -56,11 +56,12 @@ describe('RateCard', () => {
     fireEvent.change(box('Name of garment Shirt'), { target: { value: 'Formal shirt' } });
     fireEvent.click(within(box('Shoes Wash price').closest('tr') as HTMLElement).getByRole('button', { name: 'Remove' }));
     fireEvent.change(box('Name of service Wash'), { target: { value: 'Wash + Press' } });
-    fireEvent.change(box('New garment'), { target: { value: 'Apron' } });
     fireEvent.click(button('Add garment'));
-    // A new garment opens its picture choice.
+    fireEvent.change(box('Name'), { target: { value: 'Apron' } });
+    // The picture is optional, and the chosen one previews in the panel.
     fireEvent.click(screen.getByLabelText('Apron', { selector: 'input[type=radio]' }));
-    fireEvent.click(button('Done'));
+    expect(screen.getByText('Picture chosen')).toBeTruthy();
+    fireEvent.click(button('Add to rate card'));
     fireEvent.change(box('New service'), { target: { value: 'Steam press' } });
     fireEvent.click(button('Add service'));
     fireEvent.change(box('Apron Steam press price'), { target: { value: '40' } });
@@ -85,6 +86,10 @@ describe('RateCard', () => {
     expect(button('Picture of Shirt').getAttribute('aria-expanded')).toBe('true');
     fireEvent.click(screen.getByLabelText('No picture'));
     expect(within(button('Picture of Shirt')).getByText('S')).toBeTruthy();
+    fireEvent.click(button('Done'));
+    expect(button('Picture of Shirt').getAttribute('aria-expanded')).toBe('false');
+    // The picture button itself also closes an open choice.
+    fireEvent.click(button('Picture of Shirt'));
     fireEvent.click(button('Picture of Shirt'));
     expect(screen.queryByLabelText('No picture')).toBeNull();
     expect(footer()).toContain('1 change not saved');
@@ -108,8 +113,63 @@ describe('RateCard', () => {
     fireEvent.click(button('Undo changes'));
     expect(box('Shirt Wash price').value).toBe('15');
     expect(screen.queryByRole('alert')).toBeNull();
-    expect(button('Add garment').disabled).toBe(true);
     expect(button('Add service').disabled).toBe(true);
+  });
+
+  it('opens the Add garment panel with focus, and Escape discards only its form', () => {
+    setup();
+    fireEvent.change(box('Shirt Wash price'), { target: { value: '16' } });
+    const opener = button('Add garment');
+    fireEvent.click(opener);
+    const name = box('Name');
+    expect(document.activeElement).toBe(name);
+    fireEvent.change(name, { target: { value: 'Leather jacket' } });
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.queryByRole('dialog', { name: 'Add garment' })).toBeNull();
+    expect(document.activeElement).toBe(opener);
+    expect(box('Shirt Wash price').value).toBe('16');
+    expect(footer()).toContain('1 change not saved');
+  });
+
+  it('adds a garment with no picture, and Cancel keeps the earlier draft edits', () => {
+    setup();
+    fireEvent.change(box('Shirt Iron price'), { target: { value: '20' } });
+    fireEvent.click(button('Add garment'));
+    expect(screen.getByText('No picture chosen')).toBeTruthy();
+    fireEvent.change(box('Name'), { target: { value: '  Leather   jacket ' } });
+    fireEvent.click(button('Cancel'));
+    expect(screen.queryByRole('dialog', { name: 'Add garment' })).toBeNull();
+    expect(screen.queryByLabelText('Name of garment Leather jacket')).toBeNull();
+    expect(box('Shirt Iron price').value).toBe('20');
+
+    fireEvent.click(button('Add garment'));
+    fireEvent.change(box('Name'), { target: { value: '  Leather   jacket ' } });
+    fireEvent.click(button('Add to rate card'));
+    expect(box('Name of garment Leather jacket').value).toBe('Leather jacket');
+    fireEvent.change(box('Leather jacket Wash price'), { target: { value: '99' } });
+    expect(footer()).toContain('3 changes not saved');
+  });
+
+  it('refuses a blank or duplicate garment name before making a draft row', () => {
+    setup();
+    fireEvent.click(button('Add garment'));
+    fireEvent.click(button('Add to rate card'));
+    expect(screen.getByRole('alert').textContent).toBe('Give the garment a name.');
+    fireEvent.change(box('Name'), { target: { value: '  shirt ' } });
+    fireEvent.click(button('Add to rate card'));
+    expect(screen.getByRole('alert').textContent).toBe('A garment called shirt already exists.');
+    expect(screen.getAllByLabelText(/^Name of garment/)).toHaveLength(2);
+    fireEvent.change(box('Name'), { target: { value: 'Scarf' } });
+    expect(screen.queryByRole('alert')).toBeNull();
+    fireEvent.click(button('Close panel'));
+    expect(screen.queryByRole('dialog', { name: 'Add garment' })).toBeNull();
+  });
+
+  it('closes the panel when the backdrop is clicked', () => {
+    setup();
+    fireEvent.click(button('Add garment'));
+    fireEvent.click(document.querySelector('.counter-side-panel-backdrop') as HTMLElement);
+    expect(screen.queryByRole('dialog', { name: 'Add garment' })).toBeNull();
   });
 
   it('keeps the changes and reports the error when saving fails', async () => {

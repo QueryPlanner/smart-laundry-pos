@@ -437,6 +437,7 @@ fn seed_demo_month() {
                         name: CUSTOMERS[who].to_string(),
                         phone: typed_phone(&base_phone, &mut rng),
                         customer_id: None,
+                        address: None,
                     },
                     items,
                     manual_discount_minor: None,

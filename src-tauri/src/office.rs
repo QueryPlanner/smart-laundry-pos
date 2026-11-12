@@ -44,7 +44,7 @@ fn text_ok(value: &str) -> bool {
     value.chars().all(|c| !c.is_control() || c == '\n')
 }
 
-fn required_text(value: &str, label: &str, max: usize) -> Result<String, String> {
+pub(crate) fn required_text(value: &str, label: &str, max: usize) -> Result<String, String> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
         return Err(format!("{label} is required."));
@@ -58,7 +58,11 @@ fn required_text(value: &str, label: &str, max: usize) -> Result<String, String>
     Ok(trimmed.to_string())
 }
 
-fn optional_text(value: Option<&str>, label: &str, max: usize) -> Result<Option<String>, String> {
+pub(crate) fn optional_text(
+    value: Option<&str>,
+    label: &str,
+    max: usize,
+) -> Result<Option<String>, String> {
     match value.map(str::trim) {
         None | Some("") => Ok(None),
         Some(text) => required_text(text, label, max).map(Some),

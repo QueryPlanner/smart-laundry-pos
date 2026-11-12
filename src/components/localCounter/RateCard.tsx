@@ -1,7 +1,8 @@
-import { Fragment, useEffect, useState } from 'react';
+import { Fragment, useEffect, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { AddGarmentPanel } from './AddGarmentPanel';
 import { PicturePicker } from './PicturePicker';
 import { saveCounterRateCard, type CounterCatalogue } from '@/lib/localFirst/counter';
 import { pictureSrc } from '@/lib/localFirst/garmentPictures';
@@ -24,11 +25,18 @@ const changesText = (count: number) => `${count} ${count === 1 ? 'change' : 'cha
 export const RateCard = ({ catalogue, onCatalogue, onError, onNotice }: Props) => {
   const [draft, setDraft] = useState<RateCardDraft>(() => draftFromCatalogue(catalogue));
   const [picking, setPicking] = useState<string | null>(null);
-  const [garmentName, setGarmentName] = useState('');
+  const [panelOpen, setPanelOpen] = useState(false);
   const [serviceName, setServiceName] = useState('');
   const [busy, setBusy] = useState(false);
+  const addGarmentButton = useRef<HTMLButtonElement>(null);
+  const panelWasOpen = useRef(false);
   // A saved catalogue (or one reloaded elsewhere) starts a fresh draft.
-  useEffect(() => { setDraft(draftFromCatalogue(catalogue)); setPicking(null); }, [catalogue]);
+  useEffect(() => { setDraft(draftFromCatalogue(catalogue)); setPicking(null); setPanelOpen(false); }, [catalogue]);
+  // Closing the panel puts the keyboard back on the button that opened it.
+  useEffect(() => {
+    if (panelWasOpen.current && !panelOpen) addGarmentButton.current?.focus();
+    panelWasOpen.current = panelOpen;
+  }, [panelOpen]);
 
   const plan = planRateCard(catalogue, draft);
   const services = draft.services;
@@ -38,12 +46,13 @@ export const RateCard = ({ catalogue, onCatalogue, onError, onNotice }: Props) =
     setDraft(d => ({ ...d, services: d.services.map(row => (row.id === id ? { ...row, ...change } : row)) }));
   const setPrice = (key: string, text: string) => setDraft(d => ({ ...d, prices: { ...d.prices, [key]: text } }));
 
-  const addGarment = () => {
+  const addGarment = (garment: { name: string; picture: string | null }) => {
     const id = newRef();
-    setDraft(d => ({ ...d, garments: [...d.garments, { id, name: garmentName.trim(), picture: null, pair: false, isNew: true, removed: false }] }));
-    setGarmentName('');
-    setPicking(id);
+    setDraft(d => ({ ...d, garments: [...d.garments, { id, name: garment.name, picture: garment.picture, pair: false, isNew: true, removed: false }] }));
+    setPanelOpen(false);
   };
+  // Only the garments still on the rate card count as duplicates; a removed name comes back.
+  const garmentNames = draft.garments.filter(g => !g.removed).map(g => g.name);
   const addService = () => {
     setDraft(d => ({ ...d, services: [...d.services, { id: newRef(), key: '', name: serviceName.trim(), isNew: true, removed: false }] }));
     setServiceName('');
@@ -60,6 +69,9 @@ export const RateCard = ({ catalogue, onCatalogue, onError, onNotice }: Props) =
   return <div className="counter-rates">
     <p className="counter-rate-warning">The starting prices are estimates. Check every price before using the app with customers.</p>
     <p>Type a price to sell a garment for a service, or leave the box empty to not sell it. Change names and pictures here too. Nothing changes until you press <strong>Save</strong>.</p>
+    <div className="counter-rate-toolbar">
+      <Button ref={addGarmentButton} type="button" variant="outline" onClick={() => setPanelOpen(true)}>Add garment</Button>
+    </div>
     <div className="counter-rate-table-wrap">
       <table className="counter-rate-table">
         <thead>
@@ -106,10 +118,6 @@ export const RateCard = ({ catalogue, onCatalogue, onError, onNotice }: Props) =
       </table>
     </div>
     <div className="counter-rate-add">
-      <form onSubmit={e => { e.preventDefault(); addGarment(); }}>
-        <Label>New garment<Input value={garmentName} maxLength={40} placeholder="For example, Leather jacket" onChange={e => setGarmentName(e.target.value)} /></Label>
-        <Button type="submit" variant="outline" disabled={!garmentName.trim()}>Add garment</Button>
-      </form>
       <form onSubmit={e => { e.preventDefault(); addService(); }}>
         <Label>New service<Input value={serviceName} maxLength={30} placeholder="For example, Steam press" onChange={e => setServiceName(e.target.value)} /></Label>
         <Button type="submit" variant="outline" disabled={!serviceName.trim()}>Add service</Button>
@@ -118,8 +126,9 @@ export const RateCard = ({ catalogue, onCatalogue, onError, onNotice }: Props) =
     {removedEarlier.length > 0 && <p className="counter-summary-note">Removed earlier: {removedEarlier.join(', ')}. Add one again with the same name to bring it back with its prices.</p>}
     <div className="counter-rate-save">
       {plan.problem ? <span role="alert">{plan.problem}</span> : <span>{plan.count > 0 ? changesText(plan.count) : 'No changes'}</span>}
-      <Button type="button" variant="outline" disabled={busy || (plan.count === 0 && !plan.problem)} onClick={() => { setDraft(draftFromCatalogue(catalogue)); setPicking(null); }}>Undo changes</Button>
+      <Button type="button" variant="outline" disabled={busy || (plan.count === 0 && !plan.problem)} onClick={() => { setDraft(draftFromCatalogue(catalogue)); setPicking(null); setPanelOpen(false); }}>Undo changes</Button>
       <Button type="button" disabled={busy || plan.count === 0 || plan.problem !== ''} onClick={() => void save()}>{busy ? 'Saving…' : 'Save'}</Button>
     </div>
+    <AddGarmentPanel open={panelOpen} existingNames={garmentNames} onAdd={addGarment} onClose={() => setPanelOpen(false)} />
   </div>;
 };

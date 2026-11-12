@@ -848,6 +848,7 @@ mod tests {
                 name: "Fixture Customer".into(),
                 phone: "9990000000".into(),
                 customer_id: None,
+                address: None,
             },
             items: vec![LineInput {
                 garment_id: "g-shirt".into(),

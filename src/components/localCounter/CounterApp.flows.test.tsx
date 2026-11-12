@@ -415,6 +415,21 @@ describe('taking and saving an order', () => {
     expect(api.saveCounterOrder.mock.calls[0][0]).not.toHaveProperty('payment');
   });
 
+  it('saves the selected customer and the address typed at the counter', async () => {
+    await signIn();
+    api.searchCounterCustomers.mockResolvedValue([{ id: 'c-2', name: 'Rita Joshi', phone: '9000000000', address: null }]);
+    fireEvent.change(screen.getByLabelText('Mobile number'), { target: { value: '9000' } });
+    fireEvent.click(await screen.findByRole('option', { name: /Rita Joshi/ }));
+    fireEvent.change(screen.getByLabelText('Address (optional)'), { target: { value: ' 12 MG Road ' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add Shirt Wash' }));
+    await waitFor(() => expect(saveButton().disabled).toBe(false));
+    saveNow();
+    await screen.findByText(/Order SL-1 saved/);
+    expect(api.saveCounterOrder.mock.calls[0][0].customer).toEqual({
+      name: 'Rita Joshi', phone: '9000000000', customerId: 'c-2', address: '12 MG Road',
+    });
+  });
+
   it('shows a quote problem instead of an amount, and recovers when the draft changes', async () => {
     await signIn();
     api.quoteCounterOrder.mockRejectedValueOnce(new Error('A rate has not been configured for this garment and service.'));
