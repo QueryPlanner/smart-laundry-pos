@@ -399,6 +399,18 @@ async fn garment_count(pool: &SqlitePool) -> i64 {
         .unwrap()
 }
 
+async fn garment_text(pool: &SqlitePool, id: &str, column: &str) -> String {
+    assert!(
+        matches!(column, "name_en" | "name_mr" | "image_key"),
+        "unexpected garment column in a test"
+    );
+    sqlx::query_scalar::<_, String>(&format!("SELECT {column} FROM garments WHERE id = ?"))
+        .bind(id)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
 async fn user_version(pool: &SqlitePool) -> i64 {
     sqlx::query_scalar("PRAGMA user_version")
         .fetch_one(pool)
@@ -972,6 +984,208 @@ fn a_new_database_has_five_services_and_the_wash_rates_where_the_upgrade_puts_th
             Some(15000)
         );
         assert_eq!(rate_cell(pool, "g-shirt", "svc-wash").await.0, Some(3000));
+    });
+}
+
+#[test]
+fn a_new_database_has_the_refreshed_catalogue_pictures_and_labels() {
+    tauri::async_runtime::block_on(async {
+        let temporary = TempDatabase::new();
+        let fresh = open(&temporary.path).await;
+        assert_eq!(fresh.info().error, None);
+        let pool = &fresh.pools().unwrap().writer;
+
+        for (garment, picture) in [
+            ("g-heavy-saree", "heavy-saree"),
+            ("g-shirt", "shirt-only"),
+            ("g-tshirt", "polo-tshirt"),
+            ("g-jacket", "zip-jacket"),
+            ("g-blouse", "saree-blouse"),
+            ("g-bedsheet-single", "bedsheet-single-folded"),
+            ("g-bedsheet-double", "bedsheet-double-folded"),
+            ("g-curtain-kg", "window-curtain"),
+            ("g-lehenga-normal", "lehenga-cotton"),
+            ("g-lehenga-medium", "lehenga"),
+            ("g-lehenga-heavy", "lehenga-heavy"),
+        ] {
+            assert_eq!(
+                garment_text(pool, garment, "image_key").await,
+                picture,
+                "{garment}"
+            );
+        }
+        assert_eq!(garment_text(pool, "g-shirt", "name_en").await, "Shirt");
+        assert_eq!(garment_text(pool, "g-shirt", "name_mr").await, "शर्ट");
+        assert_eq!(
+            garment_text(pool, "g-bedsheet-single", "name_en").await,
+            "Single Bedsheet"
+        );
+        assert_eq!(
+            garment_text(pool, "g-bedsheet-single", "name_mr").await,
+            "सिंगल बेडशीट"
+        );
+        // The refresh is pictures and labels only: the baseline rates stay.
+        assert_eq!(rate_cell(pool, "g-shirt", "svc-wash").await.0, Some(3000));
+        assert_eq!(
+            rate_cell(pool, "g-lehenga-heavy", "svc-dry-clean").await.0,
+            Some(70000)
+        );
+        assert_eq!(
+            rate_cell(pool, "g-shoes", "svc-wash-only").await.0,
+            Some(15000)
+        );
+    });
+}
+
+#[test]
+fn a_v9_upgrade_refreshes_only_untouched_defaults_and_keeps_custom_cards_and_bills() {
+    tauri::async_runtime::block_on(async {
+        let temporary = TempDatabase::new();
+        create_schema_file(&temporary.path, 9).await;
+        let setup = connect_writer_pool(&temporary.path, false, 1)
+            .await
+            .unwrap();
+        seed_order_with_payments(&setup).await;
+        sqlx::query("UPDATE order_items SET garment_id = 'g-shirt', service_method_id = 'svc-wash', unit_price_minor = 3000, line_total_minor = 6000 WHERE id = 'item-1'")
+            .execute(&setup)
+            .await
+            .unwrap();
+        // An untouched default card, a renamed card, a picture the owner chose and a custom price.
+        sqlx::query("UPDATE garments SET name_en = 'Office shirt', name_mr = 'ऑफिस शर्ट' WHERE id = 'g-shirt'")
+            .execute(&setup)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE garments SET name_en = 'My blouse', name_mr = 'माझा ब्लाउज' WHERE id = 'g-blouse'")
+            .execute(&setup)
+            .await
+            .unwrap();
+        sqlx::query(
+            "UPDATE garments SET image_key = 'bedsheet-single' WHERE id = 'g-bedsheet-double'",
+        )
+        .execute(&setup)
+        .await
+        .unwrap();
+        sqlx::query("UPDATE garments SET active = 0 WHERE id = 'g-saree'")
+            .execute(&setup)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE garment_service_rates SET price_minor = 12345, configured = 1, available = 1 WHERE garment_id = 'g-shirt' AND service_id = 'svc-wash'")
+            .execute(&setup)
+            .await
+            .unwrap();
+        setup.close().await;
+
+        let upgraded = open(&temporary.path).await;
+        assert_eq!(upgraded.info().error, None);
+        let pool = &upgraded.pools().unwrap().writer;
+        assert_eq!(user_version(pool).await, SCHEMA_VERSION);
+
+        // Untouched defaults receive the new picture and label.
+        for (garment, picture) in [
+            ("g-heavy-saree", "heavy-saree"),
+            ("g-bedsheet-single", "bedsheet-single-folded"),
+            ("g-curtain-kg", "window-curtain"),
+            ("g-lehenga-normal", "lehenga-cotton"),
+            ("g-lehenga-heavy", "lehenga-heavy"),
+        ] {
+            assert_eq!(
+                garment_text(pool, garment, "image_key").await,
+                picture,
+                "{garment}"
+            );
+        }
+        assert_eq!(
+            garment_text(pool, "g-bedsheet-single", "name_en").await,
+            "Single Bedsheet"
+        );
+        assert_eq!(
+            garment_text(pool, "g-bedsheet-single", "name_mr").await,
+            "सिंगल बेडशीट"
+        );
+        // The medium tier keeps sharing the original picture.
+        assert_eq!(
+            garment_text(pool, "g-lehenga-medium", "image_key").await,
+            "lehenga"
+        );
+
+        // Renamed cards keep their names; their untouched picture still refreshes.
+        assert_eq!(
+            garment_text(pool, "g-shirt", "name_en").await,
+            "Office shirt"
+        );
+        assert_eq!(garment_text(pool, "g-shirt", "name_mr").await, "ऑफिस शर्ट");
+        assert_eq!(
+            garment_text(pool, "g-shirt", "image_key").await,
+            "shirt-only"
+        );
+        assert_eq!(garment_text(pool, "g-blouse", "name_en").await, "My blouse");
+        assert_eq!(
+            garment_text(pool, "g-blouse", "image_key").await,
+            "saree-blouse"
+        );
+
+        // A picture the owner chose and an inactive card are left alone.
+        assert_eq!(
+            garment_text(pool, "g-bedsheet-double", "image_key").await,
+            "bedsheet-single"
+        );
+        let saree_active: i64 =
+            sqlx::query_scalar("SELECT active FROM garments WHERE id = 'g-saree'")
+                .fetch_one(pool)
+                .await
+                .unwrap();
+        assert_eq!(saree_active, 0);
+
+        // Prices, billing units and past bills are untouched.
+        assert_eq!(rate_cell(pool, "g-shirt", "svc-wash").await.0, Some(12345));
+        let shoes_unit: String =
+            sqlx::query_scalar("SELECT billing_unit FROM garments WHERE id = 'g-shoes'")
+                .fetch_one(pool)
+                .await
+                .unwrap();
+        assert_eq!(shoes_unit, "pair");
+        let item: (String, Option<i64>, Option<String>) = sqlx::query_as(
+            "SELECT item_name, unit_price_minor, garment_id FROM order_items WHERE id = 'item-1'",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            item,
+            ("Shirt".to_string(), Some(3000), Some("g-shirt".to_string())),
+            "a bill created before the upgrade keeps its line name, price and garment"
+        );
+    });
+}
+
+#[test]
+fn the_catalogue_picture_migration_is_safe_to_run_twice() {
+    tauri::async_runtime::block_on(async {
+        let temporary = TempDatabase::new();
+        create_schema_file(&temporary.path, 9).await;
+        let pool = connect_writer_pool(&temporary.path, false, 1)
+            .await
+            .unwrap();
+        sqlx::raw_sql(MIGRATION_V10_SQL)
+            .execute(&pool)
+            .await
+            .expect("the first v10 run should succeed");
+        let after_first: Vec<(String, String, String, String)> =
+            sqlx::query_as("SELECT id, name_en, name_mr, image_key FROM garments ORDER BY id")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        sqlx::raw_sql(MIGRATION_V10_SQL)
+            .execute(&pool)
+            .await
+            .expect("running the v10 migration again should succeed");
+        let after_second: Vec<(String, String, String, String)> =
+            sqlx::query_as("SELECT id, name_en, name_mr, image_key FROM garments ORDER BY id")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(after_second, after_first);
+        pool.close().await;
     });
 }
 
