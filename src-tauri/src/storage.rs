@@ -1869,11 +1869,26 @@ fn restore_original_after_failed_apply(
             ));
         }
     }
-    fs::rename(old, database_path)
+    rename_original_database(old, database_path)
         .map_err(|error| format!("{failure} Could not restore the original database: {error}"))?;
     sync_parent_directory(database_path)?;
     remove_apply_journal(database_path)?;
     Err(failure)
+}
+
+fn rename_original_database(old: &Path, database_path: &Path) -> std::io::Result<()> {
+    // Windows can keep a transient handle on the old database or the rejected path
+    // after validation and quarantine. Retry only sharing or locking violations.
+    #[cfg(windows)]
+    for _ in 0..20 {
+        match fs::rename(old, database_path) {
+            Err(error) if matches!(error.raw_os_error(), Some(32 | 33)) => {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            result => return result,
+        }
+    }
+    fs::rename(old, database_path)
 }
 
 async fn checkpoint_database(database_path: &Path) -> Result<(), String> {

@@ -3284,13 +3284,12 @@ fn invalid_backup_and_live_database_paths_are_rejected_without_touching_live_dat
             .is_err());
 
         let missing_column = source.directory.join("missing-column.db");
-        let schema = MIGRATION_SQL
-            .replace("  phone TEXT NOT NULL,\n", "")
-            .replace(
-                "CREATE INDEX IF NOT EXISTS idx_customers_phone ON customers(phone);\n",
-                "",
-            );
-        assert_ne!(schema, MIGRATION_SQL);
+        let migration = MIGRATION_SQL.replace("\r\n", "\n");
+        let schema = migration.replace("  phone TEXT NOT NULL,\n", "").replace(
+            "CREATE INDEX IF NOT EXISTS idx_customers_phone ON customers(phone);\n",
+            "",
+        );
+        assert_ne!(schema, migration);
         let pool = connect_writer_pool(&missing_column, false, 1)
             .await
             .unwrap();
@@ -3359,12 +3358,13 @@ fn restore_rejects_missing_foreign_keys_and_schema_objects() {
         let extra_table = TempDatabase::new();
         create_database_with_marker(&live.path, "keep-active").await;
 
-        let without_order_item_foreign_key = MIGRATION_SQL.replacen(
+        let migration = MIGRATION_SQL.replace("\r\n", "\n");
+        let without_order_item_foreign_key = migration.replacen(
             "  FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE,\n",
             "",
             1,
         );
-        assert_ne!(without_order_item_foreign_key, MIGRATION_SQL);
+        assert_ne!(without_order_item_foreign_key, migration);
         create_schema_file_from_sql(
             &missing_foreign_key.path,
             &without_order_item_foreign_key,
@@ -3372,11 +3372,11 @@ fn restore_rejects_missing_foreign_keys_and_schema_objects() {
         )
         .await;
 
-        let without_customer_index = MIGRATION_SQL.replace(
+        let without_customer_index = migration.replace(
             "CREATE INDEX IF NOT EXISTS idx_customers_phone ON customers(phone);\n",
             "",
         );
-        assert_ne!(without_customer_index, MIGRATION_SQL);
+        assert_ne!(without_customer_index, migration);
         create_schema_file_from_sql(&missing_index.path, &without_customer_index, SCHEMA_VERSION)
             .await;
 
@@ -4756,11 +4756,12 @@ fn restore_sidecars_are_moved_next_to_the_recovery_snapshot() {
 fn failed_recovery_snapshot_validation_removes_its_temporary_file() {
     tauri::async_runtime::block_on(async {
         let weak = TempDatabase::new();
-        let schema = MIGRATION_SQL.replace(
+        let migration = MIGRATION_SQL.replace("\r\n", "\n");
+        let schema = migration.replace(
             "CREATE INDEX IF NOT EXISTS idx_customers_phone ON customers(phone);\n",
             "",
         );
-        assert_ne!(schema, MIGRATION_SQL);
+        assert_ne!(schema, migration);
         create_schema_file_from_sql(&weak.path, &schema, SCHEMA_VERSION).await;
 
         let error = create_recovery_snapshot(&weak.path)
