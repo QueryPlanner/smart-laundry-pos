@@ -70,14 +70,14 @@ describe('CustomerEntry', () => {
     expect(draft().customerId).toBe('c-2');
 
     fireEvent.change(field('Name'), { target: { value: 'Rita J' } });
-    expect(draft()).toMatchObject({ name: 'Rita J', addressLocked: false });
+    expect(draft()).toMatchObject({ name: 'Rita J', address: '', addressLocked: false });
     expect(draft().customerId).toBeUndefined();
     expect(field('Address (optional)').readOnly).toBe(false);
 
     fireEvent.click((await screen.findAllByRole('option'))[1]);
     expect(draft().customerId).toBe('c-2');
     fireEvent.change(field('Mobile number'), { target: { value: '9000000001' } });
-    expect(draft()).toMatchObject({ phone: '9000000001', addressLocked: false });
+    expect(draft()).toMatchObject({ phone: '9000000001', address: '', addressLocked: false });
     expect(draft().customerId).toBeUndefined();
   });
 

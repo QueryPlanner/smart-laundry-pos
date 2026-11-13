@@ -34,7 +34,13 @@ export const CustomerEntry = ({ customer, onChange, search }: Props) => {
     return () => { live = false; clearTimeout(timer); };
   }, [query, search]);
 
-  const edit = (patch: Partial<CustomerDraft>) => onChange({ ...customer, ...patch, customerId: undefined, addressLocked: false });
+  const edit = (patch: Partial<CustomerDraft>) => onChange({
+    ...customer,
+    ...patch,
+    address: customer.customerId ? '' : customer.address,
+    customerId: undefined,
+    addressLocked: false,
+  });
   const select = (match: CounterCustomerMatch) => {
     const address = match.address ?? '';
     onChange({ name: match.name, phone: match.phone, address, customerId: match.id, addressLocked: address.trim() !== '' });
