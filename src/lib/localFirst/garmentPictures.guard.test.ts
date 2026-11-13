@@ -65,7 +65,7 @@ describe('garment pictures', () => {
   });
 
   it('registers every picture key used by the catalogue migration', () => {
-    const sql = readFileSync(`${migrationsDir}010_catalogue_pictures.sql`, 'utf8');
+    const sql = readFileSync(`${migrationsDir}011_catalogue_pictures.sql`, 'utf8');
     const keys = [...sql.matchAll(/image_key = '([^']+)'/g)].map(match => match[1]);
     const listed = GARMENT_PICTURES.map(picture => picture.key);
     expect(keys.length).toBeGreaterThan(0);
