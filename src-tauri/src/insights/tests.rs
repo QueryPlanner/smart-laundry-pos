@@ -369,41 +369,66 @@ fn every_query_needs_a_signed_in_account() {
             .await
             .is_err());
         assert!(sales_staff_options(&shop.db, &nobody).await.is_err());
+        let now = Utc::now();
+        assert!(daily_report_at(&shop.db, &nobody, now)
+            .await
+            .unwrap_err()
+            .contains("Log in"));
+        assert!(export_daily_report_csv_at(
+            &shop.db,
+            &nobody,
+            &shop._dir.0.join("r.csv"),
+            daily_shop_date(now),
+            now
+        )
+        .await
+        .unwrap_err()
+        .contains("Log in"));
     });
 }
 
 #[test]
-fn staff_and_admin_see_identical_results() {
+fn historical_reports_are_administrator_only() {
     block_on(async {
         let shop = Shop::new().await;
         shop.story().await;
-        let (a, s) = (admin(), staff());
+        let admin = admin();
+        let staff = staff();
         let now = DateTime::parse_from_rfc3339("2026-02-20T06:30:00Z")
             .unwrap()
             .with_timezone(&Utc);
         let f = both();
-        macro_rules! same {
-            ($call:expr) => {{
-                let for_admin = serde_json::to_value($call(&a).await.unwrap()).unwrap();
-                let for_staff = serde_json::to_value($call(&s).await.unwrap()).unwrap();
-                assert_eq!(for_admin, for_staff);
-                for_admin
-            }};
-        }
-        let summary = same!(|who| sales_summary(&shop.db, who, &f));
+        let summary: Value =
+            serde_json::to_value(sales_summary(&shop.db, &admin, &f).await.unwrap()).unwrap();
         assert_eq!(summary["orders"], 3);
-        same!(|who| sales_series(&shop.db, who, &f, "day"));
-        let orders = same!(|who| sales_orders(&shop.db, who, &f, 0, 50));
-        assert_eq!(orders["total"], 3);
-        let txns = same!(|who| sales_transactions(&shop.db, who, &f, 0, 50));
-        assert_eq!(txns["total"], 6);
-        let staff = same!(|who| sales_staff_options(&shop.db, who));
-        assert_eq!(
-            staff.as_array().unwrap().len(),
-            2,
-            "only accounts with sales"
-        );
-        same!(|who| dashboard_overview_at(&shop.db, who, now));
+        let orders = sales_orders(&shop.db, &admin, &f, 0, 50).await.unwrap();
+        assert_eq!(orders.total, 3);
+        let txns = sales_transactions(&shop.db, &admin, &f, 0, 50)
+            .await
+            .unwrap();
+        assert_eq!(txns.total, 6);
+        let staff_options = sales_staff_options(&shop.db, &admin).await.unwrap();
+        assert_eq!(staff_options.len(), 2, "only accounts with sales");
+        assert!(sales_series(&shop.db, &admin, &f, "day").await.is_ok());
+        assert!(dashboard_overview_at(&shop.db, &admin, now).await.is_ok());
+
+        for error in [
+            sales_summary(&shop.db, &staff, &f).await.unwrap_err(),
+            sales_series(&shop.db, &staff, &f, "day").await.unwrap_err(),
+            sales_orders(&shop.db, &staff, &f, 0, 50).await.unwrap_err(),
+            sales_transactions(&shop.db, &staff, &f, 0, 50)
+                .await
+                .unwrap_err(),
+            sales_staff_options(&shop.db, &staff).await.unwrap_err(),
+            dashboard_overview_at(&shop.db, &staff, now)
+                .await
+                .unwrap_err(),
+        ] {
+            assert!(
+                error.contains("Administrator access is required"),
+                "{error}"
+            );
+        }
     });
 }
 
@@ -1366,7 +1391,7 @@ fn staff_options_list_only_people_with_sales_by_name_alone() {
             "staff-4",
         )
         .await;
-        let options = sales_staff_options(&shop.db, &staff()).await.unwrap();
+        let options = sales_staff_options(&shop.db, &admin()).await.unwrap();
         assert_eq!(
             options
                 .iter()
@@ -1456,7 +1481,7 @@ fn the_dashboard_lists_what_needs_attention() {
         shop.add(order("done", &z("2026-03-14T11:00"))).await;
         shop.run("INSERT INTO inventory_items(id,name,current_quantity,unit,minimum_quantity,created_at,updated_at,origin_device_id) VALUES('i1','Soap',1,'kg',2,'2026-01-01','2026-01-01','t'),('i2','Bags',5,'pcs',2,'2026-01-01','2026-01-01','t'),('i3','Pegs',2,'pcs',2,'2026-01-01','2026-01-01','t'),('i4','Hangers',0,'pcs',0,'2026-01-01','2026-01-01','t')").await;
 
-        let overview = dashboard_overview_at(&shop.db, &staff(), now)
+        let overview = dashboard_overview_at(&shop.db, &admin(), now)
             .await
             .unwrap();
         assert_eq!(overview.generated_at, "2026-03-15T06:30:00.000Z");
@@ -2192,5 +2217,615 @@ fn the_new_figures_use_the_names_the_interface_reads() {
         }
         assert!(overview["receivable"]["orders"].is_i64());
         assert!(overview["receivable"]["minor"].is_i64());
+    });
+}
+
+// ---------------------------------------------------------------------------------------------
+// Daily report and CSV export
+// ---------------------------------------------------------------------------------------------
+
+impl Shop {
+    /// A day with two operators, a split payment, an older bill paid today, a refund of an
+    /// earlier payment, a cancelled bill and a trashed bill.
+    async fn daily_story(&self) {
+        self.add(
+            order("d1", &z("2026-03-15T09:00"))
+                .number("LA-01")
+                .status("collected")
+                .money(50_000, 0)
+                .by("staff-1")
+                .customer("Secret Name", "9876543210"),
+        )
+        .await;
+        self.pay(
+            "d1-cash",
+            "d1",
+            20_000,
+            "cash",
+            &plus("2026-03-15T09:05"),
+            "staff-1",
+        )
+        .await;
+        self.pay(
+            "d1-upi",
+            "d1",
+            30_000,
+            "upi",
+            &plus("2026-03-15T09:06"),
+            "staff-2",
+        )
+        .await;
+
+        // Created yesterday, paid in full today.
+        self.add(
+            order("d2", &z("2026-03-14T10:00"))
+                .number("LA-02")
+                .status("collected")
+                .money(10_000, 0)
+                .by("staff-2"),
+        )
+        .await;
+        self.pay(
+            "d2-cash",
+            "d2",
+            10_000,
+            "cash",
+            &plus("2026-03-15T10:00"),
+            "staff-2",
+        )
+        .await;
+
+        // Created and paid today, then cancelled and handed back today.
+        self.add(
+            order("d3", &z("2026-03-15T11:00"))
+                .number("LA-03")
+                .status("cancelled")
+                .money(30_000, 0),
+        )
+        .await;
+        self.pay(
+            "d3-cash",
+            "d3",
+            30_000,
+            "cash",
+            &plus("2026-03-15T11:01"),
+            "staff-1",
+        )
+        .await;
+        self.void("d3-cash", &plus("2026-03-15T11:30")).await;
+
+        // Cancelled with no money today: not a qualifying row.
+        self.add(
+            order("d4", &z("2026-03-15T08:00"))
+                .number("LA-04")
+                .status("cancelled")
+                .money(20_000, 0),
+        )
+        .await;
+
+        // Trashed: counts nowhere, even though it was paid today.
+        self.add(
+            order("d5", &z("2026-03-15T12:00"))
+                .number("LA-05")
+                .status("collected")
+                .money(15_000, 0),
+        )
+        .await;
+        self.pay(
+            "d5-cash",
+            "d5",
+            15_000,
+            "cash",
+            &plus("2026-03-15T12:05"),
+            "staff-1",
+        )
+        .await;
+        self.run("UPDATE orders SET trashed_at='2026-03-15T12:30:00.000Z' WHERE id='d5'")
+            .await;
+
+        // An earlier payment handed back today: a refund-only, negative row.
+        self.add(
+            order("d6", &z("2026-03-14T09:00"))
+                .number("LA-06")
+                .status("collected")
+                .money(5_000, 0),
+        )
+        .await;
+        self.pay(
+            "d6-cash",
+            "d6",
+            5_000,
+            "cash",
+            &plus("2026-03-14T09:05"),
+            "staff-1",
+        )
+        .await;
+        self.void("d6-cash", &plus("2026-03-15T09:00")).await;
+
+        // The other methods accepted by the ledger all land in Other received.
+        self.add(
+            order("d7", &z("2026-03-15T13:00"))
+                .number("LA-07")
+                .status("collected")
+                .money(7_000, 0),
+        )
+        .await;
+        self.pay(
+            "d7-card",
+            "d7",
+            7_000,
+            "card",
+            &plus("2026-03-15T13:05"),
+            "staff-2",
+        )
+        .await;
+        self.add(
+            order("d9", &z("2026-03-15T15:00"))
+                .number("LA-09")
+                .status("collected")
+                .money(4_000, 0),
+        )
+        .await;
+        self.pay(
+            "d9-bank",
+            "d9",
+            4_000,
+            "bank_transfer",
+            &plus("2026-03-15T15:05"),
+            "staff-1",
+        )
+        .await;
+        self.add(
+            order("d10", &z("2026-03-15T16:00"))
+                .number("LA-10")
+                .status("collected")
+                .money(6_000, 0),
+        )
+        .await;
+        self.pay(
+            "d10-other",
+            "d10",
+            6_000,
+            "other",
+            &plus("2026-03-15T16:05"),
+            "staff-1",
+        )
+        .await;
+
+        // A free bill created today still qualifies for the billed row.
+        self.add(
+            order("d8", &z("2026-03-15T14:00"))
+                .number("LA-08")
+                .status("received")
+                .money(0, 0),
+        )
+        .await;
+
+        // Two methods on one bill: cash and the older credit ledger method.
+        self.add(
+            order("d11", &z("2026-03-15T17:00"))
+                .number("LA-11")
+                .status("received")
+                .money(8_000, 0),
+        )
+        .await;
+        self.pay(
+            "d11-cash",
+            "d11",
+            3_000,
+            "cash",
+            &plus("2026-03-15T17:05"),
+            "staff-1",
+        )
+        .await;
+        self.pay(
+            "d11-credit",
+            "d11",
+            5_000,
+            "credit",
+            &plus("2026-03-15T17:06"),
+            "staff-2",
+        )
+        .await;
+
+        // Another refund-only row, from an older payment.
+        self.add(
+            order("d12", &z("2026-03-14T18:00"))
+                .number("LA-12")
+                .status("collected")
+                .money(2_000, 0),
+        )
+        .await;
+        self.pay(
+            "d12-cash",
+            "d12",
+            2_000,
+            "cash",
+            &plus("2026-03-14T18:05"),
+            "staff-1",
+        )
+        .await;
+        self.void("d12-cash", &plus("2026-03-15T18:00")).await;
+    }
+}
+
+fn daily_now() -> DateTime<Utc> {
+    // 15 March 2026, 12:00 in shop time.
+    DateTime::parse_from_rfc3339("2026-03-15T06:30:00Z")
+        .unwrap()
+        .with_timezone(&Utc)
+}
+
+fn daily_filter() -> SalesFilter {
+    filter("2026-03-15T00:00", "2026-03-16T00:00")
+}
+
+#[test]
+fn daily_report_groups_by_bill_and_reconciles_with_sales() {
+    block_on(async {
+        let shop = Shop::new().await;
+        shop.daily_story().await;
+        let report = daily_report_at(&shop.db, &staff(), daily_now())
+            .await
+            .unwrap();
+        let for_admin = daily_report_at(&shop.db, &admin(), daily_now())
+            .await
+            .unwrap();
+        assert_eq!(report, for_admin, "staff and admin see the same report");
+        assert_eq!(report.shop_date, "2026-03-15");
+
+        let bills: Vec<&str> = report
+            .rows
+            .iter()
+            .map(|row| row.bill_number.as_str())
+            .collect();
+        assert_eq!(
+            bills,
+            [
+                "LA-01", "LA-02", "LA-03", "LA-06", "LA-07", "LA-08", "LA-09", "LA-10", "LA-11",
+                "LA-12"
+            ],
+            "one row per bill, sorted by bill number"
+        );
+        let mut unique = bills.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), bills.len());
+
+        let row = |bill: &str| {
+            report
+                .rows
+                .iter()
+                .find(|row| row.bill_number == bill)
+                .unwrap_or_else(|| panic!("no row {bill}"))
+        };
+        assert_eq!(
+            (
+                row("LA-01").billed_minor,
+                row("LA-01").cash_minor,
+                row("LA-01").upi_minor,
+                row("LA-01").other_minor,
+                row("LA-01").refunded_minor,
+                row("LA-01").net_minor,
+            ),
+            (50_000, 20_000, 30_000, 0, 0, 50_000)
+        );
+        assert_eq!(
+            (
+                row("LA-02").billed_minor,
+                row("LA-02").cash_minor,
+                row("LA-02").net_minor,
+            ),
+            (0, 10_000, 10_000),
+            "an older bill paid today is not billed today"
+        );
+        assert_eq!(
+            (
+                row("LA-03").billed_minor,
+                row("LA-03").cash_minor,
+                row("LA-03").refunded_minor,
+                row("LA-03").net_minor,
+            ),
+            (0, 30_000, 30_000, 0),
+            "a cancelled bill is not billed but its money follows its own dates"
+        );
+        assert_eq!(
+            (
+                row("LA-06").cash_minor,
+                row("LA-06").refunded_minor,
+                row("LA-06").net_minor,
+            ),
+            (0, 5_000, -5_000),
+            "a refund-only row may be negative"
+        );
+        assert_eq!(
+            (
+                row("LA-07").other_minor,
+                row("LA-09").other_minor,
+                row("LA-10").other_minor,
+                row("LA-11").other_minor,
+            ),
+            (7_000, 4_000, 6_000, 5_000),
+            "card, bank transfer, other and credit are Other received"
+        );
+        assert_eq!(row("LA-08").billed_minor, 0);
+        assert!(report.rows.iter().all(|row| row.bill_number != "LA-04"));
+        assert!(report.rows.iter().all(|row| row.bill_number != "LA-05"));
+
+        assert_eq!(
+            report.totals,
+            DailyReportTotals {
+                billed_minor: 75_000,
+                cash_minor: 63_000,
+                upi_minor: 30_000,
+                other_minor: 22_000,
+                refunded_minor: 37_000,
+                net_minor: 78_000,
+            }
+        );
+
+        let summary = sales_summary(&shop.db, &admin(), &daily_filter())
+            .await
+            .unwrap();
+        assert_eq!(summary.orders, 6);
+        assert_eq!(summary.net_billed_minor, report.totals.billed_minor);
+        assert_eq!(
+            summary.collected_minor,
+            report.totals.cash_minor + report.totals.upi_minor + report.totals.other_minor
+        );
+        assert_eq!(summary.refunded_minor, report.totals.refunded_minor);
+        assert_eq!(summary.net_collected_minor, report.totals.net_minor);
+
+        let row_json = serde_json::to_value(&report.rows[0]).unwrap();
+        let mut keys: Vec<&str> = row_json
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "billNumber",
+                "billedMinor",
+                "cashMinor",
+                "netMinor",
+                "otherMinor",
+                "refundedMinor",
+                "upiMinor"
+            ]
+        );
+        let report_json = serde_json::to_value(&report).unwrap();
+        let mut report_keys: Vec<&str> = report_json
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        report_keys.sort_unstable();
+        assert_eq!(report_keys, ["rows", "shopDate", "totals"]);
+        assert!(!report_json.to_string().contains("Secret Name"));
+        assert!(!report_json.to_string().contains("9876543210"));
+    });
+}
+
+#[test]
+fn daily_report_starts_at_ist_midnight() {
+    block_on(async {
+        let shop = Shop::new().await;
+        shop.add(
+            order("before", &z("2026-03-14T23:59:59"))
+                .number("LA-BEFORE")
+                .status("collected")
+                .money(10_000, 0),
+        )
+        .await;
+        shop.pay(
+            "before-cash",
+            "before",
+            1_000,
+            "cash",
+            &plus("2026-03-14T23:59:59"),
+            "staff-1",
+        )
+        .await;
+        shop.add(
+            order("at", &z("2026-03-15T00:00"))
+                .number("LA-AT")
+                .status("collected")
+                .money(10_000, 0),
+        )
+        .await;
+        shop.pay(
+            "at-cash",
+            "at",
+            2_000,
+            "cash",
+            &plus("2026-03-15T00:00"),
+            "staff-1",
+        )
+        .await;
+
+        let before_midnight = DateTime::parse_from_rfc3339("2026-03-14T06:30:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let yesterday = daily_report_at(&shop.db, &staff(), before_midnight)
+            .await
+            .unwrap();
+        assert_eq!(yesterday.shop_date, "2026-03-14");
+        assert_eq!(
+            yesterday
+                .rows
+                .iter()
+                .map(|row| row.bill_number.as_str())
+                .collect::<Vec<_>>(),
+            ["LA-BEFORE"]
+        );
+        assert_eq!(
+            (yesterday.totals.billed_minor, yesterday.totals.cash_minor),
+            (10_000, 1_000)
+        );
+
+        // 00:00 IST on 15 March is 18:30 UTC on 14 March.
+        let at_midnight = DateTime::parse_from_rfc3339("2026-03-14T18:30:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let today = daily_report_at(&shop.db, &staff(), at_midnight)
+            .await
+            .unwrap();
+        assert_eq!(today.shop_date, "2026-03-15");
+        assert_eq!(
+            today
+                .rows
+                .iter()
+                .map(|row| row.bill_number.as_str())
+                .collect::<Vec<_>>(),
+            ["LA-AT"]
+        );
+        assert_eq!(
+            (today.totals.billed_minor, today.totals.cash_minor),
+            (10_000, 2_000)
+        );
+    });
+}
+
+#[test]
+fn daily_report_csv_has_the_same_rows_order_and_totals() {
+    block_on(async {
+        let shop = Shop::new().await;
+        shop.daily_story().await;
+        let path = shop._dir.0.join("daily-report.csv");
+        let report = export_daily_report_csv_at(
+            &shop.db,
+            &staff(),
+            &path,
+            daily_shop_date(daily_now()),
+            daily_now(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            report,
+            daily_report_at(&shop.db, &staff(), daily_now())
+                .await
+                .unwrap()
+        );
+        let csv = std::fs::read_to_string(&path).unwrap();
+        assert!(csv.starts_with('\u{feff}'), "Excel-friendly UTF-8 BOM");
+        let text = csv.trim_start_matches('\u{feff}');
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(
+            lines[0],
+            "Shop date,Bill number,Billed today,Cash received,UPI received,Other received,Refunds,Net received"
+        );
+        assert_eq!(lines.len(), report.rows.len() + 2);
+        assert_eq!(
+            lines[1],
+            "2026-03-15,LA-01,500.00,200.00,300.00,0.00,0.00,500.00"
+        );
+        assert_eq!(
+            lines[lines.len() - 1],
+            "2026-03-15,TOTAL,750.00,630.00,300.00,220.00,370.00,780.00"
+        );
+        assert!(lines
+            .iter()
+            .any(|line| line.ends_with(",0.00,50.00,-50.00")));
+        assert!(!text.contains("Secret Name"));
+        assert!(!text.contains("9876543210"));
+        assert!(!text.contains('₹'));
+
+        // An upper-case extension is still a CSV file.
+        let upper = shop._dir.0.join("DAILY.CSV");
+        assert!(export_daily_report_csv_at(
+            &shop.db,
+            &staff(),
+            &upper,
+            daily_shop_date(daily_now()),
+            daily_now()
+        )
+        .await
+        .is_ok());
+    });
+}
+
+#[test]
+fn an_empty_day_exports_a_header_and_a_zero_totals_row() {
+    let report = DailyReport {
+        shop_date: "2026-03-15".into(),
+        rows: vec![],
+        totals: DailyReportTotals::default(),
+    };
+    assert_eq!(
+        daily_report_csv(&report),
+        "\u{feff}Shop date,Bill number,Billed today,Cash received,UPI received,Other received,Refunds,Net received\r\n\
+         2026-03-15,TOTAL,0.00,0.00,0.00,0.00,0.00,0.00\r\n"
+    );
+}
+
+#[test]
+fn csv_cells_escape_and_keep_bill_numbers_text() {
+    assert_eq!(csv_cell("plain"), "plain");
+    assert_eq!(csv_cell("=SUM(A1)"), "'=SUM(A1)");
+    assert_eq!(csv_cell("+91"), "'+91");
+    assert_eq!(csv_cell("-LA"), "'-LA");
+    assert_eq!(csv_cell("@bill"), "'@bill");
+    assert_eq!(csv_cell("\tbill"), "'\tbill");
+    assert_eq!(csv_cell("\rbill"), "\"'\rbill\"");
+    assert_eq!(csv_cell("a,b"), "\"a,b\"");
+    assert_eq!(csv_cell("a\"b"), "\"a\"\"b\"");
+    assert_eq!(csv_cell("a\nb"), "\"a\nb\"");
+    assert_eq!(rupees_text(0), "0.00");
+    assert_eq!(rupees_text(1), "0.01");
+    assert_eq!(rupees_text(100), "1.00");
+    assert_eq!(rupees_text(12_345), "123.45");
+    assert_eq!(rupees_text(-75), "-0.75");
+    assert_eq!(rupees_text(-12_345), "-123.45");
+}
+
+#[test]
+fn export_refuses_other_extensions_and_reports_a_write_failure() {
+    block_on(async {
+        let shop = Shop::new().await;
+        let now = daily_now();
+        assert!(export_daily_report_csv_at(
+            &shop.db,
+            &admin(),
+            Path::new("report.txt"),
+            daily_shop_date(now),
+            now
+        )
+        .await
+        .unwrap_err()
+        .contains(".csv"));
+        let missing = shop._dir.0.join("missing").join("report.csv");
+        assert!(export_daily_report_csv_at(
+            &shop.db,
+            &admin(),
+            &missing,
+            daily_shop_date(now),
+            now
+        )
+        .await
+        .unwrap_err()
+        .contains("could not be saved"));
+    });
+}
+
+#[test]
+fn daily_report_does_not_write_after_the_picker_crosses_shop_midnight() {
+    block_on(async {
+        let shop = Shop::new().await;
+        let path = shop._dir.0.join("yesterday.csv");
+        std::fs::write(&path, "keep this report").unwrap();
+        let midnight = DateTime::parse_from_rfc3339("2026-03-14T18:30:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let old_day = daily_shop_date(midnight - Duration::seconds(1));
+        let error = export_daily_report_csv_at(&shop.db, &staff(), &path, old_day, midnight)
+            .await
+            .unwrap_err();
+        assert!(error.contains("The shop date changed"), "{error}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "keep this report");
     });
 }

@@ -17,20 +17,22 @@ export interface SectionProps {
 }
 
 export type SectionId =
-  | 'order' | 'orders' | 'queue' | 'dashboard' | 'sales' | 'customers'
+  | 'order' | 'orders' | 'queue' | 'dashboard' | 'sales' | 'report' | 'customers'
   | 'expenses' | 'inventory' | 'machines' | 'admin' | 'settings' | 'trash';
 
 /**
  * Which roles may open each section. The native commands enforce the same rules; this table
  * only decides what the navigation shows. Prices, discounts, staff, printers, backups, shop
- * settings and every delete are admin-only; everything else is open to staff and admin.
+ * settings, every delete and the historical evaluation views are admin-only. The whole-shop
+ * daily report is open to staff and admin; everything else is open to both.
  */
 export const SECTION_ROLES: Record<SectionId, ReadonlyArray<CounterAccount['role']>> = {
   order: ['staff', 'admin'],
   orders: ['staff', 'admin'],
   queue: ['staff', 'admin'],
-  dashboard: ['staff', 'admin'],
-  sales: ['staff', 'admin'],
+  dashboard: ['admin'],
+  sales: ['admin'],
+  report: ['staff', 'admin'],
   customers: ['staff', 'admin'],
   expenses: ['staff', 'admin'],
   inventory: ['staff', 'admin'],
@@ -51,7 +53,7 @@ export interface NavGroup {
 /** The navigation as the shell lays it out, in order. Roles that may not open a section never see it. */
 export const NAV_GROUPS: ReadonlyArray<NavGroup> = [
   { label: 'Counter', sections: [{ id: 'order', label: 'New order' }, { id: 'orders', label: 'Orders / Pickup' }, { id: 'queue', label: 'Print queue' }] },
-  { label: 'Insights', sections: [{ id: 'dashboard', label: 'Dashboard' }, { id: 'sales', label: 'Sales' }] },
+  { label: 'Insights', sections: [{ id: 'dashboard', label: 'Dashboard' }, { id: 'sales', label: 'Sales' }, { id: 'report', label: 'Daily report' }] },
   { label: 'Shop', sections: [{ id: 'customers', label: 'Customers' }, { id: 'expenses', label: 'Expenses' }, { id: 'inventory', label: 'Inventory' }, { id: 'machines', label: 'Machines' }] },
   { label: 'Admin', sections: [{ id: 'admin', label: 'Admin' }, { id: 'settings', label: 'Shop settings' }, { id: 'trash', label: 'Trash' }] },
 ];
