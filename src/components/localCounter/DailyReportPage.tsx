@@ -1,8 +1,7 @@
 import { useEffect, useState } from 'react';
-import { save } from '@tauri-apps/plugin-dialog';
 import { Button } from '@/components/ui/button';
 import {
-  dailyReportFileName, exportDailyReportCsv, getDailyReport, SCREEN_ROW_LIMIT,
+  exportDailyReportCsv, getDailyReport, SCREEN_ROW_LIMIT,
   type DailyReport,
 } from '@/lib/localFirst/dailyReport';
 import { EmptyState, PageHeader, money } from './ui';
@@ -31,19 +30,10 @@ export const DailyReportPage = ({ onError, onNotice }: SectionProps) => {
   const exportCsv = async () => {
     setBusy(true);
     try {
-      // Read the current shop day before choosing a file: a page left open overnight must not
-      // export yesterday's rows under today's name.
-      const fresh = await getDailyReport();
-      setReport(fresh);
-      const path = await save({
-        title: 'Save the daily report',
-        defaultPath: dailyReportFileName(fresh.shopDate),
-        filters: [{ name: 'CSV (Excel)', extensions: ['csv'] }],
-      });
-      if (!path) return;
-      const saved = await exportDailyReportCsv(path);
-      setReport(saved);
-      onNotice(`Saved ${path}.`);
+      const saved = await exportDailyReportCsv();
+      if (!saved) return;
+      setReport(saved.report);
+      onNotice(`Saved ${saved.path}.`);
     } catch (error) {
       onError(error);
     } finally {

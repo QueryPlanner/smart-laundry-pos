@@ -374,12 +374,16 @@ fn every_query_needs_a_signed_in_account() {
             .await
             .unwrap_err()
             .contains("Log in"));
-        assert!(
-            export_daily_report_csv_at(&shop.db, &nobody, &shop._dir.0.join("r.csv"), now)
-                .await
-                .unwrap_err()
-                .contains("Log in")
-        );
+        assert!(export_daily_report_csv_at(
+            &shop.db,
+            &nobody,
+            &shop._dir.0.join("r.csv"),
+            daily_shop_date(now),
+            now
+        )
+        .await
+        .unwrap_err()
+        .contains("Log in"));
     });
 }
 
@@ -2692,9 +2696,15 @@ fn daily_report_csv_has_the_same_rows_order_and_totals() {
         let shop = Shop::new().await;
         shop.daily_story().await;
         let path = shop._dir.0.join("daily-report.csv");
-        let report = export_daily_report_csv_at(&shop.db, &staff(), &path, daily_now())
-            .await
-            .unwrap();
+        let report = export_daily_report_csv_at(
+            &shop.db,
+            &staff(),
+            &path,
+            daily_shop_date(daily_now()),
+            daily_now(),
+        )
+        .await
+        .unwrap();
         assert_eq!(
             report,
             daily_report_at(&shop.db, &staff(), daily_now())
@@ -2727,11 +2737,15 @@ fn daily_report_csv_has_the_same_rows_order_and_totals() {
 
         // An upper-case extension is still a CSV file.
         let upper = shop._dir.0.join("DAILY.CSV");
-        assert!(
-            export_daily_report_csv_at(&shop.db, &staff(), &upper, daily_now())
-                .await
-                .is_ok()
-        );
+        assert!(export_daily_report_csv_at(
+            &shop.db,
+            &staff(),
+            &upper,
+            daily_shop_date(daily_now()),
+            daily_now()
+        )
+        .await
+        .is_ok());
     });
 }
 
@@ -2774,18 +2788,44 @@ fn export_refuses_other_extensions_and_reports_a_write_failure() {
     block_on(async {
         let shop = Shop::new().await;
         let now = daily_now();
-        assert!(
-            export_daily_report_csv_at(&shop.db, &admin(), Path::new("report.txt"), now)
-                .await
-                .unwrap_err()
-                .contains(".csv")
-        );
+        assert!(export_daily_report_csv_at(
+            &shop.db,
+            &admin(),
+            Path::new("report.txt"),
+            daily_shop_date(now),
+            now
+        )
+        .await
+        .unwrap_err()
+        .contains(".csv"));
         let missing = shop._dir.0.join("missing").join("report.csv");
-        assert!(
-            export_daily_report_csv_at(&shop.db, &admin(), &missing, now)
-                .await
-                .unwrap_err()
-                .contains("could not be saved")
-        );
+        assert!(export_daily_report_csv_at(
+            &shop.db,
+            &admin(),
+            &missing,
+            daily_shop_date(now),
+            now
+        )
+        .await
+        .unwrap_err()
+        .contains("could not be saved"));
+    });
+}
+
+#[test]
+fn daily_report_does_not_write_after_the_picker_crosses_shop_midnight() {
+    block_on(async {
+        let shop = Shop::new().await;
+        let path = shop._dir.0.join("yesterday.csv");
+        std::fs::write(&path, "keep this report").unwrap();
+        let midnight = DateTime::parse_from_rfc3339("2026-03-14T18:30:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let old_day = daily_shop_date(midnight - Duration::seconds(1));
+        let error = export_daily_report_csv_at(&shop.db, &staff(), &path, old_day, midnight)
+            .await
+            .unwrap_err();
+        assert!(error.contains("The shop date changed"), "{error}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "keep this report");
     });
 }

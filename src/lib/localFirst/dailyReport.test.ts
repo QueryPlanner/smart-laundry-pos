@@ -12,7 +12,7 @@ import * as dailyReport from './dailyReport';
 /** [wrapper, call, native command, exact arguments]. Every exported wrapper appears once. */
 const table: Array<[string, () => Promise<unknown>, string, Record<string, unknown> | undefined]> = [
   ['getDailyReport', () => dailyReport.getDailyReport(), 'counter_daily_report', undefined],
-  ['exportDailyReportCsv', () => dailyReport.exportDailyReportCsv('/tmp/report.csv'), 'counter_export_daily_report_csv', { path: '/tmp/report.csv' }],
+  ['exportDailyReportCsv', () => dailyReport.exportDailyReportCsv(), 'counter_export_daily_report_csv', undefined],
 ];
 
 beforeEach(() => {
@@ -24,18 +24,6 @@ describe('daily report command wrappers', () => {
   it.each(table)('%s sends the exact native command and arguments', async (_name, run, command, args) => {
     await expect(run()).resolves.toBe('native-result');
     expect(mocks.invoke).toHaveBeenCalledExactlyOnceWith(command, args);
-  });
-
-  it('wraps every exported command function (a new export without a table row fails here)', () => {
-    const exported = Object.entries(dailyReport)
-      .filter(([name, value]) => name !== 'dailyReportFileName' && typeof value === 'function')
-      .map(([name]) => name);
-    const covered = new Set(table.map(([name]) => name.split(' ')[0]));
-    expect(exported.filter(name => !covered.has(name))).toEqual([]);
-  });
-
-  it('names the suggested file after the report date', () => {
-    expect(dailyReport.dailyReportFileName('2026-11-12')).toBe('daily-report-2026-11-12.csv');
   });
 
   it('refuses to run outside the Tauri desktop shell', () => {

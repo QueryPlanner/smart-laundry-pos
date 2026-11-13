@@ -32,9 +32,6 @@ export interface DailyReport {
 /** The whole-shop report for the current IST day; the native side chooses the date. */
 export const getDailyReport = (): Promise<DailyReport> => call('counter_daily_report');
 
-/** Writes the current IST day's report to the chosen path and returns that same snapshot. */
-export const exportDailyReportCsv = (path: string): Promise<DailyReport> =>
-  call('counter_export_daily_report_csv', { path });
-
-/** The file name the save dialog suggests, for example `daily-report-2026-11-12.csv`. */
-export const dailyReportFileName = (shopDate: string): string => `daily-report-${shopDate}.csv`;
+/** Opens the native save dialog and returns the saved snapshot, or null on cancellation. */
+export const exportDailyReportCsv = (): Promise<{ path: string; report: DailyReport } | null> =>
+  call('counter_export_daily_report_csv');

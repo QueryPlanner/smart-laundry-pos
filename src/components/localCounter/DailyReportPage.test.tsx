@@ -8,12 +8,10 @@ import type { DailyReport, DailyReportRow, DailyReportTotals } from '@/lib/local
 import type { CounterAccount } from '@/lib/localFirst/counter';
 
 const api = vi.hoisted(() => ({ getDailyReport: vi.fn(), exportDailyReportCsv: vi.fn() }));
-const dialog = vi.hoisted(() => ({ save: vi.fn() }));
 vi.mock('@/lib/localFirst/dailyReport', async importOriginal => {
   const actual = await importOriginal<typeof import('@/lib/localFirst/dailyReport')>();
   return { ...actual, getDailyReport: api.getDailyReport, exportDailyReportCsv: api.exportDailyReportCsv };
 });
-vi.mock('@tauri-apps/plugin-dialog', () => dialog);
 
 const staff: CounterAccount = { id: 's1', fullName: 'Asha Patil', role: 'staff', active: true };
 
@@ -50,8 +48,7 @@ const deferred = <T,>() => {
 beforeEach(() => {
   vi.clearAllMocks();
   api.getDailyReport.mockResolvedValue(base);
-  api.exportDailyReportCsv.mockResolvedValue(base);
-  dialog.save.mockResolvedValue('/tmp/daily-report-2026-11-12.csv');
+  api.exportDailyReportCsv.mockResolvedValue({ path: '/tmp/daily-report-2026-11-12.csv', report: base });
 });
 afterEach(cleanup);
 
@@ -104,48 +101,30 @@ describe('DailyReportPage', () => {
     expect(totals.textContent).toContain(money(0));
   });
 
-  it('saves through the picker, reports the saved path and shows the returned snapshot', async () => {
+  it('shows the saved path and replaces an older report with the exported snapshot', async () => {
     const saved = reportOf('2026-11-12', [row('LA-09', { cashMinor: 900, netMinor: 900 })], {
       ...zero, cashMinor: 900, netMinor: 900,
     });
-    api.exportDailyReportCsv.mockResolvedValue(saved);
+    api.getDailyReport.mockResolvedValue(reportOf('2026-11-11', [row('LA-OLD')]));
+    api.exportDailyReportCsv.mockResolvedValue({ path: '/tmp/daily-report-2026-11-12.csv', report: saved });
     const { props } = setup();
     await screen.findByRole('table');
     fireEvent.click(screen.getByRole('button', { name: 'Export CSV' }));
-    await waitFor(() => expect(api.exportDailyReportCsv).toHaveBeenCalledWith('/tmp/daily-report-2026-11-12.csv'));
-    expect(dialog.save).toHaveBeenCalledWith({
-      title: 'Save the daily report',
-      defaultPath: 'daily-report-2026-11-12.csv',
-      filters: [{ name: 'CSV (Excel)', extensions: ['csv'] }],
-    });
+    await waitFor(() => expect(api.exportDailyReportCsv).toHaveBeenCalledExactlyOnceWith());
     expect(props.onNotice).toHaveBeenCalledWith('Saved /tmp/daily-report-2026-11-12.csv.');
     expect(await screen.findByText('LA-09')).toBeTruthy();
+    expect(screen.queryByText('LA-OLD')).toBeNull();
   });
 
   it('returns to the report when the picker is cancelled', async () => {
-    dialog.save.mockResolvedValue(null);
+    api.exportDailyReportCsv.mockResolvedValue(null);
     const { props } = setup();
     await screen.findByRole('table');
     fireEvent.click(screen.getByRole('button', { name: 'Export CSV' }));
-    await waitFor(() => expect(dialog.save).toHaveBeenCalled());
-    expect(api.exportDailyReportCsv).not.toHaveBeenCalled();
+    await waitFor(() => expect(api.exportDailyReportCsv).toHaveBeenCalled());
     expect(props.onNotice).not.toHaveBeenCalled();
     expect(props.onError).not.toHaveBeenCalled();
     expect(screen.getByRole('table')).toBeTruthy();
-  });
-
-  it('reads the new shop day before exporting a page left open overnight', async () => {
-    api.getDailyReport
-      .mockResolvedValueOnce(reportOf('2026-11-11', [row('LA-OLD', { cashMinor: 100, netMinor: 100 })]))
-      .mockResolvedValue(base);
-    setup();
-    await screen.findByText('LA-OLD');
-    fireEvent.click(screen.getByRole('button', { name: 'Export CSV' }));
-    await waitFor(() => expect(dialog.save).toHaveBeenCalledWith(expect.objectContaining({
-      defaultPath: 'daily-report-2026-11-12.csv',
-    })));
-    expect(screen.queryByText('LA-OLD')).toBeNull();
-    expect(await screen.findByText('LA-01')).toBeTruthy();
   });
 
   it('reports a failed load and stays on the loading screen', async () => {
@@ -155,18 +134,9 @@ describe('DailyReportPage', () => {
     expect(screen.getByText('Loading...')).toBeTruthy();
   });
 
-  it('reports a failure before the picker, in the picker or while writing, and re-enables the button', async () => {
+  it('reports an export error and re-enables the button', async () => {
     const { props } = setup();
     await screen.findByRole('table');
-
-    api.getDailyReport.mockRejectedValueOnce(new Error('day read failed'));
-    fireEvent.click(screen.getByRole('button', { name: 'Export CSV' }));
-    await waitFor(() => expect(props.onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'day read failed' })));
-    expect((screen.getByRole('button', { name: 'Export CSV' }) as HTMLButtonElement).disabled).toBe(false);
-
-    dialog.save.mockRejectedValueOnce(new Error('dialog failed'));
-    fireEvent.click(screen.getByRole('button', { name: 'Export CSV' }));
-    await waitFor(() => expect(props.onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'dialog failed' })));
 
     api.exportDailyReportCsv.mockRejectedValueOnce(new Error('disk full'));
     fireEvent.click(screen.getByRole('button', { name: 'Export CSV' }));
@@ -176,14 +146,13 @@ describe('DailyReportPage', () => {
   });
 
   it('disables Export while it is working', async () => {
-    const pending = deferred<DailyReport>();
+    const pending = deferred<null>();
     const { props } = setup();
     await screen.findByRole('table');
-    api.getDailyReport.mockReturnValueOnce(pending.promise);
+    api.exportDailyReportCsv.mockReturnValueOnce(pending.promise);
     fireEvent.click(screen.getByRole('button', { name: 'Export CSV' }));
     expect((screen.getByRole('button', { name: 'Export CSV' }) as HTMLButtonElement).disabled).toBe(true);
-    pending.resolve(base);
-    await waitFor(() => expect(dialog.save).toHaveBeenCalled());
+    pending.resolve(null);
     await waitFor(() => expect((screen.getByRole('button', { name: 'Export CSV' }) as HTMLButtonElement).disabled).toBe(false));
     expect(props.onError).not.toHaveBeenCalled();
   });

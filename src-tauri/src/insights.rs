@@ -39,7 +39,8 @@ use std::path::Path;
 use chrono::{DateTime, Datelike, Duration, NaiveDate, NaiveDateTime, Timelike, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::{Row, SqliteConnection};
-use tauri::State;
+use tauri::{Runtime, State, Window};
+use tauri_plugin_dialog::DialogExt;
 
 use crate::counter::{
     db_err, digit_value, like_contains, require_actor, require_admin, strip_country_prefix,
@@ -1565,6 +1566,17 @@ pub async fn sales_transactions(
     .await)
 }
 
+fn daily_shop_date(now: DateTime<Utc>) -> NaiveDate {
+    (now.naive_utc() + Duration::seconds(IST_OFFSET_SECONDS)).date()
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DailyReportExport {
+    path: String,
+    report: DailyReport,
+}
+
 /// The whole-shop daily report for the current IST day. Every bill with activity today appears
 /// once, with its money grouped by bill. Cancelled and trashed bills follow the Sales definitions:
 /// a cancelled bill is not billed today but its payments and refunds still count, and a trashed
@@ -1573,8 +1585,7 @@ async fn daily_report_inner(
     conn: &mut SqliteConnection,
     now: DateTime<Utc>,
 ) -> Result<DailyReport, String> {
-    let shop_now = now.naive_utc() + Duration::seconds(IST_OFFSET_SECONDS);
-    let today = shop_now.date();
+    let today = daily_shop_date(now);
     let midnight = today
         .and_hms_opt(0, 0, 0)
         .ok_or_else(|| "The shop date could not be read.".to_string())?;
@@ -1746,8 +1757,13 @@ pub async fn export_daily_report_csv_at(
     db: &DatabaseState,
     session: &CounterSession,
     path: &Path,
+    expected_day: NaiveDate,
     now: DateTime<Utc>,
 ) -> Result<DailyReport, String> {
+    require_actor(session)?;
+    if daily_shop_date(now) != expected_day {
+        return Err("The shop date changed. Choose Export CSV again to save the new day.".into());
+    }
     let is_csv = path
         .extension()
         .and_then(|extension| extension.to_str())
@@ -1858,12 +1874,35 @@ pub async fn counter_daily_report(
 }
 
 #[tauri::command]
-pub async fn counter_export_daily_report_csv(
+pub async fn counter_export_daily_report_csv<R: Runtime>(
     state: State<'_, DatabaseState>,
     session: State<'_, CounterSession>,
-    path: String,
-) -> Result<DailyReport, String> {
-    export_daily_report_csv_at(&state, &session, Path::new(&path), Utc::now()).await
+    window: Window<R>,
+) -> Result<Option<DailyReportExport>, String> {
+    let actor = require_actor(&session)?;
+    let day = daily_shop_date(Utc::now());
+    let dialog = window
+        .dialog()
+        .file()
+        .set_parent(&window)
+        .set_title("Save the daily report")
+        .set_file_name(format!("daily-report-{day}.csv"))
+        .add_filter("CSV (Excel)", &["csv"]);
+    let Some(selection) = tauri::async_runtime::spawn_blocking(move || dialog.blocking_save_file())
+        .await
+        .map_err(|error| format!("The save dialog could not be opened: {error}"))?
+    else {
+        return Ok(None);
+    };
+    if require_actor(&session)?.id != actor.id {
+        return Err("The signed-in account changed. Open Export CSV again.".into());
+    }
+    let path = selection.into_path().map_err(|error| error.to_string())?;
+    let report = export_daily_report_csv_at(&state, &session, &path, day, Utc::now()).await?;
+    Ok(Some(DailyReportExport {
+        path: path.to_string_lossy().into_owned(),
+        report,
+    }))
 }
 
 #[cfg(test)]
