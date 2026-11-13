@@ -105,6 +105,39 @@ describe('RateCard', () => {
     expect(footer()).toContain('1 change not saved');
   });
 
+  it('offers every refreshed catalogue picture and saves the chosen one', async () => {
+    const saved = { ...catalogue, garments: [{ ...catalogue.garments[0], imageKey: 'heavy-saree' }, ...catalogue.garments.slice(1)] };
+    api.saveCounterRateCard.mockResolvedValue(saved);
+    const { props } = setup();
+    fireEvent.click(button('Picture of Shirt'));
+    for (const label of [
+      'Shirt',
+      'Polo T-shirt',
+      'Jacket',
+      'Saree blouse',
+      'Long kurti',
+      'Cotton lehenga',
+      'Heavy lehenga',
+      'Heavy frock',
+      'Leather shoes',
+      'Single bedsheet',
+      'Double bedsheet',
+      'Window curtain',
+      'Door curtain',
+      'Pillow covers',
+      'Sofa cover',
+      'Table cloth',
+      'Heavy saree',
+    ]) {
+      expect(screen.getByLabelText(label, { selector: 'input[type=radio]' }), label).toBeTruthy();
+    }
+    fireEvent.click(screen.getByLabelText('Heavy saree', { selector: 'input[type=radio]' }));
+    expect(footer()).toContain('1 change not saved');
+    fireEvent.click(button('Save'));
+    await waitFor(() => expect(props.onCatalogue).toHaveBeenCalledWith(saved));
+    expect(api.saveCounterRateCard.mock.calls[0][0].garments).toEqual([{ id: 'shirt', picture: 'heavy-saree' }]);
+  });
+
   it('says what is wrong instead of saving, and Undo changes starts again', () => {
     setup();
     fireEvent.change(box('Shirt Wash price'), { target: { value: 'abc' } });

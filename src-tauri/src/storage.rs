@@ -26,6 +26,7 @@ const MIGRATION_V7_SQL: &str = include_str!("../migrations/007_trash_requests.sq
 const MIGRATION_V8_SQL: &str = include_str!("../migrations/008_wash_only_and_press.sql");
 const MIGRATION_V9_SQL: &str = include_str!("../migrations/009_custom_services.sql");
 const MIGRATION_V10_SQL: &str = include_str!("../migrations/010_split_payments.sql");
+const MIGRATION_V11_SQL: &str = include_str!("../migrations/011_catalogue_pictures.sql");
 /// Every schema step, oldest first: its version number, its SQL and a name for error messages.
 /// Startup, the schema contract and the test fixtures all read this one list, so a new step is
 /// added here once and nowhere else.
@@ -44,8 +45,9 @@ const MIGRATION_STEPS: &[(i64, &str, &str)] = &[
     (8, MIGRATION_V8_SQL, "v8 wash only and wash + press"),
     (9, MIGRATION_V9_SQL, "v9 custom services"),
     (10, MIGRATION_V10_SQL, "v10 split payments"),
+    (11, MIGRATION_V11_SQL, "v11 catalogue pictures"),
 ];
-const SCHEMA_VERSION: i64 = 10;
+const SCHEMA_VERSION: i64 = 11;
 /// The last step that rebuilds a table other tables point to (steps 8 and 9 both rebuild
 /// `service_methods`). A database older than this is migrated with foreign keys switched off,
 /// which SQLite only allows outside a transaction.

@@ -40,6 +40,44 @@ describe('garment pictures', () => {
     expect(readdirSync(`${root}public/garments`).filter(name => name.endsWith('-transparent.png')).length).toBeGreaterThanOrEqual(28);
   });
 
+  it('offers every picture added by the catalogue refresh', () => {
+    const added = [
+      'heavy-saree',
+      'shirt-only',
+      'polo-tshirt',
+      'zip-jacket',
+      'saree-blouse',
+      'long-kurti',
+      'lehenga-cotton',
+      'lehenga-heavy',
+      'heavy-frock',
+      'leather-shoes',
+      'bedsheet-single-folded',
+      'bedsheet-double-folded',
+      'window-curtain',
+      'door-curtain',
+      'pillow-cover-pair',
+      'sofa-cover-fitted',
+      'table-cloth-draped',
+    ];
+    const listed = GARMENT_PICTURES.map(picture => picture.key);
+    for (const key of added) expect(listed, key).toContain(key);
+  });
+
+  it('registers every picture key used by the catalogue migration', () => {
+    const sql = readFileSync(`${migrationsDir}011_catalogue_pictures.sql`, 'utf8');
+    const keys = [...sql.matchAll(/image_key = '([^']+)'/g)].map(match => match[1]);
+    const listed = GARMENT_PICTURES.map(picture => picture.key);
+    expect(keys.length).toBeGreaterThan(0);
+    for (const key of keys) expect(listed, key).toContain(key);
+  });
+
+  it('records every bundled picture in the asset manifest', () => {
+    const manifest = JSON.parse(readFileSync(`${root}public/garments/manifest.json`, 'utf8')) as { assets: Array<{ key: string }> };
+    const files = readdirSync(`${root}public/garments`).filter(name => name.endsWith('-transparent.png')).map(name => name.replace('-transparent.png', '')).sort();
+    expect(manifest.assets.map(asset => asset.key).sort()).toEqual(files);
+  });
+
   it('offers the administrator every bundled picture, each once, and each with a file', () => {
     const files = readdirSync(`${root}public/garments`).filter(name => name.endsWith('-transparent.png')).map(name => name.replace('-transparent.png', '')).sort();
     const listed = GARMENT_PICTURES.map(picture => picture.key);

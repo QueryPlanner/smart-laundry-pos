@@ -28,7 +28,7 @@ Never cancel builds; allow at least 60 s for `npm ci`. The desktop app has never
 - `src/lib/localFirst/` typed wrappers for the native `counter_*` commands and business helpers
 - `src/components/ui/` shadcn components that the screens use
 - `src-tauri/src/` Rust: `counter.rs` (accounts, rate card, quote/save order, payments, trash), `storage.rs` (SQLite, migrations, schema contract), `printing.rs`/`print_layout.rs` (bill and tags), `insights/`, `office.rs`
-- `src-tauri/migrations/` numbered SQL migrations (001 to 009). Frozen once released; add a new file and a `MIGRATION_STEPS` entry in `storage.rs`. A schema change also needs a `REQUIRED_TABLES_V*` entry; data-only migrations share the previous schema contract.
+- `src-tauri/migrations/` numbered SQL migrations (001 to 011). Frozen once released; add a new file and a `MIGRATION_STEPS` entry in `storage.rs`. A schema change also needs a `REQUIRED_TABLES_V*` entry; data-only migrations share the previous schema contract.
 - `landing/` + `vercel.json`: Vercel publishes only `landing/`
 
 ## Rules of the road
