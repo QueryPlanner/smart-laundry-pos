@@ -40,6 +40,7 @@ const table: Array<[string, () => Promise<unknown>, string, Record<string, unkno
   ['getCounterOrderQueueCounts', () => counter.getCounterOrderQueueCounts(), 'counter_order_queue_counts', undefined],
   ['getCounterOrder', () => counter.getCounterOrder('o'), 'counter_get_order', { orderId: 'o' }],
   ['recordCounterPayment', () => counter.recordCounterPayment('o', { amountMinor: 100, method: 'cash', idempotencyKey: 'k' }), 'counter_record_payment', { orderId: 'o', input: { amountMinor: 100, method: 'cash', idempotencyKey: 'k' } }],
+  ['recordCounterSplitPayment', () => counter.recordCounterSplitPayment('o', { cashMinor: 200, upiMinor: 300, idempotencyKey: 'k' }), 'counter_record_split_payment', { orderId: 'o', input: { cashMinor: 200, upiMinor: 300, idempotencyKey: 'k' } }],
   ['updateCounterOrderStatus', () => counter.updateCounterOrderStatus('o', 'ready'), 'counter_update_order_status', { orderId: 'o', status: 'ready' }],
   ['cancelCounterOrder', () => counter.cancelCounterOrder('o', 'Customer changed their mind'), 'counter_cancel_order', { orderId: 'o', reason: 'Customer changed their mind' }],
   ['editCounterOrder', () => counter.editCounterOrder('o', { ...order, reason: 'Wrong quantity', reviewedTotalMinor: 1200 }), 'counter_edit_order', { orderId: 'o', input: { ...order, reason: 'Wrong quantity', reviewedTotalMinor: 1200 } }],

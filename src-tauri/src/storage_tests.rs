@@ -1014,8 +1014,14 @@ fn a_new_database_has_the_refreshed_catalogue_pictures_and_labels() {
                 "{garment}"
             );
         }
-        assert_eq!(garment_text(pool, "g-shirt", "name_en").await, "Shirt / T-shirt");
-        assert_eq!(garment_text(pool, "g-shirt", "name_mr").await, "शर्ट / टी-शर्ट");
+        assert_eq!(
+            garment_text(pool, "g-shirt", "name_en").await,
+            "Shirt / T-shirt"
+        );
+        assert_eq!(
+            garment_text(pool, "g-shirt", "name_mr").await,
+            "शर्ट / टी-शर्ट"
+        );
         assert_eq!(
             garment_text(pool, "g-bedsheet-single", "name_en").await,
             "Single Bedsheet"
@@ -1159,6 +1165,37 @@ fn a_v9_upgrade_refreshes_only_untouched_defaults_and_keeps_custom_cards_and_bil
 }
 
 #[test]
+fn a_v10_split_payment_database_receives_the_catalogue_and_keeps_split_requests() {
+    tauri::async_runtime::block_on(async {
+        let temporary = TempDatabase::new();
+        create_schema_file(&temporary.path, 10).await;
+        let pool = connect_writer_pool(&temporary.path, false, 1)
+            .await
+            .unwrap();
+        seed_order_with_payments(&pool).await;
+        sqlx::query("INSERT INTO counter_split_payment_requests(request_id,order_id,cash_payment_id,upi_payment_id,payload_hash,created_at) VALUES('existing-split','order-1','pay-advance','pay-later','hash',?)")
+            .bind(RECEIVED_AT).execute(&pool).await.unwrap();
+        pool.close().await;
+
+        let upgraded = open(&temporary.path).await;
+        assert_eq!(upgraded.info().error, None);
+        let pool = &upgraded.pools().unwrap().writer;
+        assert_eq!(user_version(pool).await, 11);
+        assert_eq!(
+            garment_text(pool, "g-shirt", "name_en").await,
+            "Shirt / T-shirt"
+        );
+        assert_eq!(
+            garment_text(pool, "g-heavy-saree", "image_key").await,
+            "heavy-saree"
+        );
+        let split: (String, String) = sqlx::query_as("SELECT cash_payment_id, upi_payment_id FROM counter_split_payment_requests WHERE request_id='existing-split'")
+            .fetch_one(pool).await.unwrap();
+        assert_eq!(split, ("pay-advance".into(), "pay-later".into()));
+    });
+}
+
+#[test]
 fn the_catalogue_picture_migration_is_safe_to_run_twice() {
     tauri::async_runtime::block_on(async {
         let temporary = TempDatabase::new();
@@ -1166,19 +1203,19 @@ fn the_catalogue_picture_migration_is_safe_to_run_twice() {
         let pool = connect_writer_pool(&temporary.path, false, 1)
             .await
             .unwrap();
-        sqlx::raw_sql(MIGRATION_V10_SQL)
+        sqlx::raw_sql(MIGRATION_V11_SQL)
             .execute(&pool)
             .await
-            .expect("the first v10 run should succeed");
+            .expect("the first v11 run should succeed");
         let after_first: Vec<(String, String, String, String)> =
             sqlx::query_as("SELECT id, name_en, name_mr, image_key FROM garments ORDER BY id")
                 .fetch_all(&pool)
                 .await
                 .unwrap();
-        sqlx::raw_sql(MIGRATION_V10_SQL)
+        sqlx::raw_sql(MIGRATION_V11_SQL)
             .execute(&pool)
             .await
-            .expect("running the v10 migration again should succeed");
+            .expect("running the v11 migration again should succeed");
         let after_second: Vec<(String, String, String, String)> =
             sqlx::query_as("SELECT id, name_en, name_mr, image_key FROM garments ORDER BY id")
                 .fetch_all(&pool)
@@ -1404,6 +1441,123 @@ fn a_v3_database_is_upgraded_to_v4_and_its_orders_and_payments_are_kept() {
             .await
             .unwrap();
         assert_eq!(item_count, 1);
+    });
+}
+
+#[test]
+fn a_v9_database_upgrades_through_v10_and_keeps_its_payments() {
+    tauri::async_runtime::block_on(async {
+        let temporary = TempDatabase::new();
+        create_schema_file(&temporary.path, 9).await;
+        let setup = connect_writer_pool(&temporary.path, false, 1)
+            .await
+            .unwrap();
+        seed_order_with_payments(&setup).await;
+        setup.close().await;
+
+        let upgraded = open(&temporary.path).await;
+        assert_eq!(upgraded.info().error, None);
+        let pool = &upgraded.pools().unwrap().writer;
+        assert_eq!(user_version(pool).await, SCHEMA_VERSION);
+        assert!(table_exists_in(pool, "counter_split_payment_requests").await);
+        let payments: Vec<(String, f64)> =
+            sqlx::query_as("SELECT id, amount FROM payments ORDER BY id")
+                .fetch_all(pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            payments,
+            vec![
+                ("pay-advance".to_string(), 40.0),
+                ("pay-later".to_string(), 60.0),
+            ],
+            "the upgrade keeps every legacy payment"
+        );
+        let splits: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM counter_split_payment_requests")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        assert_eq!(splits, 0, "a legacy bill has no split records");
+        assert_eq!(
+            marker_value(&upgraded, "shop-marker").await.as_deref(),
+            Some("kept")
+        );
+    });
+}
+
+#[test]
+fn a_split_payment_survives_backup_and_restore() {
+    tauri::async_runtime::block_on(async {
+        let source = TempDatabase::new();
+        let live = TempDatabase::new();
+        create_database_with_marker(&live.path, "original").await;
+
+        let source_state = open(&source.path).await;
+        let source_pool = &source_state.pools().unwrap().writer;
+        seed_order_with_payments(source_pool).await;
+        for (id, amount, method) in [("pay-cash", 20.0, "cash"), ("pay-upi", 30.0, "upi")] {
+            sqlx::query("INSERT INTO payments(id,order_id,amount,method,recorded_at,recorded_by,created_at,updated_at,origin_device_id,kind) VALUES(?,'order-1',?,?,?,'staff-1',?,?,'device-1','settlement')")
+                .bind(id)
+                .bind(amount)
+                .bind(method)
+                .bind(LATER_AT)
+                .bind(LATER_AT)
+                .bind(LATER_AT)
+                .execute(source_pool)
+                .await
+                .unwrap();
+        }
+        sqlx::query("INSERT INTO counter_split_payment_requests(request_id,order_id,cash_payment_id,upi_payment_id,payload_hash,created_at) VALUES('split-backup','order-1','pay-cash','pay-upi','hash-backup',?)")
+            .bind(LATER_AT)
+            .execute(source_pool)
+            .await
+            .unwrap();
+        let backup = source_state.backup_database().await.unwrap();
+        let backup_path = PathBuf::from(&backup);
+        validate_database(&backup_path)
+            .await
+            .expect("a v10 backup should pass full validation");
+        drop(source_state);
+
+        let live_state = open(&live.path).await;
+        live_state
+            .restore_database(backup_path.to_string_lossy().to_string())
+            .apply()
+            .await
+            .expect("a v10 backup should stage");
+        drop(live_state);
+
+        let restored = open(&live.path).await;
+        assert_eq!(restored.info().error, None);
+        let pool = &restored.pools().unwrap().writer;
+        assert_eq!(user_version(pool).await, SCHEMA_VERSION);
+        let split: (String, String, String) = sqlx::query_as(
+            "SELECT order_id,cash_payment_id,upi_payment_id FROM counter_split_payment_requests WHERE request_id='split-backup'",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            split,
+            (
+                "order-1".to_string(),
+                "pay-cash".to_string(),
+                "pay-upi".to_string()
+            )
+        );
+        let split_payments: Vec<(String, String, f64)> = sqlx::query_as(
+            "SELECT id,method,amount FROM payments WHERE id IN ('pay-cash','pay-upi') ORDER BY id",
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            split_payments,
+            vec![
+                ("pay-cash".to_string(), "cash".to_string(), 20.0),
+                ("pay-upi".to_string(), "upi".to_string(), 30.0),
+            ]
+        );
     });
 }
 

@@ -5,7 +5,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import type { CounterOrderLine, CounterSavedOrder } from '@/lib/localFirst/counter';
 import { OrderPage, type OrderPageProps } from './OrderPage';
 
-const api = vi.hoisted(() => ({ getCounterOrder: vi.fn(), handOverCounterItems: vi.fn(), recordCounterPayment: vi.fn(), quoteCounterOrder: vi.fn(), editCounterOrder: vi.fn(), voidCounterPayment: vi.fn() }));
+const api = vi.hoisted(() => ({ getCounterOrder: vi.fn(), handOverCounterItems: vi.fn(), recordCounterPayment: vi.fn(), recordCounterSplitPayment: vi.fn(), quoteCounterOrder: vi.fn(), editCounterOrder: vi.fn(), voidCounterPayment: vi.fn() }));
 vi.mock('@/lib/localFirst/counter', () => api);
 
 const line = (itemId: string, garment: string, service: string, pieceCount: number, lineTotalMinor: number, handedOverCount = 0): CounterOrderLine => ({
@@ -178,5 +178,43 @@ describe('OrderPage', () => {
     expect(await screen.findByRole('button', { name: 'Saving…' })).toBeTruthy();
     finish(order({ status: 'collected', paidMinor: 23000, balanceMinor: 0 }));
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Saving…' })).toBeNull());
+  });
+});
+
+describe('OrderPage Cash + UPI split', () => {
+  it('offers two amount boxes with the combined amount and the balance left', async () => {
+    const open = order({ totalMinor: 50000, balanceMinor: 50000 });
+    const paid = order({ totalMinor: 50000, paidMinor: 50000, balanceMinor: 0 });
+    const after = order({ totalMinor: 50000, status: 'collected', paidMinor: 50000, balanceMinor: 0, lines: [line('iron', 'Shirt', 'Iron', 3, 3000, 3), line('dry', 'Saree', 'Dry Clean', 2, 20000, 2)] });
+    api.recordCounterSplitPayment.mockResolvedValue(paid);
+    api.handOverCounterItems.mockResolvedValue(after);
+    const p = props({ order: open });
+    render(<OrderPage {...p} />);
+    fireEvent.click(button('Cash + UPI'));
+    expect(button('Cash + UPI').getAttribute('aria-pressed')).toBe('true');
+    expect(screen.queryByLabelText('Amount received now (₹)')).toBeNull();
+    const cash = screen.getByLabelText('Cash amount (₹)') as HTMLInputElement;
+    const upi = screen.getByLabelText('UPI amount (₹)') as HTMLInputElement;
+    expect(cash.value).toBe('');
+    expect(upi.value).toBe('');
+    fireEvent.change(cash, { target: { value: '200' } });
+    fireEvent.change(upi, { target: { value: '300' } });
+    const payment = within(screen.getByRole('region', { name: 'Payment' }));
+    expect(payment.getByText('Combined').nextSibling?.textContent).toBe('₹500.00');
+    expect(payment.getByText('Balance after').nextSibling?.textContent).toBe('₹0.00');
+    fireEvent.click(button('Receive ₹200.00 Cash + ₹300.00 UPI and hand over 5 pieces'));
+    await waitFor(() => expect(p.onNotice).toHaveBeenCalledWith('Received ₹500.00 (₹200.00 Cash + ₹300.00 UPI). 5 pieces handed over. Order collected.'));
+    expect(api.recordCounterSplitPayment).toHaveBeenCalledWith('o-1', expect.objectContaining({ cashMinor: 20000, upiMinor: 30000 }));
+    expect(p.onOrder).toHaveBeenLastCalledWith(after);
+  });
+
+  it('shows why a split cannot be used and keeps the last-items rule', () => {
+    render(<OrderPage {...props({ order: order({ totalMinor: 50000, balanceMinor: 50000 }) })} />);
+    fireEvent.click(button('Cash + UPI'));
+    expect(screen.getByRole('alert').textContent).toBe('Enter a positive Cash amount and a positive UPI amount.');
+    fireEvent.change(screen.getByLabelText('Cash amount (₹)'), { target: { value: '100' } });
+    fireEvent.change(screen.getByLabelText('UPI amount (₹)'), { target: { value: '100' } });
+    expect(screen.getByRole('alert').textContent).toContain('take the whole balance first');
+    expect(button('Receive ₹100.00 Cash + ₹100.00 UPI and hand over 5 pieces').disabled).toBe(true);
   });
 });

@@ -11,7 +11,7 @@ Staff can recognize garments and household items at card size. Admins can choose
 | Item | Artwork | Default placement |
 | --- | --- | --- |
 | Heavy Saree | A draped saree with dense embroidery or zari across the body, border and pallu. The fabric work must be visible at card size. | Give the existing Heavy Saree card its own picture. Keep the ordinary Saree image available. Treat Work Saree as a description of Heavy Saree for this PR. |
-| Shirt | One shirt, with the entire garment visible. | Remove the pant from the picture and remove the explicit pant reference from the default Shirt option in English and Marathi. Keep its existing garment ID and rates. |
+| Shirt | One shirt, with the entire garment visible. | Remove the pant from the picture and remove the explicit pant reference from the default Shirt option in English and Marathi. Keep T-shirt in the shared card label, with the existing garment ID and rates. |
 | Polo T-shirt | A collared polo in a color distinct from the current picture. | Refresh the T-shirt picture choice. Match it to an existing T-shirt card where the default picture is in use. |
 | Jacket | A standalone jacket with the closure and sleeves visible. | Refresh the Jacket picture choice and the default artwork where a Jacket card exists. |
 | Saree blouse | A short, fitted saree blouse with recognizable sleeves and neckline. | Refresh the Blouse card and picker choice. |

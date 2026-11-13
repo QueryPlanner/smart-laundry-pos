@@ -1,7 +1,6 @@
--- Version 10: refreshed garment and household pictures on the rate card.
+-- Version 11: refreshed garment and household pictures on the rate card.
 --
--- DATA ONLY. No table, column or index changes, so versions 2, 3, 6, 8, 9 and 10 share one schema
--- contract.
+-- DATA ONLY. Versions 10 and 11 share one schema contract.
 --
 -- Every picture lives in `public/garments/<image_key>-transparent.png`. The revised artwork ships
 -- under new keys, so a card that already points at an older picture keeps showing that picture:
@@ -17,7 +16,7 @@
 --    carry their own garment, service and price snapshots.
 --  * Re-running it changes nothing.
 --
--- Migrations 001 to 009 are frozen; this is a new numbered file with a MIGRATION_STEPS entry.
+-- Migrations 001 to 010 are frozen; this is a new numbered file with a MIGRATION_STEPS entry.
 
 -- Heavy Saree gets its own embroidered picture; the ordinary Saree keeps `saree`.
 UPDATE garments SET image_key = 'heavy-saree'
