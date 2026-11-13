@@ -7397,35 +7397,43 @@ mod counter_tests {
                 std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700)).unwrap();
             }
 
-            set_backup_mirror(&db, &admin, Some(&format!("  {}  ", mirror.display())))
-                .await
-                .unwrap();
-            let done = backup_now(&db, &admin).await.unwrap();
-            assert_eq!(done.mirror_dir.as_deref(), mirror.to_str());
-            assert_eq!(done.mirror_status.as_deref(), Some("ok"));
-            assert!(done.last_backup_at.is_some());
-            let target = db.mirror_target(&mirror).await;
-            assert!(
-                target.is_dir(),
-                "the per-computer folder is made when the folder is chosen"
-            );
-            let copies = std::fs::read_dir(&target)
-                .unwrap()
-                .filter_map(Result::ok)
-                .filter(|e| e.file_name().to_string_lossy().starts_with("laundry-"))
-                .count();
-            assert_eq!(
-                copies, 1,
-                "the backup went into this computer's own subfolder"
-            );
-            assert_eq!(
-                std::fs::read_dir(&mirror)
+            if cfg!(windows) {
+                let refused = set_backup_mirror(&db, &admin, mirror.to_str())
+                    .await
+                    .unwrap_err();
+                assert!(refused.contains("different drive"), "{refused}");
+                assert_eq!(backup_now(&db, &admin).await.unwrap().mirror_dir, None);
+            } else {
+                set_backup_mirror(&db, &admin, Some(&format!("  {}  ", mirror.display())))
+                    .await
+                    .unwrap();
+                let done = backup_now(&db, &admin).await.unwrap();
+                assert_eq!(done.mirror_dir.as_deref(), mirror.to_str());
+                assert_eq!(done.mirror_status.as_deref(), Some("ok"));
+                assert!(done.last_backup_at.is_some());
+                let target = db.mirror_target(&mirror).await;
+                assert!(
+                    target.is_dir(),
+                    "the per-computer folder is made when the folder is chosen"
+                );
+                let copies = std::fs::read_dir(&target)
                     .unwrap()
                     .filter_map(Result::ok)
-                    .count(),
-                1,
-                "nothing else is written into the chosen folder"
-            );
+                    .filter(|e| e.file_name().to_string_lossy().starts_with("laundry-"))
+                    .count();
+                assert_eq!(
+                    copies, 1,
+                    "the backup went into this computer's own subfolder"
+                );
+                assert_eq!(
+                    std::fs::read_dir(&mirror)
+                        .unwrap()
+                        .filter_map(Result::ok)
+                        .count(),
+                    1,
+                    "nothing else is written into the chosen folder"
+                );
+            }
 
             set_backup_mirror(&db, &admin, Some("   ")).await.unwrap();
             let cleared = backup_now(&db, &admin).await.unwrap();
@@ -7473,13 +7481,9 @@ mod counter_tests {
                 b"staged",
             )
             .unwrap();
-            let mirror = temp_folder("mirror-blocked");
-            let refused = set_backup_mirror(&db, &admin, mirror.to_str())
-                .await
-                .unwrap_err();
+            let refused = set_backup_mirror(&db, &admin, None).await.unwrap_err();
             assert!(refused.contains("restore is staged"), "{refused}");
             cleanup(db, path).await;
-            let _ = std::fs::remove_dir_all(mirror);
         });
     }
 
