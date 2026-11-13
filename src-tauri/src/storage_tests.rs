@@ -185,6 +185,9 @@ async fn create_database_with_marker(path: &Path, value: &str) {
     let state = open(path).await;
     assert_eq!(state.info().error, None);
     seed_marker(&state, "restore-marker", value).await;
+    // The snapshots taken from this file are renamed straight after, so wait for the SQLite
+    // handles to close instead of leaving that to the background close of `drop`.
+    state.close_pools().await;
     drop(state);
 }
 
