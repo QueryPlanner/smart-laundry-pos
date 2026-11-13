@@ -336,6 +336,10 @@ fn mock_startup_applies_staged_restore_before_serving_commands() {
             .await
             .expect("valid replacement should stage before app startup");
         assert!(staged.starts_with("Restore staged."));
+        // Startup renames both files next. Wait for the SQLite handles to close here instead of
+        // leaving that to the background close that `drop` starts, which Windows can delay.
+        live_state.close_pools().await;
+        source_state.close_pools().await;
     });
 
     let resolver_path = live_path.clone();

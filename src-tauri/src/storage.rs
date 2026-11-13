@@ -502,6 +502,17 @@ impl DatabaseState {
         Ok(&self.pools()?.writer)
     }
 
+    /// Close the SQLite pools and wait for their worker threads to exit. Dropping a pool only
+    /// starts that close in the background, so Windows can keep the file locked for a while.
+    /// Tests that reuse or rename the same path close explicitly instead of relying on `drop`.
+    #[cfg(test)]
+    pub(crate) async fn close_pools(&self) {
+        if let Ok(pools) = &self.pools {
+            pools.writer.close().await;
+            pools.reader.close().await;
+        }
+    }
+
     fn pools(&self) -> Result<&DatabasePools, String> {
         self.pools.as_ref().map_err(Clone::clone)
     }
@@ -1829,10 +1840,12 @@ fn restore_original_after_failed_apply(
 }
 
 fn rename_database_file(source: &Path, destination: &Path) -> std::io::Result<()> {
-    // A recently validated or quarantined database may still be briefly locked on Windows.
-    // Keep the atomic rename and retry only sharing or locking violations.
+    // A recently validated or quarantined database may still be locked on Windows: the file
+    // scanner and the closing connection threads can hold a share that blocks the move for
+    // longer than a moment. Keep the atomic rename and retry only sharing or locking
+    // violations, for up to 30 seconds.
     #[cfg(windows)]
-    for _ in 0..100 {
+    for _ in 0..600 {
         match fs::rename(source, destination) {
             Err(error) if matches!(error.raw_os_error(), Some(32 | 33)) => {
                 std::thread::sleep(Duration::from_millis(50));
