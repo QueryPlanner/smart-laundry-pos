@@ -504,11 +504,17 @@ impl DatabaseState {
         let pool_result = async {
             let existed = database_path.exists();
             let bootstrap = connect_writer_pool(database_path, false, WRITER_CONNECTIONS).await?;
-            if existed {
-                preserve_before_upgrade(&bootstrap, database_path).await?;
+            let initialized = async {
+                if existed {
+                    preserve_before_upgrade(&bootstrap, database_path).await?;
+                }
+                initialize_schema(&bootstrap, existed).await
             }
-            initialize_schema(&bootstrap, existed).await?;
+            .await;
+            // A failed startup can still stage a restore. Close the bootstrap pool on every
+            // result so its SQLite handles cannot outlive that failed startup on Windows.
             bootstrap.close().await;
+            initialized?;
             validate_database(database_path).await?;
 
             let writer = connect_writer_pool(database_path, true, WRITER_CONNECTIONS).await?;
