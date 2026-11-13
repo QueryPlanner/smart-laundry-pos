@@ -85,8 +85,8 @@ describe('counter workspace UI kit', () => {
 });
 
 describe('section access table', () => {
-  it('keeps prices, staff, printers, backups, shop settings and the trash admin-only and the rest open', () => {
-    const adminOnly: SectionId[] = ['admin', 'settings', 'trash'];
+  it('keeps the historical views, prices, staff, printers, backups, shop settings and the trash admin-only', () => {
+    const adminOnly: SectionId[] = ['dashboard', 'sales', 'admin', 'settings', 'trash'];
     for (const id of Object.keys(SECTION_ROLES) as SectionId[]) {
       expect(canOpen(id, 'admin')).toBe(true);
       expect(canOpen(id, 'staff')).toBe(!adminOnly.includes(id));

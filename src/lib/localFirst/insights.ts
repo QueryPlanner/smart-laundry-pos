@@ -7,9 +7,10 @@ const call = <T>(command: string, args?: Record<string, unknown>): Promise<T> =>
 };
 
 /**
- * Read-only insight queries: the dashboard overview and the sales query. Any signed-in account
- * (staff or administrator) gets identical figures. Every amount is whole paise. Filters use
- * shop time (IST) as `YYYY-MM-DDTHH:MM`, meaning from (inclusive) to to (exclusive).
+ * Read-only historical insight queries: the dashboard overview and the sales query. These are
+ * administrator-only; the whole-shop daily report for operators lives in `dailyReport.ts`.
+ * Every amount is whole paise. Filters use shop time (IST) as `YYYY-MM-DDTHH:MM`, meaning from
+ * (inclusive) to to (exclusive).
  */
 
 export type SalesBucket = 'hour' | 'day' | 'month';

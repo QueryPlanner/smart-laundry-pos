@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, BarChart3, ClipboardList, LayoutDashboard, LockKeyhole, LogOut, Package, Printer, Receipt, Settings, ShieldCheck, ShoppingBasket, Store, Trash2, Users, WashingMachine, Wrench, type LucideIcon } from 'lucide-react';
+import { ArrowLeft, BarChart3, ClipboardList, FileSpreadsheet, LayoutDashboard, LockKeyhole, LogOut, Package, Printer, Receipt, Settings, ShieldCheck, ShoppingBasket, Store, Trash2, Users, WashingMachine, Wrench, type LucideIcon } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -30,7 +30,10 @@ import { JOB_STATE_LABEL } from './printJobState';
 import { canOpen, NAV_GROUPS, visibleNavGroups, type SalesView, type SectionId, type SectionProps } from './sections';
 import { DashboardPage } from './DashboardPage';
 import { SalesPage } from './SalesPage';
+import { DailyReportPage } from './DailyReportPage';
 import { CustomersPage } from './CustomersPage';
+import { CustomerEntry } from './CustomerEntry';
+import { blankCustomer, type CustomerDraft } from './customerDraft';
 import { ExpensesPage } from './ExpensesPage';
 import { InventoryPage } from './InventoryPage';
 import { MachinesPage } from './MachinesPage';
@@ -70,7 +73,7 @@ const originLabel = (from: Page): string | undefined => {
 };
 
 const NAV_ICON: Record<SectionId, LucideIcon> = {
-  order: ShoppingBasket, orders: ClipboardList, queue: Printer, dashboard: LayoutDashboard, sales: BarChart3,
+  order: ShoppingBasket, orders: ClipboardList, queue: Printer, dashboard: LayoutDashboard, sales: BarChart3, report: FileSpreadsheet,
   customers: Users, expenses: Receipt, inventory: Package, machines: Wrench, admin: ShieldCheck, settings: Settings, trash: Trash2,
 };
 
@@ -89,7 +92,7 @@ export const CounterApp = () => {
   const [lines, setLines] = useState<Record<string, number>>({});
   /** Prices typed for this bill only, in paise per piece, keyed like `lines`. Any signed-in user may set one. */
   const [priceOverrides, setPriceOverrides] = useState<Record<string, number>>({});
-  const [customer, setCustomer] = useState<{ name: string; phone: string; customerId?: string }>({ name: '', phone: '' });
+  const [customer, setCustomer] = useState<CustomerDraft>(blankCustomer);
   const [quote, setQuote] = useState<CounterQuote | null>(null);
   const [quoteRefresh, setQuoteRefresh] = useState(0);
   /** An extra discount for this bill only, in rupees as typed. Empty means none. */
@@ -132,10 +135,17 @@ export const CounterApp = () => {
     return { garmentId, serviceId: treatmentId, quantity, ...(key in priceOverrides ? { unitPriceOverrideMinor: priceOverrides[key] } : {}) };
   }), [lines, priceOverrides]);
   const manualDiscountMinor = discountMinorOf(discount);
+  // The customer fields the native commands need; `addressLocked` is only for this screen.
+  const customerInput = useMemo(() => ({
+    name: customer.name,
+    phone: customer.phone,
+    ...(customer.customerId ? { customerId: customer.customerId } : {}),
+    ...(customer.address.trim() ? { address: customer.address.trim() } : {}),
+  }), [customer]);
   // What is priced, saved and previewed: the garments, and the extra discount when there is one.
-  const orderInput = useMemo(() => ({ customer, items: orderItems, ...(manualDiscountMinor > 0 ? { manualDiscountMinor } : {}) }), [customer, orderItems, manualDiscountMinor]);
+  const orderInput = useMemo(() => ({ customer: customerInput, items: orderItems, ...(manualDiscountMinor > 0 ? { manualDiscountMinor } : {}) }), [customerInput, orderItems, manualDiscountMinor]);
   // Shown on the New order tab, so a kept draft is not forgotten.
-  const draftInProgress = orderItems.length > 0 || customer.name.trim() !== '' || customer.phone.trim() !== '';
+  const draftInProgress = orderItems.length > 0 || customer.name.trim() !== '' || customer.phone.trim() !== '' || customer.address.trim() !== '';
   useEffect(() => {
     if (!account) return;
     void listPrintJobs().then(setJobs).catch(e => setError(problem(e)));
@@ -186,7 +196,7 @@ export const CounterApp = () => {
     setSelectedReprintPieces([]); reprintRequestKeys.current = {};
   };
   const clearDraft = () => {
-    setCustomer({ name: '', phone: '' }); setLines({}); setPriceOverrides({}); setDiscount('');
+    setCustomer(blankCustomer); setLines({}); setPriceOverrides({}); setDiscount('');
     setQuote(null); setQuoteError(''); reviewedQuote.current = null;
     setReprintBusy(false); resetOrderScopedState();
     idempotencyKey.current = crypto.randomUUID(); saveAttempted.current = false;
@@ -386,6 +396,7 @@ export const CounterApp = () => {
     {showing('admin') && <CounterAdmin catalogue={catalogue} onCatalogue={setCatalogue} printers={printers} onReloadPrinters={openPrinterSettings} onError={reportError} onNotice={setNotice} onRestoreStaged={() => setRestoreStaged(true)} />}
     {showing('dashboard') && <DashboardPage {...sectionProps} />}
     {showing('sales') && <SalesPage {...sectionProps} initialView={salesView} />}
+    {showing('report') && <DailyReportPage {...sectionProps} />}
     {showing('customers') && <CustomersPage {...sectionProps} />}
     {showing('expenses') && <ExpensesPage {...sectionProps} />}
     {showing('inventory') && <InventoryPage {...sectionProps} />}
@@ -400,6 +411,3 @@ export const CounterApp = () => {
 
 const Setup = ({ onDone, error }: { onDone: (x: { fullName: string; pin: string }) => void; error: string }) => { const [fullName,setName]=useState(''); const [pin,setPin]=useState(''); const [confirm,setConfirm]=useState(''); const [localError,setError]=useState(''); return <div className="counter-auth"><form onSubmit={e=>{e.preventDefault(); if(pin!==confirm){setError('PINs do not match.');return;} onDone({fullName,pin});}} className="counter-auth-card"><WashingMachine /><h1>Set up Smart Laundry</h1><p>Create the first named administrator account.</p><Label>Admin name<Input value={fullName} onChange={e=>setName(e.target.value)} required /></Label><Label>PIN<Input value={pin} onChange={e=>setPin(e.target.value)} type="password" inputMode="numeric" required /></Label><Label>Confirm PIN<Input value={confirm} onChange={e=>setConfirm(e.target.value)} type="password" inputMode="numeric" required /></Label>{(error||localError)&&<p role="alert">{error||localError}</p>}<Button type="submit">Create admin account</Button></form></div>; };
 const Login = ({ accounts, busy, error, onLogin, onRefresh }: { accounts: CounterAccount[]; busy:boolean; error:string; onLogin:(id:string,pin:string)=>void; onRefresh:()=>void }) => { const [id,setId]=useState(''); const [pin,setPin]=useState(''); const [admin,setAdmin]=useState(false); const shown=accounts.filter(a=>a.role===(admin?'admin':'staff')&&a.active); return <div className="counter-auth"><form className="counter-auth-card" onSubmit={e=>{e.preventDefault();if(id)onLogin(id,pin);}}><WashingMachine/><h1>Smart Laundry</h1><p>Choose your name and enter your PIN.</p><div className="counter-role-toggle"><button type="button" className={!admin?'selected':''} onClick={()=>{setAdmin(false);setId('');}}>Staff login</button><button type="button" className={admin?'selected':''} onClick={()=>{setAdmin(true);setId('');}}>Admin</button></div><Label>Name<select value={id} onChange={e=>setId(e.target.value)} required><option value="">Choose {admin?'administrator':'staff member'}</option>{shown.map(a=><option key={a.id} value={a.id}>{a.fullName}</option>)}</select></Label><Label>PIN<Input autoComplete="current-password" value={pin} onChange={e=>setPin(e.target.value)} type="password" inputMode="numeric" required /></Label>{error&&<p role="alert">{error}</p>}<Button disabled={busy||!id} type="submit"><LockKeyhole className="mr-2 h-4 w-4"/>{busy?'Signing in…':'Sign in'}</Button><button className="counter-link" type="button" onClick={onRefresh}>Refresh account list</button></form></div>; };
-
-const CustomerEntry = ({customer,onChange,search}:{customer:{name:string;phone:string;customerId?:string};onChange:(c:{name:string;phone:string;customerId?:string})=>void;search:(phone:string)=>Promise<Array<{id:string;name:string;phone:string}>>}) => {const[hits,setHits]=useState<Array<{id:string;name:string;phone:string}>>([]);const[searchError,setSearchError]=useState('');const query=customer.customerId?'':customer.phone.trim().length>=3?customer.phone.trim():customer.name.trim().length>=2?customer.name.trim():'';useEffect(()=>{if(!query){setHits([]);return;}let live=true;const t=setTimeout(()=>void search(query).then(x=>{if(live){setHits(x);setSearchError('')}}).catch(e=>live&&setSearchError(problem(e))),250);return()=>{live=false;clearTimeout(t)}},[query,search]);return <section className="counter-customer counter-panel"><div><span className="counter-section-label">Customer</span><p>Look up by mobile or name, or add a new customer</p></div><Label>Mobile number<Input value={customer.phone} inputMode="tel" autoComplete="tel" placeholder="10-digit mobile" onChange={e=>onChange({...customer,phone:e.target.value,customerId:undefined})}/></Label><Label>Name<Input value={customer.name} autoComplete="name" placeholder="Customer name" onChange={e=>onChange({...customer,name:e.target.value,customerId:undefined})}/></Label>{hits.length>0&&<div className="counter-customer-matches" role="listbox" aria-label="Matching customers">{hits.map(c=><button type="button" role="option" aria-selected={customer.customerId===c.id} key={c.id} onClick={()=>{onChange({name:c.name,phone:c.phone,customerId:c.id});setHits([])}}><strong>{c.name}</strong><span>{c.phone}</span></button>)}</div>}{searchError&&<p role="status">Customer lookup unavailable; enter details manually.</p>}</section>};
-

@@ -682,6 +682,8 @@ All colors MUST be HSL.
 .counter-order-customer{grid-area:customer;display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 10px;min-width:0}
 .counter-order-customer span{font-size:13px;color:#5f6f68;overflow-wrap:anywhere}
 .counter-customer-link{padding:0;font-size:15px;font-weight:700;text-decoration:underline;text-underline-offset:3px}
+.counter-customer-address,.counter-customer-note{grid-column:1/-1}
+.counter-customer-note{margin:0!important;font-size:12px!important}
 .counter-match-reason{grid-area:match;font-size:12px;font-weight:650;color:#4f6159}
 @media (max-width:900px){.counter-order-row{grid-template-columns:minmax(0,1fr);grid-template-areas:"open" "customer" "match" "action"}.counter-order-open{grid-template-columns:auto minmax(0,1fr)}}
 /* Pickup state: the words say it; colour and border style add a second cue. */
@@ -881,6 +883,7 @@ All colors MUST be HSL.
 .counter-rate-table tr.removed input,.counter-rate-table th.removed input{text-decoration:line-through;opacity:.6}
 .counter-rate-picking td{background:#f6faf8}
 .counter-rate-picking td>button{margin-top:8px}
+.counter-rate-toolbar{display:flex;justify-content:flex-end;padding:0 0 10px}
 .counter-rate-add{display:flex;flex-wrap:wrap;gap:12px 24px;padding:14px 0}
 .counter-rate-add form{display:flex;align-items:end;gap:10px;flex:1;min-width:260px}
 .counter-rate-add label{flex:1}
@@ -888,6 +891,20 @@ All colors MUST be HSL.
 .counter-rate-save>span{margin-right:auto;color:#4f6159;font-weight:650}
 .counter-rate-save>span[role=alert]{color:#9a3e2f}
 .counter-rate-save button:last-child{min-width:110px;background:#187553;color:#fff}
+/* Add garment: a side panel that keeps the rate card and its draft in place. */
+.counter-side-panel-backdrop{position:fixed;inset:0;z-index:60;background:#0f1d1894}
+.counter-side-panel{position:fixed;top:0;right:0;bottom:0;z-index:61;width:min(430px,100%);background:#fff;border-left:1px solid #e1e9e5;box-shadow:-14px 0 44px #0004}
+.counter-side-panel form{display:flex;flex-direction:column;gap:14px;height:100%;max-height:100vh;padding:20px;overflow-y:auto}
+.counter-side-panel header{display:flex;align-items:center;justify-content:space-between;gap:12px;position:sticky;top:0;background:#fff;padding-bottom:6px}
+.counter-side-panel h2{margin:0;font-size:19px}
+.counter-side-panel label{display:grid;gap:7px;font-weight:600;font-size:13px;color:#4f6159}
+.counter-side-panel input{height:42px;border:1px solid #cddbd4;border-radius:9px;padding:0 11px;background:#fff}
+.counter-side-panel-preview{display:flex;align-items:center;gap:12px;padding:10px;border:1px solid #e1e9e5;border-radius:12px;background:#f6faf8;color:#4f6159;font-size:13px;font-weight:650}
+.counter-side-panel-preview img{width:76px;height:76px;object-fit:contain}
+.counter-side-panel-preview .counter-picture-none{margin:0;width:64px;height:64px}
+.counter-side-panel-error{margin:0;color:#9a3e2f;font-weight:650}
+.counter-side-panel-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:auto;padding-top:6px}
+.counter-side-panel-actions button:last-child{min-width:150px;background:#187553;color:#fff}
 .counter-edit-bill{display:grid;gap:16px}
 .counter-edit-customer{display:grid;grid-template-columns:1fr 1fr;gap:12px 16px}
 .counter-edit-bill label{display:grid;gap:6px;font-weight:600;font-size:13px;color:#4f6159}

@@ -31,7 +31,13 @@ export interface CounterRate {
   configured: boolean; available: boolean; version: number;
 }
 export interface CounterCatalogue { garments: CounterGarment[]; services: CounterService[]; rates: CounterRate[] }
-export interface CounterCustomer { name: string; phone: string; customerId?: string }
+export interface CounterCustomer {
+  name: string; phone: string; customerId?: string;
+  /** Optional on the counter; saved with a new customer or the first address for one that has none. */
+  address?: string;
+}
+/** A customer matching what the counter typed, with the saved address the order form can show. */
+export interface CounterCustomerMatch { id: string; name: string; phone: string; address: string | null }
 export interface CounterOrderLineInput {
   garmentId: string; serviceId: string; quantity: number;
   /** A price for this bill only, in paise per piece. Omit to charge the rate card. */
@@ -145,7 +151,7 @@ export const setCounterStaffActive = (userId: string, active: boolean): Promise<
 export const resetCounterStaffPin = (userId: string, pin: string): Promise<void> =>
   call('counter_reset_staff_pin', { userId, pin });
 export const getCounterCatalogue = (): Promise<CounterCatalogue> => call('counter_get_catalogue');
-export const searchCounterCustomers = (query: string): Promise<Array<{id: string; name: string; phone: string}>> => call('counter_search_customers', { query });
+export const searchCounterCustomers = (query: string): Promise<CounterCustomerMatch[]> => call('counter_search_customers', { query });
 /** A garment or service already on the rate card, as the administrator changed it. */
 export interface CounterRateCardRowEdit {
   id: string;
