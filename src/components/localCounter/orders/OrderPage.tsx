@@ -126,13 +126,14 @@ export const OrderPage = ({ order, isAdmin, catalogue = null, busy, backLabel, o
             {pickup.method === 'split' ? (
               <>
                 <Label htmlFor="pickup-cash">Cash amount (₹)</Label>
-                <Input id="pickup-cash" inputMode="decimal" placeholder="0" value={pickup.splitCash} disabled={working} onChange={event => pickup.setSplitCash(event.target.value)} />
+                <Input id="pickup-cash" inputMode="decimal" placeholder="0" value={pickup.splitCash} disabled={working || pickup.splitPending} onChange={event => pickup.setSplitCash(event.target.value)} />
                 <Label htmlFor="pickup-upi">UPI amount (₹)</Label>
-                <Input id="pickup-upi" inputMode="decimal" placeholder="0" value={pickup.splitUpi} disabled={working} onChange={event => pickup.setSplitUpi(event.target.value)} />
+                <Input id="pickup-upi" inputMode="decimal" placeholder="0" value={pickup.splitUpi} disabled={working || pickup.splitPending} onChange={event => pickup.setSplitUpi(event.target.value)} />
                 <div className="counter-split-summary">
                   <div><span>Combined</span><strong>{money(pickup.splitTotalMinor)}</strong></div>
                   <div><span>Balance after</span><strong>{money(pickup.splitRemainingMinor)}</strong></div>
                 </div>
+                {pickup.splitPending && !working && <p role="status">Retry the same Cash + UPI payment to confirm it before taking another payment.</p>}
                 {pickup.splitSaved && <p role="status">The Cash and UPI payments are saved. Hand over the items to finish.</p>}
               </>
             ) : (
@@ -143,7 +144,7 @@ export const OrderPage = ({ order, isAdmin, catalogue = null, busy, backLabel, o
             )}
             <div className="flex flex-wrap gap-2" role="group" aria-label="Payment method">
               {METHODS.map(method => (
-                <button key={method.value} type="button" className="counter-touch" aria-pressed={pickup.method === method.value} onClick={() => pickup.setMethod(method.value)}>{method.label}</button>
+                <button key={method.value} type="button" className="counter-touch" aria-pressed={pickup.method === method.value} disabled={working || pickup.splitPending} onClick={() => pickup.setMethod(method.value)}>{method.label}</button>
               ))}
             </div>
             {pickup.problem && <p role="alert" className="text-sm font-semibold text-red-700">{pickup.problem}</p>}

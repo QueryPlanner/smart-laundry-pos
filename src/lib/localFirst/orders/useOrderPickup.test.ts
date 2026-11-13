@@ -279,32 +279,46 @@ describe('useOrderPickup Cash + UPI split', () => {
   it('keeps one key for a retry of the same split after an uncertain response', async () => {
     api.recordCounterSplitPayment.mockRejectedValueOnce(new Error('disk busy'));
     api.getCounterOrder.mockResolvedValue(bigOrder());
-    const { result, onError } = setup(bigOrder());
+    const { result, onError, rerender } = setup(bigOrder());
     fillSplit(result, '200', '300');
     await submit(result);
     expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'disk busy' }));
     expect(result.current.splitSaved).toBe(false);
+    expect(result.current.splitPending).toBe(true);
+    act(() => {
+      result.current.setMethod('cash');
+      result.current.setSplitCash('100');
+      result.current.setSplitUpi('400');
+    });
+    expect(result.current.method).toBe('split');
+    expect(result.current.action).toBe('Retry Cash + UPI payment');
+    rerender({ value: order({ totalMinor: 50000, paidMinor: 50000, balanceMinor: 0 }) });
     api.recordCounterSplitPayment.mockResolvedValue(order({ totalMinor: 50000, paidMinor: 50000, balanceMinor: 0 }));
     await submit(result);
-    expect(api.recordCounterSplitPayment.mock.calls[1][1].idempotencyKey).toBe(api.recordCounterSplitPayment.mock.calls[0][1].idempotencyKey);
+    expect(api.recordCounterSplitPayment.mock.calls[1]).toEqual(api.recordCounterSplitPayment.mock.calls[0]);
   });
 
   it('hands over only after a split was saved, and never sends the amounts twice', async () => {
-    const paid = order({ totalMinor: 50000, paidMinor: 50000, balanceMinor: 0 });
+    const paid = order({ totalMinor: 50000, paidMinor: 10000, balanceMinor: 40000 });
     api.recordCounterSplitPayment.mockResolvedValue(paid);
     api.handOverCounterItems.mockRejectedValueOnce(new Error('changed'));
-    api.getCounterOrder.mockResolvedValue(paid);
-    const { result, onError } = setup(bigOrder());
-    fillSplit(result, '200', '300');
+    api.getCounterOrder.mockRejectedValueOnce(new Error('refresh interrupted'));
+    const { result, onError, rerender } = setup(bigOrder());
+    act(() => result.current.toggle('dry'));
+    fillSplit(result, '40', '60');
     await submit(result);
     expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'changed' }));
+    expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'refresh interrupted' }));
+    rerender({ value: paid });
     expect(result.current.splitSaved).toBe(true);
     expect(result.current.splitCash).toBe('');
     expect(result.current.splitUpi).toBe('');
-    expect(result.current.action).toBe('Hand over 5 pieces');
-    act(() => { result.current.toggle('iron'); result.current.toggle('dry'); });
+    expect(result.current.action).toBe('Hand over 3 pieces');
+    act(() => result.current.toggle('iron'));
     expect(result.current.problem).toBe('Tick what the customer is taking, or enter an amount.');
     act(() => { result.current.toggle('iron'); result.current.toggle('dry'); });
+    expect(result.current.problem).toContain('take the whole balance first');
+    act(() => result.current.toggle('dry'));
     api.handOverCounterItems.mockResolvedValue(collected());
     await submit(result);
     expect(api.recordCounterSplitPayment).toHaveBeenCalledTimes(1);
@@ -325,6 +339,41 @@ describe('useOrderPickup Cash + UPI split', () => {
     expect(result.current.splitSaved).toBe(false);
     act(() => result.current.setSplitUpi('20'));
     expect(result.current.splitSaved).toBe(false);
+  });
+
+  it('lets the operator correct a split definitively refused for its balance', async () => {
+    const latest = order({ totalMinor: 50000, paidMinor: 40000, balanceMinor: 10000 });
+    api.recordCounterSplitPayment.mockRejectedValueOnce('The split payment cannot exceed the outstanding balance.');
+    api.getCounterOrder.mockResolvedValueOnce(latest);
+    const { result, rerender } = setup(bigOrder());
+    act(() => { result.current.toggle('iron'); result.current.toggle('dry'); });
+    fillSplit(result, '100', '200');
+    await submit(result);
+    expect(result.current.splitPending).toBe(false);
+    rerender({ value: latest });
+    expect(result.current.problem).toContain('more than the balance');
+    fillSplit(result, '40', '60');
+    api.recordCounterSplitPayment.mockResolvedValueOnce(collected());
+    await submit(result);
+    expect(api.recordCounterSplitPayment).toHaveBeenLastCalledWith(
+      'o-1', { cashMinor: 4000, upiMinor: 6000, idempotencyKey: 'key-2' },
+    );
+  });
+
+  it('keeps the final items when a pending split resolves with a balance left', async () => {
+    const before = bigOrder();
+    const paid = order({ totalMinor: 50000, paidMinor: 10000, balanceMinor: 40000 });
+    api.recordCounterSplitPayment.mockRejectedValueOnce(new Error('response lost')).mockResolvedValueOnce(paid);
+    api.getCounterOrder.mockResolvedValueOnce(before).mockResolvedValueOnce(paid);
+    const { result, onError } = setup(before);
+    act(() => result.current.toggle('dry'));
+    fillSplit(result, '40', '60');
+    await submit(result);
+    act(() => result.current.toggle('dry'));
+    await submit(result);
+    expect(result.current.splitSaved).toBe(true);
+    expect(api.handOverCounterItems).not.toHaveBeenCalled();
+    expect(onError).toHaveBeenLastCalledWith(expect.objectContaining({ message: expect.stringContaining('take the whole balance first') }));
   });
 
   it('keeps the split fields for a retry when the bill cannot be read back', async () => {

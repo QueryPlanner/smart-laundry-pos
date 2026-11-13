@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react';
 import { getCounterOrder, handOverCounterItems, recordCounterPayment, recordCounterSplitPayment } from '../counter';
-import type { CounterPaymentMethod, CounterSavedOrder } from '../counter';
+import type { CounterPaymentMethod, CounterRecordSplitPaymentInput, CounterSavedOrder } from '../counter';
 import { parsePaymentAmountMinor, rupeesText } from '../payment';
 import { finishesOrder, piecesGoing, rupees, suggestedPaymentMinor, waitingLineIds } from './pickup';
 
@@ -58,6 +58,7 @@ export interface OrderPickup {
   splitRemainingMinor: number;
   /** The split was saved and only the hand-over is left; the amounts are not sent again. */
   splitSaved: boolean;
+  splitPending: boolean;
   /** Why the button cannot do what it says, or empty. */
   problem: string;
   /** The words on the one button, for example "Receive ₹30.00 and hand over 3 pieces". */
@@ -86,6 +87,7 @@ export const useOrderPickup = (o: {
   const [splitCash, setSplitCashText] = useState('');
   const [splitUpi, setSplitUpiText] = useState('');
   const [splitSaved, setSplitSaved] = useState(false);
+  const [pendingSplit, setPendingSplit] = useState<CounterRecordSplitPaymentInput | null>(null);
   const [busy, setBusy] = useState(false);
   const [payments] = useState(() => new PaymentKey());
   const running = useRef(false);
@@ -106,7 +108,14 @@ export const useOrderPickup = (o: {
   const upiPayingMinor = splitMode ? (upiMinor ?? 0) : 0;
 
   const problemOf = (): string => {
-    if (splitSaved) return going === 0 ? NOTHING_CHOSEN : '';
+    if (pendingSplit) return '';
+    if (splitSaved && split) {
+      if (going === 0) return NOTHING_CHOSEN;
+      if (finishing && order.balanceMinor > 0) {
+        return `These are the last items: take the whole balance first (${rupees(order.balanceMinor)} more).`;
+      }
+      return '';
+    }
     if (split) {
       if (cashMinor === null || upiMinor === null) return AMOUNT_NOT_VALID;
       if (cashMinor <= 0 || upiMinor <= 0) return SPLIT_NOT_POSITIVE;
@@ -129,13 +138,15 @@ export const useOrderPickup = (o: {
     ? `Receive ${rupees(cashMinor)} Cash + ${rupees(upiMinor)} UPI`
     : !split && payingMinor > 0 ? `Receive ${rupees(payingMinor)}` : '';
   const handing = going > 0 ? `hand over ${pieces(going)}` : '';
-  const action = paying && handing ? `${paying} and ${handing}` : paying || (handing && `Hand over ${pieces(going)}`) || 'Hand over';
+  const action = pendingSplit ? 'Retry Cash + UPI payment' : paying && handing ? `${paying} and ${handing}` : paying || (handing && `Hand over ${pieces(going)}`) || 'Hand over';
 
   const setSplitCash = (text: string) => {
+    if (pendingSplit) return;
     setSplitCashText(text);
     setSplitSaved(false);
   };
   const setSplitUpi = (text: string) => {
+    if (pendingSplit) return;
     setSplitUpiText(text);
     setSplitSaved(false);
   };
@@ -153,15 +164,28 @@ export const useOrderPickup = (o: {
     let current = order;
     try {
       if (splitNow) {
-        const idempotencyKey = payments.keyFor(JSON.stringify([order.orderId, 'split', cash, upi]));
-        current = await recordCounterSplitPayment(order.orderId, { cashMinor: cash, upiMinor: upi, idempotencyKey });
-        payments.rotate();
+        const request = pendingSplit ?? {
+          cashMinor: cash,
+          upiMinor: upi,
+          idempotencyKey: crypto.randomUUID(),
+        };
+        setPendingSplit(request);
+        current = await recordCounterSplitPayment(order.orderId, request);
+        setPendingSplit(null);
+        // A successful payment response is enough to retry handover safely, even if reading
+        // the bill back after a handover error also fails.
+        setSplitCashText('');
+        setSplitUpiText('');
+        setSplitSaved(true);
         o.onOrder(current);
       } else if (paid > 0) {
         const idempotencyKey = payments.keyFor(JSON.stringify([order.orderId, paid, method]));
         current = await recordCounterPayment(order.orderId, { amountMinor: paid, method: method as CounterPaymentMethod, idempotencyKey });
         payments.rotate();
         o.onOrder(current);
+      }
+      if (lines.length > 0 && splitNow && finishing && current.balanceMinor > 0) {
+        throw new Error(`These are the last items: take the whole balance first (${rupees(current.balanceMinor)} more).`);
       }
       if (lines.length > 0) {
         current = await handOverCounterItems(order.orderId, lines);
@@ -179,24 +203,15 @@ export const useOrderPickup = (o: {
       setSplitUpiText('');
       setSplitSaved(false);
     } catch (error) {
+      if (splitNow && current === order && /^(The split payment cannot exceed the outstanding balance|Payments cannot be added to a (cancelled|trashed) order|Order not found)\.$/.test(errorText(error))) {
+        setPendingSplit(null);
+      }
       o.onError(error);
       // The payment may have gone through before the hand-over failed: show the order as it is now.
       try {
         const fresh = await getCounterOrder(order.orderId);
         if (fresh) {
-          if (splitNow) {
-            // The split saved but the hand-over did not: keep both payments and let the next tap
-            // hand over only, without sending the amounts again.
-            if (fresh.paidMinor - order.paidMinor === paid && fresh.balanceMinor === order.balanceMinor - paid) {
-              payments.rotate();
-              setSplitCashText('');
-              setSplitUpiText('');
-              setSplitSaved(true);
-            }
-          } else if (fresh.balanceMinor !== order.balanceMinor) {
-            // A changed balance means the payment was saved, so the next one is a new payment with a new key.
-            payments.rotate();
-          }
+          if (!split && fresh.balanceMinor !== order.balanceMinor) payments.rotate();
           o.onOrder(fresh);
         }
       } catch (refetchError) { o.onError(refetchError); }
@@ -212,7 +227,7 @@ export const useOrderPickup = (o: {
     amount,
     setAmount: setTyped,
     method,
-    setMethod,
+    setMethod: value => { if (!pendingSplit) setMethod(value); },
     splitCash,
     setSplitCash,
     splitUpi,
@@ -220,6 +235,7 @@ export const useOrderPickup = (o: {
     splitTotalMinor,
     splitRemainingMinor,
     splitSaved,
+    splitPending: pendingSplit !== null,
     problem,
     action,
     busy,
