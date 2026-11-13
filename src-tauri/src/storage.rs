@@ -464,11 +464,17 @@ impl DatabaseState {
         let pool_result = async {
             let existed = database_path.exists();
             let bootstrap = connect_writer_pool(database_path, false, WRITER_CONNECTIONS).await?;
-            if existed {
-                preserve_before_upgrade(&bootstrap, database_path).await?;
+            let initialized = async {
+                if existed {
+                    preserve_before_upgrade(&bootstrap, database_path).await?;
+                }
+                initialize_schema(&bootstrap, existed).await
             }
-            initialize_schema(&bootstrap, existed).await?;
+            .await;
+            // A failed startup can still stage a restore. Close the bootstrap pool on every
+            // result so its SQLite handles cannot outlive that failed startup on Windows.
             bootstrap.close().await;
+            initialized?;
             validate_database(database_path).await?;
 
             let writer = connect_writer_pool(database_path, true, WRITER_CONNECTIONS).await?;
@@ -494,6 +500,17 @@ impl DatabaseState {
 
     pub(crate) fn writer_pool(&self) -> Result<&SqlitePool, String> {
         Ok(&self.pools()?.writer)
+    }
+
+    /// Close the SQLite pools and wait for their worker threads to exit. Dropping a pool only
+    /// starts that close in the background, so Windows can keep the file locked for a while.
+    /// Tests that reuse or rename the same path close explicitly instead of relying on `drop`.
+    #[cfg(test)]
+    pub(crate) async fn close_pools(&self) {
+        if let Ok(pools) = &self.pools {
+            pools.writer.close().await;
+            pools.reader.close().await;
+        }
     }
 
     fn pools(&self) -> Result<&DatabasePools, String> {
@@ -1711,7 +1728,7 @@ async fn resume_interrupted_restore(database_path: &Path) -> Result<(), String> 
                             .to_string(),
                     );
                 }
-                fs::rename(database_path, old)
+                rename_database_file(database_path, old)
                     .map_err(|error| format!("Could not preserve the current database: {error}"))?;
                 sync_parent_directory(database_path)?;
             } else if old_path.as_ref().is_some_and(|path| !path.exists()) {
@@ -1754,7 +1771,7 @@ async fn resume_interrupted_restore(database_path: &Path) -> Result<(), String> 
                     format!("The staged database failed validation: {error}"),
                 );
             }
-            fs::rename(&pending, database_path)
+            rename_database_file(&pending, database_path)
                 .map_err(|error| format!("Could not install the staged database: {error}"))?;
             sync_parent_directory(database_path)?;
             journal.phase = ApplyPhase::ReplacementInstalled;
@@ -1815,11 +1832,28 @@ fn restore_original_after_failed_apply(
             ));
         }
     }
-    fs::rename(old, database_path)
+    rename_database_file(old, database_path)
         .map_err(|error| format!("{failure} Could not restore the original database: {error}"))?;
     sync_parent_directory(database_path)?;
     remove_apply_journal(database_path)?;
     Err(failure)
+}
+
+fn rename_database_file(source: &Path, destination: &Path) -> std::io::Result<()> {
+    // A recently validated or quarantined database may still be locked on Windows: the file
+    // scanner and the closing connection threads can hold a share that blocks the move for
+    // longer than a moment. Keep the atomic rename and retry only sharing or locking
+    // violations, for up to 30 seconds.
+    #[cfg(windows)]
+    for _ in 0..600 {
+        match fs::rename(source, destination) {
+            Err(error) if matches!(error.raw_os_error(), Some(32 | 33)) => {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            result => return result,
+        }
+    }
+    fs::rename(source, destination)
 }
 
 async fn checkpoint_database(database_path: &Path) -> Result<(), String> {
@@ -1859,7 +1893,7 @@ fn quarantine_sidecars(
             continue;
         }
         let preserved = unique_sibling_path(base, "pre-restore-sidecar", "tmp")?;
-        fs::rename(&sidecar, &preserved)
+        rename_database_file(&sidecar, &preserved)
             .map_err(|error| format!("Could not preserve SQLite sidecar {suffix}: {error}"))?;
         sync_parent_directory(database_path)?;
         sync_parent_directory(&preserved)?;
@@ -1984,7 +2018,7 @@ async fn write_verified_snapshot(
         vacuum_into(connection, &partial).await?;
         sync_file(&partial)?;
         validate_database(&partial).await?;
-        fs::rename(&partial, destination)
+        rename_database_file(&partial, destination)
             .map_err(|error| format!("Could not finish the database snapshot: {error}"))?;
         sync_parent_directory(destination)
     }
@@ -2030,7 +2064,7 @@ fn publish_pending_snapshot(ready_snapshot: &Path, database_path: &Path) -> Resu
     if pending.exists() {
         return Err("A database restore is already staged.".to_string());
     }
-    fs::rename(ready_snapshot, &pending)
+    rename_database_file(ready_snapshot, &pending)
         .map_err(|error| format!("Could not stage the selected database backup: {error}"))?;
     sync_parent_directory(database_path)?;
     Ok(())
@@ -2352,7 +2386,7 @@ fn write_apply_journal(database_path: &Path, journal: &ApplyJournal) -> Result<(
         .map_err(|error| format!("Could not write the restore journal: {error}"))?;
     file.sync_all()
         .map_err(|error| format!("Could not sync the restore journal: {error}"))?;
-    fs::rename(&temp, &journal_path)
+    rename_database_file(&temp, &journal_path)
         .map_err(|error| format!("Could not publish the restore journal: {error}"))?;
     sync_parent_directory(database_path)
 }
@@ -2380,14 +2414,14 @@ fn remove_apply_journal(database_path: &Path) -> Result<(), String> {
 
 fn quarantine_database_file(database_path: &Path) -> Result<PathBuf, String> {
     let rejected = unique_sibling_path(database_path, "restore-rejected", "db")?;
-    let mut moved_sidecars = Vec::new();
+    let mut moved_sidecars: Vec<(PathBuf, PathBuf)> = Vec::new();
     for suffix in ["-wal", "-shm"] {
         let sidecar = sidecar_path(database_path, suffix);
         if sidecar.exists() {
             let rejected_sidecar = sidecar_path(&rejected, suffix);
-            if let Err(error) = fs::rename(&sidecar, &rejected_sidecar) {
+            if let Err(error) = rename_database_file(&sidecar, &rejected_sidecar) {
                 for (original, preserved) in moved_sidecars.into_iter().rev() {
-                    let _ = fs::rename(preserved, original);
+                    let _ = rename_database_file(&preserved, &original);
                 }
                 return Err(format!(
                     "Could not preserve a rejected database sidecar: {error}"
@@ -2397,9 +2431,9 @@ fn quarantine_database_file(database_path: &Path) -> Result<PathBuf, String> {
         }
     }
 
-    if let Err(error) = fs::rename(database_path, &rejected) {
+    if let Err(error) = rename_database_file(database_path, &rejected) {
         for (original, preserved) in moved_sidecars.into_iter().rev() {
-            let _ = fs::rename(preserved, original);
+            let _ = rename_database_file(&preserved, &original);
         }
         return Err(format!(
             "Could not preserve the rejected database file: {error}"
@@ -2458,7 +2492,7 @@ fn mirror_backup(snapshot: &Path, mirror_dir: &Path) -> Result<(), String> {
             return Err("the copied backup is incomplete".to_string());
         }
         sync_file(&temporary)?;
-        fs::rename(&temporary, &final_path)
+        rename_database_file(&temporary, &final_path)
             .map_err(|error| format!("could not finish the backup copy: {error}"))
     })();
     if result.is_err() {

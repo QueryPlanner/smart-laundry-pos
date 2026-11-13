@@ -1276,7 +1276,7 @@ mod windows_adapter {
             .checked_add(buffer.len())
             .ok_or_else(|| PrintError::Adapter("printer buffer address overflowed".into()))?;
         let address = pointer.0 as usize;
-        if address < base || address >= end || (address - base) % size_of::<u16>() != 0 {
+        if address < base || address >= end || !(address - base).is_multiple_of(size_of::<u16>()) {
             return Err(PrintError::Adapter(
                 "EnumPrintersW returned a string pointer outside its buffer".into(),
             ));
@@ -1516,7 +1516,8 @@ mod windows_adapter {
         // Resolve translations before StartDoc so a failed mapping cannot leave a partially
         // submitted job. Layout coordinates use the physical media origin; GDI uses the
         // printable-area origin reported by the driver.
-        let mapped_pages: Vec<(Vec<(i32, i32, i32)>, Vec<(i32, i32)>)> = pages
+        type MappedPage = (Vec<(i32, i32, i32)>, Vec<(i32, i32)>);
+        let mapped_pages: Vec<MappedPage> = pages
             .iter()
             .map(|page| {
                 let rules = page

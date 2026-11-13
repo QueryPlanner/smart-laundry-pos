@@ -113,7 +113,13 @@ fn invoke(
         cmd: command.to_string(),
         callback: CallbackFn(0),
         error: CallbackFn(1),
-        url: "tauri://localhost".parse().unwrap(),
+        url: if cfg!(windows) {
+            "http://tauri.localhost"
+        } else {
+            "tauri://localhost"
+        }
+        .parse()
+        .unwrap(),
         body: InvokeBody::Json(payload),
         headers: Default::default(),
         invoke_key: tauri::test::INVOKE_KEY.to_string(),
@@ -330,6 +336,10 @@ fn mock_startup_applies_staged_restore_before_serving_commands() {
             .await
             .expect("valid replacement should stage before app startup");
         assert!(staged.starts_with("Restore staged."));
+        // Startup renames both files next. Wait for the SQLite handles to close here instead of
+        // leaving that to the background close that `drop` starts, which Windows can delay.
+        live_state.close_pools().await;
+        source_state.close_pools().await;
     });
 
     let resolver_path = live_path.clone();
