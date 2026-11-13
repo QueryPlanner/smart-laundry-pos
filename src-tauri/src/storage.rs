@@ -1932,7 +1932,7 @@ fn quarantine_sidecars(
             continue;
         }
         let preserved = unique_sibling_path(base, "pre-restore-sidecar", "tmp")?;
-        fs::rename(&sidecar, &preserved)
+        rename_database_file(&sidecar, &preserved)
             .map_err(|error| format!("Could not preserve SQLite sidecar {suffix}: {error}"))?;
         sync_parent_directory(database_path)?;
         sync_parent_directory(&preserved)?;
@@ -2425,7 +2425,7 @@ fn write_apply_journal(database_path: &Path, journal: &ApplyJournal) -> Result<(
         .map_err(|error| format!("Could not write the restore journal: {error}"))?;
     file.sync_all()
         .map_err(|error| format!("Could not sync the restore journal: {error}"))?;
-    fs::rename(&temp, &journal_path)
+    rename_database_file(&temp, &journal_path)
         .map_err(|error| format!("Could not publish the restore journal: {error}"))?;
     sync_parent_directory(database_path)
 }
@@ -2453,14 +2453,14 @@ fn remove_apply_journal(database_path: &Path) -> Result<(), String> {
 
 fn quarantine_database_file(database_path: &Path) -> Result<PathBuf, String> {
     let rejected = unique_sibling_path(database_path, "restore-rejected", "db")?;
-    let mut moved_sidecars = Vec::new();
+    let mut moved_sidecars: Vec<(PathBuf, PathBuf)> = Vec::new();
     for suffix in ["-wal", "-shm"] {
         let sidecar = sidecar_path(database_path, suffix);
         if sidecar.exists() {
             let rejected_sidecar = sidecar_path(&rejected, suffix);
-            if let Err(error) = fs::rename(&sidecar, &rejected_sidecar) {
+            if let Err(error) = rename_database_file(&sidecar, &rejected_sidecar) {
                 for (original, preserved) in moved_sidecars.into_iter().rev() {
-                    let _ = fs::rename(preserved, original);
+                    let _ = rename_database_file(&preserved, &original);
                 }
                 return Err(format!(
                     "Could not preserve a rejected database sidecar: {error}"
@@ -2472,7 +2472,7 @@ fn quarantine_database_file(database_path: &Path) -> Result<PathBuf, String> {
 
     if let Err(error) = rename_database_file(database_path, &rejected) {
         for (original, preserved) in moved_sidecars.into_iter().rev() {
-            let _ = fs::rename(preserved, original);
+            let _ = rename_database_file(&preserved, &original);
         }
         return Err(format!(
             "Could not preserve the rejected database file: {error}"
@@ -2531,7 +2531,7 @@ fn mirror_backup(snapshot: &Path, mirror_dir: &Path) -> Result<(), String> {
             return Err("the copied backup is incomplete".to_string());
         }
         sync_file(&temporary)?;
-        fs::rename(&temporary, &final_path)
+        rename_database_file(&temporary, &final_path)
             .map_err(|error| format!("could not finish the backup copy: {error}"))
     })();
     if result.is_err() {
