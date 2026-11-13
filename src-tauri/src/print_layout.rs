@@ -266,6 +266,7 @@ const TERMS_SIZE_PT: f32 = 7.0;
 const TERMS_PITCH_PT: f32 = 9.5;
 
 /// Everything that closes a bill as text: the footer lines, then the fixed terms last.
+#[cfg(any(target_os = "linux", test))]
 pub fn bill_closing_lines(header: &BillHeader) -> Vec<String> {
     let mut lines = bill_footer_lines(header);
     lines.extend(BILL_TERMS.iter().map(|line| (*line).to_string()));
