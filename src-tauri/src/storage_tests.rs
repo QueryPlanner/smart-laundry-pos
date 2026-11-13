@@ -1014,8 +1014,8 @@ fn a_new_database_has_the_refreshed_catalogue_pictures_and_labels() {
                 "{garment}"
             );
         }
-        assert_eq!(garment_text(pool, "g-shirt", "name_en").await, "Shirt");
-        assert_eq!(garment_text(pool, "g-shirt", "name_mr").await, "शर्ट");
+        assert_eq!(garment_text(pool, "g-shirt", "name_en").await, "Shirt / T-shirt");
+        assert_eq!(garment_text(pool, "g-shirt", "name_mr").await, "शर्ट / टी-शर्ट");
         assert_eq!(
             garment_text(pool, "g-bedsheet-single", "name_en").await,
             "Single Bedsheet"

@@ -23,12 +23,12 @@
 UPDATE garments SET image_key = 'heavy-saree'
  WHERE id = 'g-heavy-saree' AND image_key = 'saree';
 
--- Shirt: one shirt, and a label without the pant. The garment id and its rates stay.
+-- Shared top: one shirt in the picture. Keep both tops named at the shared rate.
 UPDATE garments SET image_key = 'shirt-only'
  WHERE id = 'g-shirt' AND image_key = 'shirt';
-UPDATE garments SET name_en = 'Shirt'
+UPDATE garments SET name_en = 'Shirt / T-shirt'
  WHERE id = 'g-shirt' AND name_en = 'Mens/Women (shirt / t-shirt / pant)';
-UPDATE garments SET name_mr = 'शर्ट'
+UPDATE garments SET name_mr = 'शर्ट / टी-शर्ट'
  WHERE id = 'g-shirt' AND name_mr = 'पुरुष/महिला (शर्ट / टी-शर्ट / पँट)';
 
 -- T-shirt and Jacket are not on the current card, but their shipped rows keep a default picture.
