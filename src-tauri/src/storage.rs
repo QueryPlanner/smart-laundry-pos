@@ -1765,7 +1765,7 @@ async fn resume_interrupted_restore(database_path: &Path) -> Result<(), String> 
                             .to_string(),
                     );
                 }
-                fs::rename(database_path, old)
+                rename_database_file(database_path, old)
                     .map_err(|error| format!("Could not preserve the current database: {error}"))?;
                 sync_parent_directory(database_path)?;
             } else if old_path.as_ref().is_some_and(|path| !path.exists()) {
@@ -1808,7 +1808,7 @@ async fn resume_interrupted_restore(database_path: &Path) -> Result<(), String> 
                     format!("The staged database failed validation: {error}"),
                 );
             }
-            fs::rename(&pending, database_path)
+            rename_database_file(&pending, database_path)
                 .map_err(|error| format!("Could not install the staged database: {error}"))?;
             sync_parent_directory(database_path)?;
             journal.phase = ApplyPhase::ReplacementInstalled;
@@ -1869,26 +1869,26 @@ fn restore_original_after_failed_apply(
             ));
         }
     }
-    rename_original_database(old, database_path)
+    rename_database_file(old, database_path)
         .map_err(|error| format!("{failure} Could not restore the original database: {error}"))?;
     sync_parent_directory(database_path)?;
     remove_apply_journal(database_path)?;
     Err(failure)
 }
 
-fn rename_original_database(old: &Path, database_path: &Path) -> std::io::Result<()> {
-    // Windows can keep a transient handle on the old database or the rejected path
-    // after validation and quarantine. Retry only sharing or locking violations.
+fn rename_database_file(source: &Path, destination: &Path) -> std::io::Result<()> {
+    // A recently validated or quarantined database may still be briefly locked on Windows.
+    // Keep the atomic rename and retry only sharing or locking violations.
     #[cfg(windows)]
     for _ in 0..20 {
-        match fs::rename(old, database_path) {
+        match fs::rename(source, destination) {
             Err(error) if matches!(error.raw_os_error(), Some(32 | 33)) => {
                 std::thread::sleep(Duration::from_millis(50));
             }
             result => return result,
         }
     }
-    fs::rename(old, database_path)
+    fs::rename(source, destination)
 }
 
 async fn checkpoint_database(database_path: &Path) -> Result<(), String> {
@@ -2053,7 +2053,7 @@ async fn write_verified_snapshot(
         vacuum_into(connection, &partial).await?;
         sync_file(&partial)?;
         validate_database(&partial).await?;
-        fs::rename(&partial, destination)
+        rename_database_file(&partial, destination)
             .map_err(|error| format!("Could not finish the database snapshot: {error}"))?;
         sync_parent_directory(destination)
     }
@@ -2099,7 +2099,7 @@ fn publish_pending_snapshot(ready_snapshot: &Path, database_path: &Path) -> Resu
     if pending.exists() {
         return Err("A database restore is already staged.".to_string());
     }
-    fs::rename(ready_snapshot, &pending)
+    rename_database_file(ready_snapshot, &pending)
         .map_err(|error| format!("Could not stage the selected database backup: {error}"))?;
     sync_parent_directory(database_path)?;
     Ok(())
@@ -2466,7 +2466,7 @@ fn quarantine_database_file(database_path: &Path) -> Result<PathBuf, String> {
         }
     }
 
-    if let Err(error) = fs::rename(database_path, &rejected) {
+    if let Err(error) = rename_database_file(database_path, &rejected) {
         for (original, preserved) in moved_sidecars.into_iter().rev() {
             let _ = fs::rename(preserved, original);
         }
