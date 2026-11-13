@@ -1797,6 +1797,7 @@ const CLEARED_TABLES: &[&str] = &[
     "DELETE FROM print_job_attempts",
     "DELETE FROM print_jobs",
     "DELETE FROM counter_payment_requests",
+    "DELETE FROM counter_split_payment_requests",
     "DELETE FROM counter_collection_requests",
     "DELETE FROM counter_order_requests",
     "DELETE FROM payments",
@@ -3162,6 +3163,17 @@ pub struct RecordPaymentInput {
     pub idempotency_key: String,
 }
 
+/// One Cash + UPI split. Both amounts are whole paise and must be positive; the writer checks
+/// their sum against the latest balance. The two settlements share this one retry key.
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordSplitPaymentInput {
+    pub cash_minor: i64,
+    pub upi_minor: i64,
+    pub reference: Option<String>,
+    pub idempotency_key: String,
+}
+
 /// Shop time (IST) as an offset from UTC, in seconds.
 const IST_OFFSET_SECONDS: i64 = 19_800;
 /// Statuses of an order still being worked on: not ready, collected or cancelled.
@@ -3539,6 +3551,22 @@ fn validate_payment_input(input: &RecordPaymentInput) -> Result<(), String> {
     Ok(())
 }
 
+/// A split has two positive whole-paise amounts and one retry key. The writer checks the sum
+/// against the latest balance, so this only rejects a malformed request.
+fn validate_split_payment_input(input: &RecordSplitPaymentInput) -> Result<(), String> {
+    if input.idempotency_key.trim().is_empty() || input.idempotency_key.len() > 100 {
+        return Err("A payment submission key is required.".into());
+    }
+    if input.cash_minor <= 0 || input.upi_minor <= 0 {
+        return Err("Enter a positive Cash amount and a positive UPI amount.".into());
+    }
+    input
+        .cash_minor
+        .checked_add(input.upi_minor)
+        .ok_or_else(|| "The split amount is too large.".to_string())?;
+    Ok(())
+}
+
 /// Fingerprint of a payment's content. A reused request key with a different fingerprint is refused.
 fn payment_fingerprint(input: &RecordPaymentInput) -> Result<String, String> {
     let bytes = serde_json::to_vec(&(&input.amount_minor, &input.method, &input.reference))
@@ -3546,17 +3574,82 @@ fn payment_fingerprint(input: &RecordPaymentInput) -> Result<String, String> {
     Ok(hex(&Sha256::digest(bytes)))
 }
 
+/// Fingerprint of a split's two amounts. The methods are fixed, so only the amounts and an
+/// optional reference can change what a reused key means.
+fn split_payment_fingerprint(input: &RecordSplitPaymentInput) -> Result<String, String> {
+    let bytes = serde_json::to_vec(&(
+        "split",
+        &input.cash_minor,
+        &input.upi_minor,
+        &input.reference,
+    ))
+    .map_err(|e| e.to_string())?;
+    Ok(hex(&Sha256::digest(bytes)))
+}
+
 /// Looks up a payment request key inside a transaction. Returns `true` when this exact payment was
 /// already recorded for this order, so the caller must not insert it again. A key that belongs to
-/// another order or another payment is refused.
+/// another order, another payment or a split is refused.
 async fn payment_key_recorded_in_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     order_id: &str,
     request_key: &str,
     hash: &str,
 ) -> Result<bool, String> {
+    if request_key_used_by_split_in_tx(tx, request_key).await? {
+        return Err("Payment request key was already used for a different payment.".into());
+    }
     let Some(row) = sqlx::query(
         "SELECT order_id,payload_hash FROM counter_payment_requests WHERE request_id=?",
+    )
+    .bind(request_key)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(db_err)?
+    else {
+        return Ok(false);
+    };
+    let prior_order: String = row.try_get("order_id").map_err(db_err)?;
+    let prior_hash: String = row.try_get("payload_hash").map_err(db_err)?;
+    if prior_order != order_id || prior_hash != hash {
+        return Err("Payment request key was already used for a different payment.".into());
+    }
+    Ok(true)
+}
+
+async fn request_key_used_by_split_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    request_key: &str,
+) -> Result<bool, String> {
+    let count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM counter_split_payment_requests WHERE request_id=?",
+    )
+    .bind(request_key)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(db_err)?;
+    Ok(count > 0)
+}
+
+/// The split counterpart of [`payment_key_recorded_in_tx`]. A split key must never be shared with
+/// a single payment, and a retry must match both the bill and the two amounts.
+async fn split_payment_key_recorded_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    order_id: &str,
+    request_key: &str,
+    hash: &str,
+) -> Result<bool, String> {
+    let single_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM counter_payment_requests WHERE request_id=?")
+            .bind(request_key)
+            .fetch_one(&mut **tx)
+            .await
+            .map_err(db_err)?;
+    if single_count > 0 {
+        return Err("Payment request key was already used for a different payment.".into());
+    }
+    let Some(row) = sqlx::query(
+        "SELECT order_id,payload_hash FROM counter_split_payment_requests WHERE request_id=?",
     )
     .bind(request_key)
     .fetch_optional(&mut **tx)
@@ -3614,6 +3707,26 @@ async fn refresh_payment_status_in_tx(
     Ok(())
 }
 
+/// Writes one settlement row. Split payments call this twice inside one transaction so both
+/// methods share the bill, operator and timestamp. The caller owns the transaction.
+#[allow(clippy::too_many_arguments)] // one parameter per settlement column, matching the insert
+async fn insert_payment_row_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    actor_id: &str,
+    order_id: &str,
+    amount_minor: i64,
+    method: &str,
+    reference: Option<&str>,
+    kind: &str,
+    now: &str,
+) -> Result<String, String> {
+    let payment_id = Uuid::new_v4().to_string();
+    sqlx::query("INSERT INTO payments(id,order_id,amount,method,reference_number,recorded_at,recorded_by,created_at,updated_at,origin_device_id,kind) VALUES(?,?,?,?,?,?,?,?,?,?,?)")
+        .bind(&payment_id).bind(order_id).bind(amount_minor as f64/100.0).bind(method).bind(reference).bind(now).bind(actor_id).bind(now).bind(now).bind("counter").bind(kind)
+        .execute(&mut **tx).await.map_err(db_err)?;
+    Ok(payment_id)
+}
+
 /// Writes one payment, its request key, the new payment status and the audit row. The caller has
 /// already checked the amount against the balance and owns the transaction.
 async fn insert_payment_in_tx(
@@ -3625,10 +3738,17 @@ async fn insert_payment_in_tx(
     kind: &str,
     now: &str,
 ) -> Result<(), String> {
-    let payment_id = Uuid::new_v4().to_string();
-    sqlx::query("INSERT INTO payments(id,order_id,amount,method,reference_number,recorded_at,recorded_by,created_at,updated_at,origin_device_id,kind) VALUES(?,?,?,?,?,?,?,?,?,?,?)")
-        .bind(&payment_id).bind(order_id).bind(input.amount_minor as f64/100.0).bind(&input.method).bind(&input.reference).bind(now).bind(actor_id).bind(now).bind(now).bind("counter").bind(kind)
-        .execute(&mut **tx).await.map_err(db_err)?;
+    let payment_id = insert_payment_row_in_tx(
+        tx,
+        actor_id,
+        order_id,
+        input.amount_minor,
+        &input.method,
+        input.reference.as_deref(),
+        kind,
+        now,
+    )
+    .await?;
     sqlx::query("INSERT INTO counter_payment_requests(request_id,order_id,payment_id,payload_hash,created_at) VALUES(?,?,?,?,?)")
         .bind(&input.idempotency_key).bind(order_id).bind(&payment_id).bind(hash).bind(now)
         .execute(&mut **tx).await.map_err(db_err)?;
@@ -3692,6 +3812,126 @@ pub async fn record_payment(
         .await?
         .ok_or("Order not found.".into())
 }
+
+/// Records one Cash + UPI split as two settlement rows. Both rows, the split request key, the
+/// refreshed payment status and the audit row commit together or not at all. A retry of the same
+/// key and amounts returns the bill unchanged; a key used for different content is refused.
+pub async fn record_split_payment(
+    db: &DatabaseState,
+    session: &CounterSession,
+    order_id: &str,
+    input: RecordSplitPaymentInput,
+) -> Result<SavedOrder, String> {
+    let a = actor(session)?;
+    validate_split_payment_input(&input)?;
+    let hash = split_payment_fingerprint(&input)?;
+    let p = db.writer_pool()?;
+    if let Some(row) = sqlx::query(
+        "SELECT order_id,payload_hash FROM counter_split_payment_requests WHERE request_id=?",
+    )
+    .bind(&input.idempotency_key)
+    .fetch_optional(p)
+    .await
+    .map_err(db_err)?
+    {
+        let prior_order: String = row.try_get("order_id").map_err(db_err)?;
+        let prior_hash: String = row.try_get("payload_hash").map_err(db_err)?;
+        if prior_order != order_id || prior_hash != hash {
+            return Err("Payment request key was already used for a different payment.".into());
+        }
+        return get_saved(db, order_id)
+            .await?
+            .ok_or("Order not found.".into());
+    }
+    // A key already used by a single payment is a conflict, not a retry.
+    let single_key: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM counter_payment_requests WHERE request_id=?")
+            .bind(&input.idempotency_key)
+            .fetch_one(p)
+            .await
+            .map_err(db_err)?;
+    if single_key > 0 {
+        return Err("Payment request key was already used for a different payment.".into());
+    }
+    let mut tx = db.begin_counter_write().await?;
+    if split_payment_key_recorded_in_tx(&mut tx, order_id, &input.idempotency_key, &hash).await? {
+        tx.rollback().await.map_err(db_err)?;
+        return get_saved(db, order_id)
+            .await?
+            .ok_or("Order not found.".into());
+    }
+    let row = sqlx::query("SELECT total_amount,status,trashed_at FROM orders WHERE id=?")
+        .bind(order_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(db_err)?
+        .ok_or("Order not found.".to_string())?;
+    let total: f64 = row.try_get("total_amount").map_err(db_err)?;
+    let status: String = row.try_get("status").map_err(db_err)?;
+    let trashed_at: Option<String> = row.try_get("trashed_at").map_err(db_err)?;
+    if status == "cancelled" {
+        return Err("Payments cannot be added to a cancelled order.".into());
+    }
+    if trashed_at.is_some() {
+        return Err("Payments cannot be added to a trashed order.".into());
+    }
+    let total_minor = (total * 100.0).round() as i64;
+    let paid_minor = paid_amount_minor(&mut tx, order_id).await?;
+    let split_minor = input
+        .cash_minor
+        .checked_add(input.upi_minor)
+        .ok_or_else(|| "The split amount is too large.".to_string())?;
+    if split_minor > total_minor - paid_minor {
+        return Err("The split payment cannot exceed the outstanding balance.".into());
+    }
+    let now = Utc::now().to_rfc3339();
+    let cash_payment_id = insert_payment_row_in_tx(
+        &mut tx,
+        &a.id,
+        order_id,
+        input.cash_minor,
+        "cash",
+        input.reference.as_deref(),
+        "settlement",
+        &now,
+    )
+    .await?;
+    let upi_payment_id = insert_payment_row_in_tx(
+        &mut tx,
+        &a.id,
+        order_id,
+        input.upi_minor,
+        "upi",
+        input.reference.as_deref(),
+        "settlement",
+        &now,
+    )
+    .await?;
+    sqlx::query("INSERT INTO counter_split_payment_requests(request_id,order_id,cash_payment_id,upi_payment_id,payload_hash,created_at) VALUES(?,?,?,?,?,?)")
+        .bind(&input.idempotency_key).bind(order_id).bind(&cash_payment_id).bind(&upi_payment_id).bind(&hash).bind(&now)
+        .execute(&mut *tx).await.map_err(db_err)?;
+    refresh_payment_status_in_tx(&mut tx, order_id, false, &now).await?;
+    audit_details(
+        &mut tx,
+        &a.id,
+        "split_payment_recorded",
+        "order",
+        order_id,
+        &now,
+        &serde_json::json!({
+            "cashMinor": input.cash_minor,
+            "upiMinor": input.upi_minor,
+            "cashPaymentId": cash_payment_id,
+            "upiPaymentId": upi_payment_id,
+        }),
+    )
+    .await?;
+    tx.commit().await.map_err(db_err)?;
+    get_saved(db, order_id)
+        .await?
+        .ok_or("Order not found.".into())
+}
+
 pub async fn update_order_status(
     db: &DatabaseState,
     session: &CounterSession,
@@ -10332,6 +10572,465 @@ mod counter_tests {
             .fetch_one(db.writer_pool().unwrap())
             .await
             .unwrap()
+    }
+
+    fn split(cash_minor: i64, upi_minor: i64, key: &str) -> RecordSplitPaymentInput {
+        RecordSplitPaymentInput {
+            cash_minor,
+            upi_minor,
+            reference: Some("split-ref".into()),
+            idempotency_key: key.into(),
+        }
+    }
+
+    async fn split_request_count(db: &DatabaseState, key: &str) -> i64 {
+        sqlx::query_scalar("SELECT COUNT(*) FROM counter_split_payment_requests WHERE request_id=?")
+            .bind(key)
+            .fetch_one(db.writer_pool().unwrap())
+            .await
+            .unwrap()
+    }
+
+    /// `(method, amount in paise, recorded_at)` for every payment on the order, oldest first.
+    async fn split_payments(db: &DatabaseState, order_id: &str) -> Vec<(String, i64, String)> {
+        sqlx::query_as(
+            "SELECT method,CAST(ROUND(amount*100) AS INTEGER),recorded_at FROM payments WHERE order_id=? ORDER BY method",
+        )
+        .bind(order_id)
+        .fetch_all(db.writer_pool().unwrap())
+        .await
+        .unwrap()
+    }
+
+    #[test]
+    fn a_split_payment_writes_two_settlements_and_an_exact_retry_returns_the_same_bill() {
+        tauri::async_runtime::block_on(async {
+            let path = fixture_path();
+            let db = DatabaseState::open(path.clone()).await;
+            let admin = admin_fixture(&db).await;
+            let staff = staff_fixture(&db).await;
+            let order = ready_order(&db, &staff, order_input(2), "split-save", None).await;
+            let total = order.total_minor;
+            let cash = 2_000;
+            let upi = total - cash;
+            let input = split(cash, upi, "split-1");
+            let saved = record_split_payment(&db, &admin, &order.order_id, input.clone())
+                .await
+                .unwrap();
+            assert_eq!(
+                (
+                    saved.paid_minor,
+                    saved.balance_minor,
+                    saved.payment_status.as_str()
+                ),
+                (total, 0, "paid")
+            );
+            assert_eq!(saved.payments.len(), 2);
+            let rows = split_payments(&db, &order.order_id).await;
+            assert_eq!(
+                rows,
+                vec![
+                    ("cash".to_string(), cash, rows[0].2.clone()),
+                    ("upi".to_string(), upi, rows[0].2.clone()),
+                ],
+                "both methods share the same timestamp"
+            );
+            let request = sqlx::query(
+                "SELECT cash_payment_id,upi_payment_id,payload_hash FROM counter_split_payment_requests WHERE request_id='split-1'",
+            )
+            .fetch_one(db.writer_pool().unwrap())
+            .await
+            .unwrap();
+            let cash_id: String = request.try_get("cash_payment_id").unwrap();
+            let upi_id: String = request.try_get("upi_payment_id").unwrap();
+            let hash: String = request.try_get("payload_hash").unwrap();
+            assert!(!hash.is_empty());
+            let ids = sqlx::query_as::<_, (String, String)>(
+                "SELECT id,method FROM payments WHERE order_id=? ORDER BY method",
+            )
+            .bind(&order.order_id)
+            .fetch_all(db.writer_pool().unwrap())
+            .await
+            .unwrap();
+            assert_eq!(
+                ids,
+                vec![(cash_id, "cash".to_string()), (upi_id, "upi".to_string())]
+            );
+            // The same key and amounts return the bill unchanged.
+            let retry = record_split_payment(&db, &admin, &order.order_id, input.clone())
+                .await
+                .unwrap();
+            assert_eq!(retry.payments.len(), 2);
+            assert_eq!(split_request_count(&db, "split-1").await, 1);
+            // The same key with different amounts is refused.
+            let changed = record_split_payment(
+                &db,
+                &admin,
+                &order.order_id,
+                split(cash + 1, upi, "split-1"),
+            )
+            .await
+            .unwrap_err();
+            assert!(changed.contains("already used"), "{changed}");
+            // The same key on another bill is refused too.
+            let other = ready_order(&db, &staff, order_input(1), "split-other", None).await;
+            let moved = record_split_payment(&db, &admin, &other.order_id, input)
+                .await
+                .unwrap_err();
+            assert!(moved.contains("already used"), "{moved}");
+            // The final hand-over needs no payment and leaves both settlement rows alone.
+            let collected = collect_order(
+                &db,
+                &staff,
+                &order.order_id,
+                ids_of(&order),
+                "split-collect",
+                None,
+            )
+            .await
+            .unwrap();
+            assert_eq!(collected.status, "collected");
+            assert_eq!(collected.payments.len(), 2);
+            cleanup(db, path).await;
+        });
+    }
+
+    #[test]
+    fn a_split_payment_rejects_bad_amounts_and_cannot_exceed_the_balance() {
+        tauri::async_runtime::block_on(async {
+            let path = fixture_path();
+            let db = DatabaseState::open(path.clone()).await;
+            let admin = admin_fixture(&db).await;
+            let staff = staff_fixture(&db).await;
+            let order = ready_order(&db, &staff, order_input(2), "split-invalid", None).await;
+            for (cash, upi, expected) in [
+                (0, 100, "positive Cash amount"),
+                (100, 0, "positive Cash amount"),
+                (-1, 100, "positive Cash amount"),
+                (
+                    order.total_minor,
+                    1,
+                    "cannot exceed the outstanding balance",
+                ),
+            ] {
+                let err = record_split_payment(
+                    &db,
+                    &admin,
+                    &order.order_id,
+                    split(cash, upi, "split-bad"),
+                )
+                .await
+                .unwrap_err();
+                assert!(err.contains(expected), "{cash}/{upi}: {err}");
+            }
+            assert_eq!(split_payments(&db, &order.order_id).await, vec![]);
+            assert_eq!(split_request_count(&db, "split-bad").await, 0);
+            assert_eq!(
+                get_saved(&db, &order.order_id)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .payment_status,
+                "unpaid"
+            );
+            let missing = record_split_payment(
+                &db,
+                &admin,
+                "missing-order",
+                split(100, 100, "split-missing"),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(missing, "Order not found.");
+            // A locked session cannot submit anything.
+            let locked = CounterSession::default();
+            let offline = record_split_payment(
+                &db,
+                &locked,
+                &order.order_id,
+                split(100, 100, "split-locked"),
+            )
+            .await
+            .unwrap_err();
+            assert!(offline.contains("Log in"), "{offline}");
+            cleanup(db, path).await;
+        });
+    }
+
+    #[test]
+    fn a_split_and_a_single_payment_cannot_share_a_key_or_overpay() {
+        tauri::async_runtime::block_on(async {
+            let path = fixture_path();
+            let db = DatabaseState::open(path.clone()).await;
+            let admin = admin_fixture(&db).await;
+            let staff = staff_fixture(&db).await;
+            let order = ready_order(&db, &staff, order_input(2), "split-cross-key", None).await;
+            let total = order.total_minor;
+            let saved = record_split_payment(
+                &db,
+                &admin,
+                &order.order_id,
+                split(2_000, total - 2_000, "split-cross"),
+            )
+            .await
+            .unwrap();
+            assert_eq!(saved.payments.len(), 2);
+            // The split key cannot be reused by a single payment.
+            let reused = record_payment(
+                &db,
+                &admin,
+                &order.order_id,
+                RecordPaymentInput {
+                    amount_minor: 100,
+                    method: "cash".into(),
+                    reference: None,
+                    idempotency_key: "split-cross".into(),
+                },
+            )
+            .await
+            .unwrap_err();
+            assert!(reused.contains("already used"), "{reused}");
+            // A second split with a fresh key cannot overpay the now paid bill.
+            let overpaid =
+                record_split_payment(&db, &admin, &order.order_id, split(100, 100, "split-over"))
+                    .await
+                    .unwrap_err();
+            assert!(overpaid.contains("cannot exceed"), "{overpaid}");
+            assert_eq!(split_payments(&db, &order.order_id).await.len(), 2);
+            // A key used by a single payment cannot be reused by a split on another bill.
+            let other = ready_order(&db, &staff, order_input(1), "split-cross-other", None).await;
+            record_payment(
+                &db,
+                &admin,
+                &other.order_id,
+                RecordPaymentInput {
+                    amount_minor: 100,
+                    method: "upi".into(),
+                    reference: None,
+                    idempotency_key: "single-cross".into(),
+                },
+            )
+            .await
+            .unwrap();
+            let reused = record_split_payment(
+                &db,
+                &admin,
+                &other.order_id,
+                split(100, 100, "single-cross"),
+            )
+            .await
+            .unwrap_err();
+            assert!(reused.contains("already used"), "{reused}");
+            cleanup(db, path).await;
+        });
+    }
+
+    #[test]
+    fn a_split_payment_is_refused_on_a_cancelled_or_trashed_bill() {
+        tauri::async_runtime::block_on(async {
+            let path = fixture_path();
+            let db = DatabaseState::open(path.clone()).await;
+            let admin = admin_fixture(&db).await;
+            let staff = staff_fixture(&db).await;
+            let cancelled = ready_order(&db, &staff, order_input(1), "split-cancel", None).await;
+            cancel_order(
+                &db,
+                &admin,
+                &cancelled.order_id,
+                "Customer changed their mind",
+            )
+            .await
+            .unwrap();
+            let err = record_split_payment(
+                &db,
+                &admin,
+                &cancelled.order_id,
+                split(100, 100, "split-cancelled"),
+            )
+            .await
+            .unwrap_err();
+            assert!(err.contains("cancelled"), "{err}");
+            let trashed = ready_order(&db, &staff, order_input(1), "split-trash", None).await;
+            trash_order(&db, &admin, &trashed.order_id).await.unwrap();
+            let err = record_split_payment(
+                &db,
+                &admin,
+                &trashed.order_id,
+                split(100, 100, "split-trashed"),
+            )
+            .await
+            .unwrap_err();
+            assert!(err.contains("trashed"), "{err}");
+            cleanup(db, path).await;
+        });
+    }
+
+    #[test]
+    fn a_failed_second_split_insert_rolls_back_both_payments_and_the_request() {
+        tauri::async_runtime::block_on(async {
+            let path = fixture_path();
+            let db = DatabaseState::open(path.clone()).await;
+            let admin = admin_fixture(&db).await;
+            let staff = staff_fixture(&db).await;
+            let order = ready_order(&db, &staff, order_input(2), "split-rollback", None).await;
+            let pool = db.writer_pool().unwrap();
+            sqlx::query(
+                "CREATE TRIGGER fail_split_upi BEFORE INSERT ON payments WHEN NEW.method='upi' \
+                 BEGIN SELECT RAISE(ABORT,'forced split failure'); END",
+            )
+            .execute(pool)
+            .await
+            .unwrap();
+            let failed = record_split_payment(
+                &db,
+                &admin,
+                &order.order_id,
+                split(2_000, order.total_minor - 2_000, "split-fails"),
+            )
+            .await
+            .unwrap_err();
+            assert!(failed.contains("forced split failure"), "{failed}");
+            assert_eq!(split_payments(&db, &order.order_id).await, vec![]);
+            assert_eq!(split_request_count(&db, "split-fails").await, 0);
+            let audits: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM counter_audit WHERE action='split_payment_recorded' AND entity_id=?",
+            )
+            .bind(&order.order_id)
+            .fetch_one(pool)
+            .await
+            .unwrap();
+            assert_eq!(audits, 0);
+            assert_eq!(
+                get_saved(&db, &order.order_id)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .payment_status,
+                "unpaid"
+            );
+            sqlx::query("DROP TRIGGER fail_split_upi")
+                .execute(pool)
+                .await
+                .unwrap();
+            let saved = record_split_payment(
+                &db,
+                &admin,
+                &order.order_id,
+                split(2_000, order.total_minor - 2_000, "split-fails"),
+            )
+            .await
+            .unwrap();
+            assert_eq!(saved.payments.len(), 2);
+            assert_eq!(split_request_count(&db, "split-fails").await, 1);
+            cleanup(db, path).await;
+        });
+    }
+
+    #[test]
+    fn a_failed_handover_after_a_split_keeps_both_payments_and_a_retry_adds_none() {
+        tauri::async_runtime::block_on(async {
+            let path = fixture_path();
+            let db = DatabaseState::open(path.clone()).await;
+            let admin = admin_fixture(&db).await;
+            let staff = staff_fixture(&db).await;
+            let order = ready_order(&db, &staff, order_input(2), "split-handover", None).await;
+            let ids = ids_of(&order);
+            record_split_payment(
+                &db,
+                &admin,
+                &order.order_id,
+                split(2_000, order.total_minor - 2_000, "split-before-handover"),
+            )
+            .await
+            .unwrap();
+            let incomplete = collect_order(
+                &db,
+                &staff,
+                &order.order_id,
+                ids[..1].to_vec(),
+                "split-handover-fail",
+                None,
+            )
+            .await
+            .unwrap_err();
+            assert!(incomplete.contains("Every order piece"), "{incomplete}");
+            let after = get_saved(&db, &order.order_id).await.unwrap().unwrap();
+            assert_eq!((after.status.as_str(), after.payments.len()), ("ready", 2));
+            let collected = collect_order(
+                &db,
+                &staff,
+                &order.order_id,
+                ids,
+                "split-handover-retry",
+                None,
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                (collected.status.as_str(), collected.payments.len()),
+                ("collected", 2)
+            );
+            assert_eq!(split_request_count(&db, "split-before-handover").await, 1);
+            cleanup(db, path).await;
+        });
+    }
+
+    #[test]
+    fn a_split_can_be_voided_or_cancelled_one_method_at_a_time() {
+        tauri::async_runtime::block_on(async {
+            let path = fixture_path();
+            let db = DatabaseState::open(path.clone()).await;
+            let admin = admin_fixture(&db).await;
+            let staff = staff_fixture(&db).await;
+            let order = ready_order(&db, &staff, order_input(2), "split-void", None).await;
+            let total = order.total_minor;
+            let saved = record_split_payment(
+                &db,
+                &admin,
+                &order.order_id,
+                split(2_000, total - 2_000, "split-void-key"),
+            )
+            .await
+            .unwrap();
+            let cash_id = saved
+                .payments
+                .iter()
+                .find(|payment| payment.method == "cash")
+                .unwrap()
+                .id
+                .clone();
+            let voided = void_payment(&db, &admin, &order.order_id, &cash_id, "Cash was returned")
+                .await
+                .unwrap();
+            assert_eq!(
+                (voided.paid_minor, voided.balance_minor),
+                (total - 2_000, 2_000)
+            );
+            assert_eq!(voided.payment_status, "partially_paid");
+            let mut methods = voided
+                .payments
+                .iter()
+                .map(|payment| {
+                    (
+                        payment.method.as_str(),
+                        payment.amount_minor,
+                        payment.voided,
+                    )
+                })
+                .collect::<Vec<_>>();
+            methods.sort_by(|a, b| a.0.cmp(b.0));
+            assert_eq!(
+                methods,
+                vec![("cash", 2_000, true), ("upi", total - 2_000, false)]
+            );
+            let cancelled =
+                cancel_order(&db, &admin, &order.order_id, "Customer cancelled the order")
+                    .await
+                    .unwrap();
+            assert_eq!(cancelled.refund_due_minor, total);
+            assert!(cancelled.payments.iter().all(|payment| payment.voided));
+            cleanup(db, path).await;
+        });
     }
 
     #[test]

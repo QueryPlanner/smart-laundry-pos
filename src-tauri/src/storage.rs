@@ -25,6 +25,7 @@ const MIGRATION_V6_SQL: &str = include_str!("../migrations/006_simplified_rate_c
 const MIGRATION_V7_SQL: &str = include_str!("../migrations/007_trash_requests.sql");
 const MIGRATION_V8_SQL: &str = include_str!("../migrations/008_wash_only_and_press.sql");
 const MIGRATION_V9_SQL: &str = include_str!("../migrations/009_custom_services.sql");
+const MIGRATION_V10_SQL: &str = include_str!("../migrations/010_split_payments.sql");
 /// Every schema step, oldest first: its version number, its SQL and a name for error messages.
 /// Startup, the schema contract and the test fixtures all read this one list, so a new step is
 /// added here once and nowhere else.
@@ -42,8 +43,9 @@ const MIGRATION_STEPS: &[(i64, &str, &str)] = &[
     (7, MIGRATION_V7_SQL, "v7 trash requests"),
     (8, MIGRATION_V8_SQL, "v8 wash only and wash + press"),
     (9, MIGRATION_V9_SQL, "v9 custom services"),
+    (10, MIGRATION_V10_SQL, "v10 split payments"),
 ];
-const SCHEMA_VERSION: i64 = 9;
+const SCHEMA_VERSION: i64 = 10;
 /// The last step that rebuilds a table other tables point to (steps 8 and 9 both rebuild
 /// `service_methods`). A database older than this is migrated with foreign keys switched off,
 /// which SQLite only allows outside a transaction.
@@ -278,6 +280,19 @@ const REQUIRED_TABLES_V7: &[(&str, &[&str])] = &[(
     ],
 )];
 
+/// Columns that schema version 10 added. Checked only for databases at version 10 or later.
+const REQUIRED_TABLES_V10: &[(&str, &[&str])] = &[(
+    "counter_split_payment_requests",
+    &[
+        "request_id",
+        "order_id",
+        "cash_payment_id",
+        "upi_payment_id",
+        "payload_hash",
+        "created_at",
+    ],
+)];
+
 const REQUIRED_FOREIGN_KEYS: &[(&str, &str, &str, &str)] = &[
     ("orders", "customers", "customer_id", "SET NULL"),
     ("orders", "local_users", "created_by", "NO ACTION"),
@@ -307,6 +322,29 @@ const REQUIRED_FOREIGN_KEYS: &[(&str, &str, &str, &str)] = &[
         "NO ACTION",
     ),
     ("audit_log", "local_users", "user_id", "NO ACTION"),
+];
+
+/// Foreign keys that schema version 10 added. Checked only for databases at version 10 or later,
+/// because an older file does not have the split table yet.
+const REQUIRED_FOREIGN_KEYS_V10: &[(&str, &str, &str, &str)] = &[
+    (
+        "counter_split_payment_requests",
+        "orders",
+        "order_id",
+        "CASCADE",
+    ),
+    (
+        "counter_split_payment_requests",
+        "payments",
+        "cash_payment_id",
+        "CASCADE",
+    ),
+    (
+        "counter_split_payment_requests",
+        "payments",
+        "upi_payment_id",
+        "CASCADE",
+    ),
 ];
 
 // The SQL helpers below are the storage layer's own test fixtures. The app no longer exposes them
@@ -1264,8 +1302,23 @@ async fn validate_schema(
     if version >= 7 {
         require_tables_and_columns(connection, REQUIRED_TABLES_V7).await?;
     }
+    if version >= 10 {
+        require_tables_and_columns(connection, REQUIRED_TABLES_V10).await?;
+    }
 
-    for (table, parent, column, on_delete) in REQUIRED_FOREIGN_KEYS {
+    require_foreign_keys(connection, REQUIRED_FOREIGN_KEYS).await?;
+    if version >= 10 {
+        require_foreign_keys(connection, REQUIRED_FOREIGN_KEYS_V10).await?;
+    }
+
+    validate_schema_contract_version(connection, version).await
+}
+
+async fn require_foreign_keys(
+    connection: &mut sqlx::pool::PoolConnection<sqlx::Sqlite>,
+    required_foreign_keys: &[(&str, &str, &str, &str)],
+) -> Result<(), String> {
+    for (table, parent, column, on_delete) in required_foreign_keys {
         let sql = format!("PRAGMA foreign_key_list(\"{table}\")");
         let rows = sqlx::query(&sql)
             .fetch_all(&mut **connection)
@@ -1296,8 +1349,7 @@ async fn validate_schema(
             ));
         }
     }
-
-    validate_schema_contract_version(connection, version).await
+    Ok(())
 }
 
 /// Every listed table must exist and hold every listed column (names compare without regard to

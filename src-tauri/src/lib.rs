@@ -111,6 +111,7 @@ where
             counter_hand_over_items,
             counter_get_order,
             counter_record_payment,
+            counter_record_split_payment,
             counter_update_order_status,
             counter_collect_order,
             counter_cancel_order,
@@ -293,6 +294,15 @@ async fn counter_record_payment(
     input: counter::RecordPaymentInput,
 ) -> Result<counter::SavedOrder, String> {
     counter::record_payment(&state, &session, &order_id, input).await
+}
+#[tauri::command]
+async fn counter_record_split_payment(
+    state: State<'_, DatabaseState>,
+    session: State<'_, CounterSession>,
+    order_id: String,
+    input: counter::RecordSplitPaymentInput,
+) -> Result<counter::SavedOrder, String> {
+    counter::record_split_payment(&state, &session, &order_id, input).await
 }
 #[tauri::command]
 async fn counter_update_order_status(

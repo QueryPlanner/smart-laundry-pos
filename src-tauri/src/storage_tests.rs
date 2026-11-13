@@ -1197,6 +1197,123 @@ fn a_v3_database_is_upgraded_to_v4_and_its_orders_and_payments_are_kept() {
 }
 
 #[test]
+fn a_v9_database_upgrades_to_v10_and_keeps_its_payments() {
+    tauri::async_runtime::block_on(async {
+        let temporary = TempDatabase::new();
+        create_schema_file(&temporary.path, 9).await;
+        let setup = connect_writer_pool(&temporary.path, false, 1)
+            .await
+            .unwrap();
+        seed_order_with_payments(&setup).await;
+        setup.close().await;
+
+        let upgraded = open(&temporary.path).await;
+        assert_eq!(upgraded.info().error, None);
+        let pool = &upgraded.pools().unwrap().writer;
+        assert_eq!(user_version(pool).await, SCHEMA_VERSION);
+        assert!(table_exists_in(pool, "counter_split_payment_requests").await);
+        let payments: Vec<(String, f64)> =
+            sqlx::query_as("SELECT id, amount FROM payments ORDER BY id")
+                .fetch_all(pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            payments,
+            vec![
+                ("pay-advance".to_string(), 40.0),
+                ("pay-later".to_string(), 60.0),
+            ],
+            "the upgrade keeps every legacy payment"
+        );
+        let splits: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM counter_split_payment_requests")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        assert_eq!(splits, 0, "a legacy bill has no split records");
+        assert_eq!(
+            marker_value(&upgraded, "shop-marker").await.as_deref(),
+            Some("kept")
+        );
+    });
+}
+
+#[test]
+fn a_split_payment_survives_backup_and_restore() {
+    tauri::async_runtime::block_on(async {
+        let source = TempDatabase::new();
+        let live = TempDatabase::new();
+        create_database_with_marker(&live.path, "original").await;
+
+        let source_state = open(&source.path).await;
+        let source_pool = &source_state.pools().unwrap().writer;
+        seed_order_with_payments(source_pool).await;
+        for (id, amount, method) in [("pay-cash", 20.0, "cash"), ("pay-upi", 30.0, "upi")] {
+            sqlx::query("INSERT INTO payments(id,order_id,amount,method,recorded_at,recorded_by,created_at,updated_at,origin_device_id,kind) VALUES(?,'order-1',?,?,?,'staff-1',?,?,'device-1','settlement')")
+                .bind(id)
+                .bind(amount)
+                .bind(method)
+                .bind(LATER_AT)
+                .bind(LATER_AT)
+                .bind(LATER_AT)
+                .execute(source_pool)
+                .await
+                .unwrap();
+        }
+        sqlx::query("INSERT INTO counter_split_payment_requests(request_id,order_id,cash_payment_id,upi_payment_id,payload_hash,created_at) VALUES('split-backup','order-1','pay-cash','pay-upi','hash-backup',?)")
+            .bind(LATER_AT)
+            .execute(source_pool)
+            .await
+            .unwrap();
+        let backup = source_state.backup_database().await.unwrap();
+        let backup_path = PathBuf::from(&backup);
+        validate_database(&backup_path)
+            .await
+            .expect("a v10 backup should pass full validation");
+        drop(source_state);
+
+        let live_state = open(&live.path).await;
+        live_state
+            .restore_database(backup_path.to_string_lossy().to_string())
+            .apply()
+            .await
+            .expect("a v10 backup should stage");
+        drop(live_state);
+
+        let restored = open(&live.path).await;
+        assert_eq!(restored.info().error, None);
+        let pool = &restored.pools().unwrap().writer;
+        assert_eq!(user_version(pool).await, SCHEMA_VERSION);
+        let split: (String, String, String) = sqlx::query_as(
+            "SELECT order_id,cash_payment_id,upi_payment_id FROM counter_split_payment_requests WHERE request_id='split-backup'",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            split,
+            (
+                "order-1".to_string(),
+                "pay-cash".to_string(),
+                "pay-upi".to_string()
+            )
+        );
+        let split_payments: Vec<(String, String, f64)> = sqlx::query_as(
+            "SELECT id,method,amount FROM payments WHERE id IN ('pay-cash','pay-upi') ORDER BY id",
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            split_payments,
+            vec![
+                ("pay-cash".to_string(), "cash".to_string(), 20.0),
+                ("pay-upi".to_string(), "upi".to_string(), 30.0),
+            ]
+        );
+    });
+}
+
+#[test]
 fn a_v3_database_keeps_a_verified_v3_copy_before_the_v4_upgrade() {
     tauri::async_runtime::block_on(async {
         let temporary = TempDatabase::new();
