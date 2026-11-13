@@ -1884,7 +1884,7 @@ fn rename_database_file(source: &Path, destination: &Path) -> std::io::Result<()
     // A recently validated or quarantined database may still be briefly locked on Windows.
     // Keep the atomic rename and retry only sharing or locking violations.
     #[cfg(windows)]
-    for _ in 0..20 {
+    for _ in 0..100 {
         match fs::rename(source, destination) {
             Err(error) if matches!(error.raw_os_error(), Some(32 | 33)) => {
                 std::thread::sleep(Duration::from_millis(50));
