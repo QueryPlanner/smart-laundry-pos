@@ -113,7 +113,13 @@ fn invoke(
         cmd: command.to_string(),
         callback: CallbackFn(0),
         error: CallbackFn(1),
-        url: "tauri://localhost".parse().unwrap(),
+        url: if cfg!(windows) {
+            "http://tauri.localhost"
+        } else {
+            "tauri://localhost"
+        }
+        .parse()
+        .unwrap(),
         body: InvokeBody::Json(payload),
         headers: Default::default(),
         invoke_key: tauri::test::INVOKE_KEY.to_string(),
